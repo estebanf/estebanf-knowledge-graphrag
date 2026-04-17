@@ -8,32 +8,43 @@ This is a **personal, self-hosted RAG (Retrieval-Augmented Generation) system** 
 
 ## Implementation Status
 
+**Phase 2 complete** (`feature02-chunking` branch, 2026-04-17): Adaptive chunking, chunk validation, and embeddings.
+
 **Phase 1 complete** (`feature01-collection` branch, 2026-04-17): Ingestion pipeline — document storage, metadata capture, and file parsing.
 
-### What's implemented
+### What's implemented (Phase 2)
+
+- **Profiling**: `src/rag/profiling.py` — LLM call via `MODEL_DOC_PROFILING`; classifies structure_type, heading_consistency, content_density, primary_content_type, avg_section_length, has_tables, has_code_blocks, domain. Returns `_DEFAULT_PROFILE` on any error.
+- **Chunking**: `src/rag/chunking.py` — deterministic strategy selection (`markdown-header` for well-structured+consistent, `recursive` otherwise) with optional hierarchical (avg_section_length=long) and proposition layers (legal/financial/medical via `MODEL_PROPOSITION_CHUNKING`). Uses LangChain text splitters + tiktoken. `ChunkData.parent_chunk_id` stores parent chunk_index as a digit string; resolved to DB UUID by `_insert_chunks`.
+- **Validation**: `src/rag/chunk_validation.py` — sample-based LLM quality check via `MODEL_CHUNK_VALIDATION`; 10% general / 25% high-stakes / 100% first-of-type. >20% failures → job fails.
+- **Embedding**: `src/rag/embedding.py` — OpenRouter `/api/v1/embeddings` in batches of 32 via `MODEL_EMBEDDING`; stored in `chunks.embedding vector(4096)`.
+- **Schema migration**: `scripts/migrate/002_update_vector_dimensions.sql` — updates vector columns from 1536 → 4096 dims. Note: pgvector 0.8.1 caps HNSW at 2000 dims; HNSW indexes omitted, queries use exact scan.
+- **New env vars**: `MODEL_EMBEDDING=qwen/qwen3-embedding-8b`, `EMBEDDING_DIMENSIONS=4096`
+- **Tests**: 26 tests across `test_ingestion.py`, `test_profiling.py`, `test_chunking.py`, `test_chunk_validation.py`, `test_embedding.py` — all pass.
+
+### What's implemented (Phase 1)
 
 - **Python package**: `src/rag/` installed as `pip install -e .`; entrypoint: `venv/bin/rag`
 - **CLI commands**: `rag ingest <file>`, `rag sources list/get/delete`
-- **Ingestion flow** (synchronous): MD5 dedup → file storage → Postgres record → markitdown parse → LLM metadata extraction → markdown + metadata persisted in DB
+- **Ingestion flow** (synchronous): MD5 dedup → file storage → Postgres record → parse → LLM metadata extraction → profiling → chunking → validation → embedding → completed
 - **Supported formats**: PDF, DOCX, MD, TXT
 - **Data model addition**: `sources.markdown_content TEXT` (migration: `scripts/migrate/001_add_markdown_content.sql`)
-- **Tests**: `tests/test_ingestion.py` — 6 tests, all pass, full cleanup on every run
 
 ### What's not yet implemented
 
-- Profiling, chunking, embedding, graph extraction stages
+- Graph extraction and graph linking stages
 - REST API and MCP server interfaces
 - `rag jobs` commands
-- LLM metadata extraction
 - Authentication / API keys
 
-### Developer setup (Phase 1)
+### Developer setup (Phase 1 + 2)
 
 ```bash
 cp .env.example .env
-# Edit .env: set POSTGRES_PASSWORD and update POSTGRES_URL password to match
+# Edit .env: set POSTGRES_PASSWORD and OPENROUTER_API_KEY
 ./scripts/start.sh
-psql $POSTGRES_URL -f scripts/migrate/001_add_markdown_content.sql  # if DB already exists
+psql $POSTGRES_URL -f scripts/migrate/001_add_markdown_content.sql  # if DB already existed before Phase 1
+psql $POSTGRES_URL -f scripts/migrate/002_update_vector_dimensions.sql  # if DB already existed before Phase 2
 pip install -e .
 rag ingest test_documents/Play\ 2.md
 ```
@@ -190,5 +201,5 @@ Copy `.env.example` to `.env` before first run. The `.env` file is git-ignored. 
 
 - Postgres schema is initialized automatically on first container start via `scripts/init/postgres/`.
 - Memgraph constraints and indexes are applied by `scripts/start.sh` on first run (flagged by `data/memgraph/.initialized`).
-- Vector embedding dimension is `1536`. Update `chunks.embedding` and `entities.embedding` if a different embedding model dimension is needed.
+- Vector embedding dimension is `4096` (updated by `002_update_vector_dimensions.sql` for `qwen/qwen3-embedding-8b`). pgvector 0.8.1 caps HNSW at 2000 dims — no HNSW index on embedding columns; queries use exact sequential scan.
 - The BM25 index (`CALL paradedb.create_bm25(...)`) is **not** created during schema init — create it after the first bulk ingestion for optimal index quality.
