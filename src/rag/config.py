@@ -1,4 +1,7 @@
 from pathlib import Path
+from typing import Annotated
+
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,11 +25,11 @@ class Settings(BaseSettings):
     MODEL_EMBEDDING: str = "qwen/qwen3-embedding-8b"
 
     # Embedding
-    EMBEDDING_DIMENSIONS: int = 4096
+    EMBEDDING_DIMENSIONS: Annotated[int, Field(gt=0)] = 4096
 
     # Chunking / validation
-    CHUNK_VALIDATION_SAMPLE_RATE: float = 0.10
-    CHUNK_VALIDATION_SAMPLE_RATE_HIGH_STAKES: float = 0.25
+    CHUNK_VALIDATION_SAMPLE_RATE: Annotated[float, Field(ge=0.0, le=1.0)] = 0.10
+    CHUNK_VALIDATION_SAMPLE_RATE_HIGH_STAKES: Annotated[float, Field(ge=0.0, le=1.0)] = 0.25
 
 
 settings = Settings()
