@@ -41,8 +41,9 @@ def embed_and_store_chunks(conn, chunk_rows: list[tuple[str, str]]) -> None:
     texts = [row[1] for row in chunk_rows]
     vectors = get_embeddings(texts)
 
-    conn.executemany(
-        "UPDATE chunks SET embedding = %s::vector WHERE id = %s",
-        [(f"[{','.join(str(v) for v in vec)}]", chunk_id)
-         for chunk_id, vec in zip(ids, vectors)],
-    )
+    with conn.cursor() as cur:
+        cur.executemany(
+            "UPDATE chunks SET embedding = %s::vector WHERE id = %s",
+            [(f"[{','.join(str(v) for v in vec)}]", chunk_id)
+             for chunk_id, vec in zip(ids, vectors)],
+        )
