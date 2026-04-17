@@ -37,7 +37,11 @@ docker compose exec -T memgraph bash -c \
 # Wait for snapshot to flush to disk
 sleep 3
 echo "  Copying Memgraph data..."
-cp -r "$PROJECT_ROOT/data/memgraph" "$BACKUP_DIR/memgraph"
+mkdir -p "$BACKUP_DIR/memgraph"
+# Exclude databases/ — it contains dangling symlinks to RocksDB paths only used
+# in on-disk storage mode; actual persistence is in snapshots/ and wal/
+rsync -a --exclude='databases/' \
+  "$PROJECT_ROOT/data/memgraph/" "$BACKUP_DIR/memgraph/"
 echo "  Memgraph data: $BACKUP_DIR/memgraph/"
 
 echo ""
