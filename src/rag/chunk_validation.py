@@ -55,7 +55,7 @@ def validate_chunks(
     is_first_of_new_type: bool = False,
 ) -> bool:
     """Sample-based quality validation. Returns True if chunks pass, False to fail the job."""
-    if not settings.OPENROUTER_API_KEY:
+    if not settings.OPENROUTER_API_KEY or not chunks:
         return True
 
     if is_first_of_new_type:
