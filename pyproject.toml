@@ -18,6 +18,7 @@ dependencies = [
     "tiktoken>=0.7",
     "pgvector>=0.3",
     "requests>=2.31",
+    "neo4j>=5.0",
 ]
 
 [project.scripts]
