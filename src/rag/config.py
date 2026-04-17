@@ -13,7 +13,20 @@ class Settings(BaseSettings):
     STORAGE_BASE_PATH: Path = Path("./data/documents")
     LOG_LEVEL: str = "INFO"
     OPENROUTER_API_KEY: str = ""
+
+    # Model roles
     MODEL_METADATA_EXTRACTION: str = "google/gemma-3-4b-it"
+    MODEL_DOC_PROFILING: str = "google/gemma-3-4b-it"
+    MODEL_CHUNK_VALIDATION: str = "qwen/qwen2.5-7b-instruct"
+    MODEL_PROPOSITION_CHUNKING: str = "qwen/qwen2.5-14b-instruct"
+    MODEL_EMBEDDING: str = "qwen/qwen3-embedding-8b"
+
+    # Embedding
+    EMBEDDING_DIMENSIONS: int = 4096
+
+    # Chunking / validation
+    CHUNK_VALIDATION_SAMPLE_RATE: float = 0.10
+    CHUNK_VALIDATION_SAMPLE_RATE_HIGH_STAKES: float = 0.25
 
 
 settings = Settings()

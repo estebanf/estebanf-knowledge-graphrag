@@ -14,6 +14,10 @@ dependencies = [
     "structlog>=24.0",
     "python-dotenv>=1.0",
     "pytest>=8.0",
+    "langchain-text-splitters>=0.3",
+    "tiktoken>=0.7",
+    "pgvector>=0.3",
+    "requests>=2.31",
 ]
 
 [project.scripts]
