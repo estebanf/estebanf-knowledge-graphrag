@@ -1,0 +1,162 @@
+import json
+import re
+import uuid
+
+import requests
+
+from rag.config import settings
+
+_ENTITY_TYPES = ["ORGANIZATION", "PERSON", "POLICY", "PRODUCT", "REGULATION", "CONCEPT", "LOCATION"]
+
+_ENTITY_PROMPT = """Extract named entities from the following text. Return ONLY a JSON array.
+Each item must have: "canonical_name" (string), "entity_type" (one of: {types}), "aliases" (list of strings).
+Return [] if no entities found.
+
+Text:
+{text}"""
+
+_REL_PROMPT = """Given these entities: {entity_names}
+
+Extract relationships from the text. Return ONLY a JSON array.
+Each item must have: "source" (canonical_name), "target" (canonical_name), "type" (string), "confidence" (0.0-1.0).
+Use concise relationship types like OWNS, EMPLOYS, GOVERNS, REQUIRES, IS_PART_OF, RELATED_TO.
+Only include relationships grounded in the text.
+Return [] if none found.
+
+Text:
+{text}"""
+
+
+def extract_entities(chunk_content: str) -> list[dict]:
+    if not settings.OPENROUTER_API_KEY:
+        return []
+    try:
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": settings.MODEL_ENTITY_EXTRACTION,
+                "messages": [{"role": "user", "content": _ENTITY_PROMPT.format(
+                    types=", ".join(_ENTITY_TYPES),
+                    text=chunk_content[:4000],
+                )}],
+                "temperature": 0,
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        raw = resp.json()["choices"][0]["message"]["content"]
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
+        return json.loads(raw)
+    except Exception:
+        return []
+
+
+def extract_relationships(chunk_content: str, entities: list[dict]) -> list[dict]:
+    if not entities or not settings.OPENROUTER_API_KEY:
+        return []
+    try:
+        entity_names = [e["canonical_name"] for e in entities]
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": settings.MODEL_RELATIONSHIP_EXTRACTION,
+                "messages": [{"role": "user", "content": _REL_PROMPT.format(
+                    entity_names=", ".join(entity_names),
+                    text=chunk_content[:4000],
+                )}],
+                "temperature": 0,
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        raw = resp.json()["choices"][0]["message"]["content"]
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
+        rels = json.loads(raw)
+        return [r for r in rels if r.get("confidence", 0) >= settings.RELATIONSHIP_CONFIDENCE_THRESHOLD]
+    except Exception:
+        return []
+
+
+def store_entities_and_edges(
+    conn,
+    driver,
+    chunk_id: str,
+    source_id: str,
+    entities: list[dict],
+    relationships: list[dict],
+) -> list[str]:
+    entity_ids: list[str] = []
+    name_to_id: dict[str, str] = {}
+
+    with driver.session() as session:
+        for entity in entities:
+            entity_id = str(uuid.uuid4())
+            entity_ids.append(entity_id)
+            name_to_id[entity["canonical_name"]] = entity_id
+
+            conn.execute(
+                """INSERT INTO entities (id, canonical_name, entity_type, aliases, source_id)
+                   VALUES (%s, %s, %s, %s, %s)
+                   ON CONFLICT DO NOTHING""",
+                (
+                    entity_id,
+                    entity["canonical_name"],
+                    entity["entity_type"],
+                    entity.get("aliases", []),
+                    source_id,
+                ),
+            )
+
+            session.run(
+                "MERGE (e:Entity {entity_id: $entity_id}) "
+                "SET e.canonical_name = $canonical_name, e.entity_type = $entity_type",
+                entity_id=entity_id,
+                canonical_name=entity["canonical_name"],
+                entity_type=entity["entity_type"],
+            )
+            session.run(
+                "MATCH (c:Chunk {chunk_id: $chunk_id}), (e:Entity {entity_id: $entity_id}) "
+                "MERGE (c)-[:MENTIONS {confidence: $confidence}]->(e)",
+                chunk_id=chunk_id,
+                entity_id=entity_id,
+                confidence=1.0,
+            )
+
+        for rel in relationships:
+            e1_id = name_to_id.get(rel.get("source", ""))
+            e2_id = name_to_id.get(rel.get("target", ""))
+            if not e1_id or not e2_id:
+                continue
+            session.run(
+                "MATCH (e1:Entity {entity_id: $e1_id}), (e2:Entity {entity_id: $e2_id}) "
+                "MERGE (e1)-[:RELATED_TO {type: $type, confidence: $confidence, chunk_id: $chunk_id}]->(e2)",
+                e1_id=e1_id,
+                e2_id=e2_id,
+                type=rel["type"],
+                confidence=rel["confidence"],
+                chunk_id=chunk_id,
+            )
+
+    return entity_ids
+
+
+def extract_and_store_graph(
+    conn,
+    driver,
+    source_id: str,
+    job_id: str,
+    chunk_rows: list[tuple[str, str]],
+) -> None:
+    for chunk_id, content in chunk_rows:
+        entities = extract_entities(content)
+        relationships = extract_relationships(content, entities)
+        store_entities_and_edges(conn, driver, chunk_id, source_id, entities, relationships)
+    conn.commit()
