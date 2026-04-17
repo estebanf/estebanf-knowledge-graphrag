@@ -1,0 +1,6 @@
+CREATE CONSTRAINT ON (s:Source) ASSERT s.source_id IS UNIQUE;
+CREATE CONSTRAINT ON (c:Chunk) ASSERT c.chunk_id IS UNIQUE;
+CREATE CONSTRAINT ON (e:Entity) ASSERT e.entity_id IS UNIQUE;
+CREATE INDEX ON :Entity(canonical_name);
+CREATE INDEX ON :Entity(entity_type);
+CREATE INDEX ON :Chunk(source_id);
