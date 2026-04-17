@@ -4,7 +4,39 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a **personal, self-hosted RAG (Retrieval-Augmented Generation) system** combining vector embeddings with a knowledge graph. The full specification is in `docs/prd.md`. No code exists yet — this repository is in the design/pre-implementation phase.
+This is a **personal, self-hosted RAG (Retrieval-Augmented Generation) system** combining vector embeddings with a knowledge graph. The full specification is in `docs/prd.md`.
+
+## Implementation Status
+
+**Phase 1 complete** (`feature01-collection` branch, 2026-04-17): Ingestion pipeline — document storage, metadata capture, and file parsing.
+
+### What's implemented
+
+- **Python package**: `src/rag/` installed as `pip install -e .`; entrypoint: `venv/bin/rag`
+- **CLI commands**: `rag ingest <file>`, `rag sources list/get/delete`
+- **Ingestion flow** (synchronous): MD5 dedup → file storage → Postgres record → markitdown parse → LLM metadata extraction → markdown + metadata persisted in DB
+- **Supported formats**: PDF, DOCX, MD, TXT
+- **Data model addition**: `sources.markdown_content TEXT` (migration: `scripts/migrate/001_add_markdown_content.sql`)
+- **Tests**: `tests/test_ingestion.py` — 6 tests, all pass, full cleanup on every run
+
+### What's not yet implemented
+
+- Profiling, chunking, embedding, graph extraction stages
+- REST API and MCP server interfaces
+- `rag jobs` commands
+- LLM metadata extraction
+- Authentication / API keys
+
+### Developer setup (Phase 1)
+
+```bash
+cp .env.example .env
+# Edit .env: set POSTGRES_PASSWORD and update POSTGRES_URL password to match
+./scripts/start.sh
+psql $POSTGRES_URL -f scripts/migrate/001_add_markdown_content.sql  # if DB already exists
+pip install -e .
+rag ingest test_documents/Play\ 2.md
+```
 
 ---
 

@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS sources (
   md5             text,
   version         int DEFAULT 1,
   metadata        jsonb,
+  markdown_content text,
   created_at      timestamptz DEFAULT now(),
   deleted_at      timestamptz
 );
