@@ -113,27 +113,31 @@ def chunk_document(markdown: str, profile: DocumentProfile) -> list[ChunkData]:
     # Base splitting
     if use_hierarchical:
         parent_texts = _split_recursive(markdown, _PARENT_SIZE)
-        raw_items: list[tuple[str, str]] = []  # (text, strategy_label)
+        raw_items: list[tuple[str, str, int | None]] = []
+        running_idx = 0
         for parent_text in parent_texts:
+            parent_idx = running_idx
+            raw_items.append((parent_text, strategy, None))
+            running_idx += 1
             children = _split_recursive(parent_text, _CHUNK_SIZE)
-            raw_items.append((parent_text, strategy))
             for child in children:
-                raw_items.append((child, "hierarchical"))
+                raw_items.append((child, "hierarchical", parent_idx))
+                running_idx += 1
     else:
         if strategy == "markdown-header":
             texts = _split_markdown_header(markdown)
         else:
             texts = _split_recursive(markdown)
-        raw_items = [(t, strategy) for t in texts]
+        raw_items = [(t, strategy, None) for t in texts]
 
     # Build initial chunks
     chunks: list[ChunkData] = []
-    for i, (text, strat) in enumerate(raw_items):
+    for i, (text, strat, parent_idx_ref) in enumerate(raw_items):
         chunks.append(ChunkData(
             content=text,
             token_count=_token_count(text),
             chunk_index=i,
-            parent_chunk_id=None,
+            parent_chunk_id=str(parent_idx_ref) if parent_idx_ref is not None else None,
             chunking_strategy=strat,
             chunking_config=base_config,
         ))
@@ -162,7 +166,7 @@ def chunk_document(markdown: str, profile: DocumentProfile) -> list[ChunkData]:
                 content=prop,
                 token_count=_token_count(prop),
                 chunk_index=len(final_chunks),
-                parent_chunk_id=None,
+                parent_chunk_id=str(parent_idx),
                 chunking_strategy="proposition",
                 chunking_config={"parent_strategy": chunk.chunking_strategy},
                 metadata={"parent_chunk_index": parent_idx},

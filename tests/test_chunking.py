@@ -100,3 +100,18 @@ def test_proposition_chunking_called_for_legal_domain(monkeypatch):
         chunks = chunk_document(LEGAL_MD, profile)
     proposition_chunks = [c for c in chunks if c.chunking_strategy == "proposition"]
     assert len(proposition_chunks) > 0
+
+
+def test_proposition_chunks_have_parent_chunk_id(monkeypatch):
+    monkeypatch.setattr("rag.chunking.settings.OPENROUTER_API_KEY", "test-key")
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "choices": [{"message": {"content": '["Fact one.", "Fact two."]'}}]
+    }
+    with patch("rag.chunking.requests.post", return_value=mock_resp):
+        profile = _make_profile(domain="legal")
+        chunks = chunk_document(LEGAL_MD, profile)
+    proposition_chunks = [c for c in chunks if c.chunking_strategy == "proposition"]
+    assert all(c.parent_chunk_id is not None for c in proposition_chunks)
+    assert all(c.parent_chunk_id.isdigit() for c in proposition_chunks)
