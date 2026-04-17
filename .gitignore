@@ -1,0 +1,23 @@
+# Runtime data — created by scripts/start.sh, never committed
+/data/
+
+# Environment secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
