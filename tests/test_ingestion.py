@@ -22,6 +22,7 @@ def cleanup(source_id: str) -> None:
     """Hard-delete source + jobs from DB and remove stored file from disk."""
     url = settings.POSTGRES_URL
     with psycopg.connect(url) as conn:
+        conn.execute("DELETE FROM entities WHERE source_id = %s", (source_id,))
         conn.execute("DELETE FROM chunks WHERE source_id = %s", (source_id,))
         conn.execute("DELETE FROM jobs WHERE source_id = %s", (source_id,))
         conn.execute("DELETE FROM sources WHERE id = %s", (source_id,))
@@ -40,14 +41,21 @@ def ingested(request):
         cleanup(result["source_id"])
 
 
+@patch("rag.ingestion.link_graph")
+@patch("rag.ingestion.extract_and_store_graph")
+@patch("rag.ingestion.get_graph_driver")
 @patch("rag.ingestion.embed_and_store_chunks")
 @patch("rag.ingestion.validate_chunks")
 @patch("rag.ingestion.chunk_document")
 @patch("rag.ingestion.profile_document")
-def test_ingest_markdown(mock_profile, mock_chunk, mock_validate, mock_embed, ingested):
+def test_ingest_markdown(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, mock_link, ingested):
     mock_profile.return_value = _DEFAULT_PROFILE
     mock_chunk.return_value = []
     mock_validate.return_value = True
+    mock_gd.return_value.__enter__ = lambda s: s
+    mock_gd.return_value.__exit__ = lambda s, *a: None
+    mock_gd.return_value.session.return_value.__enter__ = lambda s: s
+    mock_gd.return_value.session.return_value.__exit__ = lambda s, *a: None
 
     file = TEST_DOCS / "Play 2.md"
     result = ingest_file(file, name="test-markdown")
@@ -68,14 +76,21 @@ def test_ingest_markdown(mock_profile, mock_chunk, mock_validate, mock_embed, in
     assert row[1] and len(row[1]) > 0
 
 
+@patch("rag.ingestion.link_graph")
+@patch("rag.ingestion.extract_and_store_graph")
+@patch("rag.ingestion.get_graph_driver")
 @patch("rag.ingestion.embed_and_store_chunks")
 @patch("rag.ingestion.validate_chunks")
 @patch("rag.ingestion.chunk_document")
 @patch("rag.ingestion.profile_document")
-def test_ingest_pdf(mock_profile, mock_chunk, mock_validate, mock_embed, ingested):
+def test_ingest_pdf(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, mock_link, ingested):
     mock_profile.return_value = _DEFAULT_PROFILE
     mock_chunk.return_value = []
     mock_validate.return_value = True
+    mock_gd.return_value.__enter__ = lambda s: s
+    mock_gd.return_value.__exit__ = lambda s, *a: None
+    mock_gd.return_value.session.return_value.__enter__ = lambda s: s
+    mock_gd.return_value.session.return_value.__exit__ = lambda s, *a: None
 
     file = TEST_DOCS / "Product Leader Insights_ Healthcare Provider Security Buying Behavior.pdf"
     result = ingest_file(file, name="test-pdf")
@@ -95,14 +110,21 @@ def test_ingest_pdf(mock_profile, mock_chunk, mock_validate, mock_embed, ingeste
     assert row[1] and len(row[1]) > 0
 
 
+@patch("rag.ingestion.link_graph")
+@patch("rag.ingestion.extract_and_store_graph")
+@patch("rag.ingestion.get_graph_driver")
 @patch("rag.ingestion.embed_and_store_chunks")
 @patch("rag.ingestion.validate_chunks")
 @patch("rag.ingestion.chunk_document")
 @patch("rag.ingestion.profile_document")
-def test_ingest_docx(mock_profile, mock_chunk, mock_validate, mock_embed, ingested):
+def test_ingest_docx(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, mock_link, ingested):
     mock_profile.return_value = _DEFAULT_PROFILE
     mock_chunk.return_value = []
     mock_validate.return_value = True
+    mock_gd.return_value.__enter__ = lambda s: s
+    mock_gd.return_value.__exit__ = lambda s, *a: None
+    mock_gd.return_value.session.return_value.__enter__ = lambda s: s
+    mock_gd.return_value.session.return_value.__exit__ = lambda s, *a: None
 
     file = TEST_DOCS / "Extension GTM Doc.docx"
     result = ingest_file(file, name="test-docx")
@@ -122,14 +144,21 @@ def test_ingest_docx(mock_profile, mock_chunk, mock_validate, mock_embed, ingest
     assert row[1] and len(row[1]) > 0
 
 
+@patch("rag.ingestion.link_graph")
+@patch("rag.ingestion.extract_and_store_graph")
+@patch("rag.ingestion.get_graph_driver")
 @patch("rag.ingestion.embed_and_store_chunks")
 @patch("rag.ingestion.validate_chunks")
 @patch("rag.ingestion.chunk_document")
 @patch("rag.ingestion.profile_document")
-def test_ingest_txt(mock_profile, mock_chunk, mock_validate, mock_embed, ingested, tmp_path):
+def test_ingest_txt(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, mock_link, ingested, tmp_path):
     mock_profile.return_value = _DEFAULT_PROFILE
     mock_chunk.return_value = []
     mock_validate.return_value = True
+    mock_gd.return_value.__enter__ = lambda s: s
+    mock_gd.return_value.__exit__ = lambda s, *a: None
+    mock_gd.return_value.session.return_value.__enter__ = lambda s: s
+    mock_gd.return_value.session.return_value.__exit__ = lambda s, *a: None
 
     txt_file = tmp_path / "sample.txt"
     txt_file.write_text("This is a plain text document.\nSecond line.\n")
@@ -151,14 +180,21 @@ def test_ingest_txt(mock_profile, mock_chunk, mock_validate, mock_embed, ingeste
     assert row[1] and len(row[1]) > 0
 
 
+@patch("rag.ingestion.link_graph")
+@patch("rag.ingestion.extract_and_store_graph")
+@patch("rag.ingestion.get_graph_driver")
 @patch("rag.ingestion.embed_and_store_chunks")
 @patch("rag.ingestion.validate_chunks")
 @patch("rag.ingestion.chunk_document")
 @patch("rag.ingestion.profile_document")
-def test_duplicate_rejected(mock_profile, mock_chunk, mock_validate, mock_embed, ingested):
+def test_duplicate_rejected(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, mock_link, ingested):
     mock_profile.return_value = _DEFAULT_PROFILE
     mock_chunk.return_value = []
     mock_validate.return_value = True
+    mock_gd.return_value.__enter__ = lambda s: s
+    mock_gd.return_value.__exit__ = lambda s, *a: None
+    mock_gd.return_value.session.return_value.__enter__ = lambda s: s
+    mock_gd.return_value.session.return_value.__exit__ = lambda s, *a: None
 
     file = TEST_DOCS / "Play 2.md"
     result = ingest_file(file, name="test-dedup")
@@ -168,14 +204,21 @@ def test_duplicate_rejected(mock_profile, mock_chunk, mock_validate, mock_embed,
         ingest_file(file, name="test-dedup-again")
 
 
+@patch("rag.ingestion.link_graph")
+@patch("rag.ingestion.extract_and_store_graph")
+@patch("rag.ingestion.get_graph_driver")
 @patch("rag.ingestion.embed_and_store_chunks")
 @patch("rag.ingestion.validate_chunks")
 @patch("rag.ingestion.chunk_document")
 @patch("rag.ingestion.profile_document")
-def test_file_stored_on_disk(mock_profile, mock_chunk, mock_validate, mock_embed, ingested):
+def test_file_stored_on_disk(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, mock_link, ingested):
     mock_profile.return_value = _DEFAULT_PROFILE
     mock_chunk.return_value = []
     mock_validate.return_value = True
+    mock_gd.return_value.__enter__ = lambda s: s
+    mock_gd.return_value.__exit__ = lambda s, *a: None
+    mock_gd.return_value.session.return_value.__enter__ = lambda s: s
+    mock_gd.return_value.session.return_value.__exit__ = lambda s, *a: None
 
     file = TEST_DOCS / "Play 2.md"
     result = ingest_file(file, name="test-disk")
