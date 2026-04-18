@@ -6,9 +6,10 @@ runner = CliRunner()
 
 def _make_job_row(
     job_id="job-1", source_id="src-1", status="completed",
-    stage="completed", stage_log=None, created="2026-04-17T00:00:00"
+    stage="completed", stage_log=None, created="2026-04-17T00:00:00",
+    error_detail=None,
 ):
-    return (job_id, source_id, status, stage, stage_log or {}, created, created)
+    return (job_id, source_id, status, stage, stage_log or {}, created, created, error_detail)
 
 
 def test_jobs_list_no_jobs():
@@ -99,3 +100,36 @@ def test_jobs_cancel_rejects_completed_job():
         from rag.cli import app
         result = runner.invoke(app, ["jobs", "cancel", "job-1"])
     assert result.exit_code == 1
+
+
+@patch("rag.cli.get_connection")
+def test_jobs_status_shows_error_detail(mock_conn):
+    conn = MagicMock()
+    mock_conn.return_value.__enter__.return_value = conn
+    conn.execute.return_value.fetchone.return_value = (
+        "job-uuid", "src-uuid", "failed:parsing", "parsing",
+        {"parsing": "2026-04-18T10:00:00"},
+        "2026-04-18 10:00:00", "2026-04-18 10:01:00",
+        {"stage": "parsing", "message": "Parse failed", "traceback": "trace..."},
+    )
+    from rag.cli import app
+    result = runner.invoke(app, ["jobs", "status", "job-uuid"])
+    assert result.exit_code == 0
+    assert "Error Detail" in result.output
+    assert "Parse failed" in result.output
+
+
+@patch("rag.cli.get_connection")
+def test_jobs_status_no_error_detail(mock_conn):
+    conn = MagicMock()
+    mock_conn.return_value.__enter__.return_value = conn
+    conn.execute.return_value.fetchone.return_value = (
+        "job-uuid", "src-uuid", "completed", "completed",
+        {"parsing": "2026-04-18T10:00:00"},
+        "2026-04-18 10:00:00", "2026-04-18 10:01:00",
+        None,
+    )
+    from rag.cli import app
+    result = runner.invoke(app, ["jobs", "status", "job-uuid"])
+    assert result.exit_code == 0
+    assert "Error Detail" not in result.output
