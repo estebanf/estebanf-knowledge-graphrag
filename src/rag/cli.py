@@ -7,12 +7,14 @@ from rich.panel import Panel
 from rich.table import Table
 
 from rag.db import get_connection
-from rag.ingestion import ingest_file
+from rag.ingestion import ingest_file, retry_job, STAGE_ORDER
 from rag.storage import delete_stored_file
 
 app = typer.Typer(help="RAG CLI — document ingestion and management")
 sources_app = typer.Typer(help="Manage ingested sources")
+jobs_app = typer.Typer(help="Manage ingestion jobs")
 app.add_typer(sources_app, name="sources")
+app.add_typer(jobs_app, name="jobs")
 
 console = Console()
 
@@ -168,3 +170,117 @@ def sources_delete(
         console.print(f"[green]Hard-deleted source {source_id} (DB records and file removed).[/green]")
     else:
         console.print(f"[green]Soft-deleted source {source_id}.[/green]")
+
+
+@jobs_app.command("list")
+def jobs_list(
+    status: Annotated[Optional[str], typer.Option("--status", help="Filter by status")] = None,
+) -> None:
+    """List ingestion jobs."""
+    with get_connection() as conn:
+        if status:
+            rows = conn.execute(
+                "SELECT id, source_id, status, current_stage, stage_log, created_at, updated_at FROM jobs WHERE status = %s ORDER BY created_at DESC",
+                (status,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, source_id, status, current_stage, stage_log, created_at, updated_at FROM jobs ORDER BY created_at DESC LIMIT 50"
+            ).fetchall()
+
+    if not rows:
+        console.print("[dim]No jobs found.[/dim]")
+        return
+
+    table = Table(title="Jobs")
+    table.add_column("ID", style="dim", no_wrap=True)
+    table.add_column("Source ID", style="dim")
+    table.add_column("Status")
+    table.add_column("Stage")
+    table.add_column("Created")
+    for r in rows:
+        status_color = "green" if r[2] == "completed" else ("red" if r[2].startswith("failed") else "yellow")
+        table.add_row(str(r[0]), str(r[1]), f"[{status_color}]{r[2]}[/{status_color}]", r[3] or "", str(r[5])[:19])
+    console.print(table)
+
+
+@jobs_app.command("status")
+def jobs_status(
+    job_id: Annotated[str, typer.Argument(help="Job UUID")],
+) -> None:
+    """Show job details and stage log."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id, source_id, status, current_stage, stage_log, created_at, updated_at FROM jobs WHERE id = %s",
+            (job_id,),
+        ).fetchone()
+
+    if not row:
+        console.print(f"[red]Job not found: {job_id}[/red]")
+        raise typer.Exit(1)
+
+    table = Table(show_header=False, box=None)
+    table.add_column("Key", style="bold")
+    table.add_column("Value")
+    for k, v in [
+        ("Job ID", str(row[0])),
+        ("Source ID", str(row[1])),
+        ("Status", str(row[2])),
+        ("Current Stage", str(row[3])),
+        ("Created", str(row[5])[:19]),
+        ("Updated", str(row[6])[:19]),
+    ]:
+        table.add_row(k, v)
+    console.print(Panel(table, title=f"[bold]Job {job_id}[/bold]"))
+
+    if row[4]:
+        import json
+        console.print(Panel(json.dumps(row[4], indent=2), title="Stage Log"))
+
+
+@jobs_app.command("retry")
+def jobs_retry(
+    job_id: Annotated[str, typer.Argument(help="Job UUID to retry")],
+    from_stage: Annotated[
+        Optional[str],
+        typer.Option("--from-stage", help=f"Stage to retry from: {STAGE_ORDER}"),
+    ] = None,
+) -> None:
+    """Retry a failed job."""
+    try:
+        result = retry_job(job_id, from_stage=from_stage)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Retry failed: {e}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]Job {result['job_id']} completed successfully.[/green]")
+
+
+@jobs_app.command("cancel")
+def jobs_cancel(
+    job_id: Annotated[str, typer.Argument(help="Job UUID to cancel")],
+) -> None:
+    """Cancel a pending or processing job."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id, source_id, status FROM jobs WHERE id = %s",
+            (job_id,),
+        ).fetchone()
+        if not row:
+            console.print(f"[red]Job not found: {job_id}[/red]")
+            raise typer.Exit(1)
+
+        status = row[2]
+        if status == "completed" or status == "cancelled":
+            console.print(f"[yellow]Job {job_id} cannot be cancelled (status: {status}).[/yellow]")
+            raise typer.Exit(1)
+
+        conn.execute(
+            "UPDATE jobs SET status = 'cancelled', updated_at = now() WHERE id = %s",
+            (job_id,),
+        )
+        conn.commit()
+
+    console.print(f"[green]Job {job_id} has been cancelled.[/green]")
