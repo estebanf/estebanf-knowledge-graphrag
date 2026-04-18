@@ -50,7 +50,10 @@ def extract_entities(chunk_content: str) -> list[dict]:
         resp.raise_for_status()
         raw = resp.json()["choices"][0]["message"]["content"]
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
-        return json.loads(raw)
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            parsed = next((v for v in parsed.values() if isinstance(v, list)), [])
+        return [e for e in parsed if isinstance(e, dict)]
     except Exception:
         return []
 

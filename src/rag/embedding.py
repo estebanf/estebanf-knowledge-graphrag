@@ -23,7 +23,10 @@ def get_embeddings(texts: list[str]) -> list[list[float]]:
             timeout=120,
         )
         resp.raise_for_status()
-        data = resp.json()["data"]
+        body = resp.json()
+        if "data" not in body:
+            raise RuntimeError(f"Embedding API error: {body}")
+        data = body["data"]
         batch_vectors = [item["embedding"] for item in sorted(data, key=lambda x: x["index"])]
         results.extend(batch_vectors)
     return results

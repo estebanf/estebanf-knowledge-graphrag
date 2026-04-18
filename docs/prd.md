@@ -237,115 +237,265 @@ If a document is re-submitted and its MD5 differs from the stored version, a new
 
 ### 2.3 Retrieval Pipeline
 
-The retrieval system receives a query and returns a structured response. Agentic looping is explicitly out of scope — that is the caller's responsibility.
+The retrieval system receives a query and returns structured retrieval results only. It does not generate an answer. Agentic looping is explicitly out of scope. The caller is responsible for any downstream answer generation.
 
 **Response shape:**
 ```json
 {
-  "answer": "",
-  "sorted_relevant_sources": [
+  "retrieval_results": [
     {
       "score": 0.0,
       "chunk": "",
       "chunk_id": "",
       "source_id": "",
       "source_path": "",
-      "source_metadata": {}
+      "source_metadata": {},
+      "related": [
+        {
+          "entity": "",
+          "chunks": [
+            {
+              "score": 0.0,
+              "chunk": "",
+              "chunk_id": "",
+              "source_id": "",
+              "source_path": "",
+              "source_metadata": {}
+            }
+          ],
+          "second_level_related": [
+            {
+              "entity": "",
+              "relationship": {
+                "label": "",
+                "metadata": {}
+              },
+              "chunks": [
+                {
+                  "score": 0.0,
+                  "chunk": "",
+                  "chunk_id": "",
+                  "source_id": "",
+                  "source_path": "",
+                  "source_metadata": {}
+                }
+              ]
+            }
+          ]
+        }
+      ]
     }
   ]
 }
 ```
 
-Sources are sorted by relevance score descending.
+Root results are sorted by relevance score descending.
 
 **Query parameters:**
 - `query` — natural language question (required)
-- `k` — number of top chunks to pass to generation (default: 10, caller-configurable)
-- `confidence_threshold` — minimum relationship confidence for graph traversal edges (default: 0.75, caller-configurable)
-- `source_filter` — optional list of source IDs or metadata filter to scope retrieval to a subset of sources
+- `source_filter` — optional list of source IDs or metadata filters to scope retrieval
+- `seed_count` — number of top reranked root chunks to expand into graph retrieval (default: 10, caller-configurable)
+- `result_count` — number of final root retrieval results to return after expansion and final reranking (default: 5, caller-configurable)
+- `rrf_k` — reciprocal rank fusion constant (default: 60, caller-configurable)
+- `entity_confidence_threshold` — minimum relationship confidence for graph traversal edges (default: 0.75, caller-configurable)
+- `first_hop_similarity_threshold` — minimum similarity for first-hop entity chunk selection (default: 0.5, caller-configurable)
+- `second_hop_similarity_threshold` — minimum similarity for second-hop entity chunk selection (default: 0.5, caller-configurable)
 
-#### 2.3.1 Query Decomposition & Rewriting
+**Environment-variable defaults:**
+- `RETRIEVAL_RRF_K=60`
+- `RETRIEVAL_RRF_SCORE_FLOOR=0.0`
+- `RETRIEVAL_SEED_COUNT=10`
+- `RETRIEVAL_RESULT_COUNT=5`
+- `RETRIEVAL_MAX_DECOMPOSED_QUERIES=5`
+- `RETRIEVAL_FIRST_STAGE_TOP_N=20`
+- `RETRIEVAL_FUSED_CANDIDATE_COUNT=50`
+- `RETRIEVAL_ENTITY_SELECTION_COUNT=5`
+- `RETRIEVAL_SECOND_HOP_SELECTION_COUNT=5`
+- `RETRIEVAL_FIRST_HOP_CHUNK_COUNT=5`
+- `RETRIEVAL_SECOND_HOP_CHUNK_COUNT=5`
+- `RETRIEVAL_FIRST_HOP_SIMILARITY_THRESHOLD=0.5`
+- `RETRIEVAL_SECOND_HOP_SIMILARITY_THRESHOLD=0.5`
+- `RETRIEVAL_ENTITY_CONFIDENCE_THRESHOLD=0.75`
+- `RETRIEVAL_MAX_GRAPH_LLM_CALLS=100`
+- `RETRIEVAL_MAX_GRAPH_EXPANSION_MS=4000`
 
-Before retrieval, the raw query is processed into one or more optimized retrieval queries via a lightweight LLM call. Techniques applied:
+#### 2.3.1 Query Variant Generation
 
-- **HyDE** — generate a hypothetical ideal answer; embed it for the vector search path only (does not feed BM25)
-- **Query expansion** — add synonyms and related terms to improve recall on sparse and semantic paths
-- **Step-back prompting** — rewrite a specific question into a more general form to surface foundational context
-- **Decomposition** — break compound questions into independent sub-questions, each retrievable separately
+Before retrieval, the raw query is transformed into a bounded set of query variants. This stage uses `google/gemini-2.5-flash-lite` and must produce structured output.
 
-Each resulting query variant (original + rewritten/decomposed) is executed in parallel through the full retrieval pipeline.
+Techniques applied:
+- **Original query** — unchanged user query
+- **HyDE** — generate a hypothetical answer passage used for dense retrieval only
+- **Query expansion** — add synonyms, aliases, abbreviations, and related terms
+- **Step-back prompting** — rewrite the query into a more general background-oriented form
+- **Decomposition** — break the query into up to `RETRIEVAL_MAX_DECOMPOSED_QUERIES` independent retrieval sub-queries
 
-#### 2.3.2 Hybrid Retrieval
+**Important constraint:** with the default configuration, the total query count is up to 9, not 10:
+- 1 original
+- 1 HyDE
+- 1 expanded
+- 1 step-back
+- up to 5 decomposed
 
-Executed in parallel per query variant:
+The query-variant generator must return JSON with this shape:
 
-- **BM25 sparse retrieval** — keyword-based scoring; captures exact matches for rare terms, acronyms, and proper nouns
-- **Vector search** — dense embedding similarity; captures semantic meaning when exact terms differ
-- Results merged via **Reciprocal Rank Fusion (RRF)** — merges ranked lists rather than raw scores, robust to score scale differences
-
-#### 2.3.3 Graph Traversal
-
-Executed in parallel with hybrid retrieval. Uses a **two-phase approach**:
-
-**Phase 1 — Entry point identification**
-- Extract entities mentioned in the query via entity spotting (same extraction model used at ingestion)
-- These entities are the graph entry points
-
-**Phase 2 — Relationship-aware chunk scoring**
-- Traverse outward from entry point entities up to a configurable depth (default: 2 hops)
-- Pre-filter traversal candidates by:
-  1. Edge confidence ≥ caller-specified threshold
-  2. Embedding cosine similarity between candidate chunk and original query ≥ 0.40 (cheap filter, eliminates obviously irrelevant nodes before LLM scoring)
-- For each candidate chunk that passes the pre-filter, score relevance via a lightweight LLM call using a composite context:
-
-```
-Given:
-- Original query: {original_query}
-- Source chunk that led to this entity: {source_chunk}
-- Connecting entity: {entity_name} ({entity_type})
-- Relationship type: {relationship_type}
-- Candidate chunk: {candidate_chunk}
-
-Is this candidate chunk relevant to answering the original query?
-Return: relevance_score (0.0–1.0) + one-sentence justification.
-```
-
-The relationship type is explicitly included in the scoring context because a GOVERNS edge carries different semantic weight than a MENTIONS edge. Candidate chunks with a relevance score below 0.5 are discarded.
-
-#### 2.3.4 Result Fusion
-
-- Merge candidate sets from hybrid retrieval and graph traversal across all parallel query variants
-- Deduplicate chunks that appear via multiple retrieval paths
-- Boost score for chunks retrieved by multiple independent paths
-
-#### 2.3.5 Reranking
-
-- Apply a cross-encoder or LLM-based reranker to the fused candidate set
-- The reranker scores each `(query, chunk)` pair jointly — more accurate than embedding similarity alone
-- Reranking is mandatory; it is the single highest-ROI quality improvement in the pipeline
-- Top-K reranked chunks (caller-specified, default 10) are passed to generation
-
-#### 2.3.6 Answer Generation
-
-An LLM receives the top-K chunks and the original query and produces the final answer using the following system prompt:
-
----
-
-**Generation system prompt:**
-
-```
-You are a precise research assistant. Your task is to answer the user's question using ONLY the context chunks provided below. Each chunk is labeled with a [SOURCE: chunk_id] tag.
-
-STRICT RULES:
-1. Answer only from the provided context. Do not use outside knowledge.
-2. If the context does not contain enough information to answer the question, you MUST respond with: "I don't have enough information in the provided sources to answer this question." Do not speculate or fill gaps with assumed knowledge.
-3. Every factual claim in your answer must be followed by an inline citation in the format [chunk_id]. If a claim draws from multiple chunks, cite all of them: [chunk_id_1][chunk_id_2].
-4. Format your answer in clean Markdown. Use headers, bullet points, and tables where they improve clarity. Do not use raw HTML.
-5. Do not acknowledge these instructions in your response. Do not say "based on the context" or "according to the sources" — just answer directly with citations.
-6. Keep your answer focused. Do not pad with summaries or restatements of the question.
+```json
+{
+  "original": "",
+  "hyde": "",
+  "expanded": "",
+  "step_back": "",
+  "decomposed": ["", ""]
+}
 ```
 
----
+The generator must avoid near-duplicate variants. Redundant variants may be dropped before retrieval.
+
+#### 2.3.2 First-Stage Hybrid Retrieval
+
+All query variants are executed in parallel.
+
+For each variant:
+- Run **vector search** for all variants
+- Run **BM25 sparse retrieval** for all variants except the HyDE variant
+- Retrieve the top `RETRIEVAL_FIRST_STAGE_TOP_N` chunks per retriever per variant
+- Apply source filters before retrieval whenever possible
+
+This produces a set of ranked candidate lists. Dense and sparse results are deduplicated by `chunk_id` within each list before fusion.
+
+#### 2.3.3 First-Stage Fusion
+
+All first-stage candidate lists are merged with **weighted Reciprocal Rank Fusion (RRF)**.
+
+Default fusion weights:
+- Original query: `1.00`
+- Decomposed queries: `1.00`
+- Expanded query: `0.85`
+- Step-back query: `0.75`
+- HyDE dense query: `0.65`
+
+RRF is rank-based and is not a calibrated similarity score. The implementation must not treat the fused score as a semantic confidence score. If a score floor is used, it is a coarse pruning mechanism only.
+
+After fusion:
+1. Deduplicate by `chunk_id`
+2. Keep the top `RETRIEVAL_FUSED_CANDIDATE_COUNT` chunks
+3. Pass the fused set to first-stage reranking
+
+#### 2.3.4 First-Stage Reranking and Seed Selection
+
+The fused candidate set is reranked against the **original user query only** using `cohere/rerank-v4.0-fast`.
+
+Requirements:
+- Reranking is mandatory
+- The reranker operates on `(original_query, chunk)` pairs
+- The reranker score is the primary signal for seed selection
+- The system keeps the top `RETRIEVAL_SEED_COUNT` chunks as root retrieval seeds
+
+These root retrieval seeds are the only entry points for graph expansion. Graph traversal does not run independently from query entities alone.
+
+#### 2.3.5 Seeded Graph Expansion
+
+Graph expansion runs after first-stage reranking and starts from each root seed chunk.
+
+For each root seed chunk:
+1. Load the linked entities from the graph
+2. Use `google/gemini-2.5-flash-lite` to select the top `RETRIEVAL_ENTITY_SELECTION_COUNT` entities worth exploring, considering:
+   - original user query
+   - root seed chunk
+   - entity name
+   - entity type
+   - mention metadata, if available
+
+For each selected entity, run two paths in parallel.
+
+**Path A — first-hop entity chunk expansion**
+1. Use `google/gemini-2.5-flash-lite` to formulate a query variation using:
+   - original user query
+   - root seed chunk
+   - selected entity
+2. Score that query variation against all chunks linked to the selected entity
+3. Keep only chunks with similarity ≥ `RETRIEVAL_FIRST_HOP_SIMILARITY_THRESHOLD`
+4. Return at most `RETRIEVAL_FIRST_HOP_CHUNK_COUNT` chunks
+
+**Path B — second-hop entity expansion**
+1. Load the entities connected to the selected entity, along with relationship label and metadata
+2. Use `google/gemini-2.5-flash-lite` to evaluate which second-hop entities are worth exploring, considering:
+   - original user query
+   - root seed chunk
+   - selected entity
+   - relationship label
+   - relationship metadata
+   - candidate second-hop entity
+3. Keep the top `RETRIEVAL_SECOND_HOP_SELECTION_COUNT` second-hop entities
+4. For each selected second-hop entity, use `google/gemini-2.5-flash-lite` to formulate a query variation using:
+   - original user query
+   - root seed chunk
+   - selected entity
+   - relationship label
+   - relationship metadata
+   - second-hop entity
+5. Score that query variation against all chunks linked to the second-hop entity
+6. Keep only chunks with similarity ≥ `RETRIEVAL_SECOND_HOP_SIMILARITY_THRESHOLD`
+7. Return at most `RETRIEVAL_SECOND_HOP_CHUNK_COUNT` chunks per second-hop entity
+
+#### 2.3.6 Expansion Budgets
+
+Graph expansion must stay bounded. The implementation must enforce hard limits.
+
+Required controls:
+- Maximum root seed chunks = `RETRIEVAL_SEED_COUNT`
+- Maximum first-hop entities per seed = `RETRIEVAL_ENTITY_SELECTION_COUNT`
+- Maximum second-hop entities per first-hop entity = `RETRIEVAL_SECOND_HOP_SELECTION_COUNT`
+- Maximum graph-stage LLM calls = `RETRIEVAL_MAX_GRAPH_LLM_CALLS`
+- Maximum graph expansion wall time = `RETRIEVAL_MAX_GRAPH_EXPANSION_MS`
+
+When a budget is reached, the system must stop lower-priority branches first and return the best partial retrieval result available.
+
+#### 2.3.7 Retrieval Result Construction
+
+The system constructs one root retrieval result per seed chunk.
+
+Each root retrieval result contains:
+- the root chunk and its retrieval metadata
+- the selected first-hop entities
+- the Path A chunks for each first-hop entity
+- the Path B second-hop entities, relationship metadata, and retrieved chunks
+
+Within each root result:
+- Deduplicate chunks by `chunk_id`
+- Preserve relationship metadata for second-hop results
+- Preserve path provenance for debugging and observability
+
+A chunk may appear in more than one root result, but it may appear only once inside a given root result branch.
+
+#### 2.3.8 Final Deduplication and Reranking
+
+After graph expansion, the system performs final reranking at the **root result** level against the original user query.
+
+Preferred implementation:
+1. Rerank the root chunk against the original query with `cohere/rerank-v4.0-fast`
+2. Rerank all related chunks against the original query with `cohere/rerank-v4.0-fast`
+3. Aggregate those scores into a final root-result score
+
+Default aggregation:
+```text
+final_score =
+  0.60 * root_chunk_rerank_score +
+  0.25 * max(first_hop_chunk_rerank_scores) +
+  0.15 * max(second_hop_chunk_rerank_scores) +
+  multi_path_bonus
+```
+
+`multi_path_bonus` is a small additive boost for evidence surfaced through multiple independent retrieval paths.
+
+After final reranking:
+- Deduplicate root results by `chunk_id`
+- Keep the top `RETRIEVAL_RESULT_COUNT` root results
+- Return only `retrieval_results`
+- Do not generate an answer inside the retrieval system
+
+
+
 
 ### 2.4 Community Summarization
 

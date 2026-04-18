@@ -19,17 +19,17 @@ def _cosine_sim(a: list[float], b: list[float]) -> float:
 
 def find_dedup_candidates(conn, source_id: str) -> list[tuple[str, str, float]]:
     """Return (source_entity_id, existing_entity_id, similarity) pairs above threshold."""
-    source_rows = conn.execute(
+    source_rows = [(str(r[0]), r[1]) for r in conn.execute(
         "SELECT id, canonical_name FROM entities WHERE source_id = %s",
         (source_id,),
-    ).fetchall()
+    ).fetchall()]
     if not source_rows:
         return []
 
-    existing_rows = conn.execute(
+    existing_rows = [(str(r[0]), r[1]) for r in conn.execute(
         "SELECT id, canonical_name FROM entities WHERE source_id != %s AND source_id IS NOT NULL",
         (source_id,),
-    ).fetchall()
+    ).fetchall()]
     if not existing_rows:
         return []
 
