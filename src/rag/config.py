@@ -38,5 +38,9 @@ class Settings(BaseSettings):
     RELATIONSHIP_CONFIDENCE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.75
     ENTITY_DEDUP_COSINE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.92
 
+    # Worker
+    WORKER_POLL_INTERVAL: int = 5       # seconds between polls when queue is empty
+    WORKER_STUCK_JOB_MINUTES: int = 30  # minutes before a processing job is declared stuck
+
 
 settings = Settings()
