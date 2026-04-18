@@ -7,8 +7,10 @@ from rich.panel import Panel
 from rich.table import Table
 
 from rag.db import get_connection
-from rag.ingestion import ingest_file, retry_job, STAGE_ORDER
+from rag.ingestion import ingest_file, retry_job, STAGE_ORDER, submit_ingestion_job, _write_audit_log
 from rag.storage import delete_stored_file
+
+SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".md", ".txt"}
 
 app = typer.Typer(help="RAG CLI — document ingestion and management")
 sources_app = typer.Typer(help="Manage ingested sources")
@@ -21,14 +23,14 @@ console = Console()
 
 @app.command()
 def ingest(
-    file: Annotated[Path, typer.Argument(help="File to ingest")],
-    name: Annotated[Optional[str], typer.Option(help="Display name for this source")] = None,
+    paths: Annotated[list[Path], typer.Argument(help="Files or a single folder to ingest")],
+    name: Annotated[Optional[str], typer.Option(help="Display name (single file only)")] = None,
     metadata: Annotated[
         Optional[list[str]],
         typer.Option("--metadata", "-m", help="Metadata as key=value pairs"),
     ] = None,
 ) -> None:
-    """Ingest a document into the RAG system."""
+    """Ingest one or more documents, or all supported files in a folder."""
     parsed_metadata: dict = {}
     for item in metadata or []:
         if "=" not in item:
@@ -37,25 +39,68 @@ def ingest(
         k, _, v = item.partition("=")
         parsed_metadata[k.strip()] = v.strip()
 
-    try:
-        result = ingest_file(file, name=name, metadata=parsed_metadata)
-    except FileNotFoundError as e:
-        console.print(f"[red]{e}[/red]")
-        raise typer.Exit(1)
-    except ValueError as e:
-        console.print(f"[yellow]{e}[/yellow]")
-        raise typer.Exit(1)
-    except Exception as e:
-        console.print(f"[red]Ingestion failed: {e}[/red]")
+    # Resolve file list
+    if len(paths) == 1 and paths[0].is_dir():
+        folder = paths[0]
+        resolved_files = sorted(
+            f for f in folder.iterdir()
+            if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS
+        )
+        if not resolved_files:
+            console.print(f"[yellow]No supported files found in {folder}[/yellow]")
+            raise typer.Exit(0)
+        if name:
+            console.print("[yellow]--name is ignored when ingesting a folder[/yellow]")
+        name = None
+    else:
+        resolved_files = list(paths)
+        if len(resolved_files) > 1 and name:
+            console.print("[yellow]--name is ignored when ingesting multiple files[/yellow]")
+            name = None
+
+    # Submit each file
+    results = []
+    errors = []
+    for file in resolved_files:
+        try:
+            result = submit_ingestion_job(
+                file,
+                name=name if len(resolved_files) == 1 else None,
+                metadata=parsed_metadata,
+            )
+            results.append((file.name, result["job_id"], result["status"]))
+        except FileNotFoundError as e:
+            errors.append((file.name, str(e)))
+        except ValueError as e:
+            errors.append((file.name, str(e)))
+        except Exception as e:
+            errors.append((file.name, f"Error: {e}"))
+
+    # Output table
+    table = Table(title="Submitted Jobs")
+    table.add_column("File", style="bold")
+    table.add_column("Job ID", style="dim", no_wrap=True)
+    table.add_column("Status")
+    for file_name, job_id, status in results:
+        table.add_row(file_name, job_id, "[cyan]pending[/cyan]")
+    for file_name, error_msg in errors:
+        table.add_row(file_name, "-", f"[red]{error_msg}[/red]")
+    console.print(table)
+
+    if results:
+        console.print("[dim]Run [bold]rag worker[/bold] to process queued jobs.[/dim]")
+    if errors and not results:
         raise typer.Exit(1)
 
-    table = Table(show_header=False, box=None)
-    table.add_column("Key", style="bold")
-    table.add_column("Value")
-    table.add_row("source_id", result["source_id"])
-    table.add_row("job_id", result["job_id"])
-    table.add_row("status", f"[green]{result['status']}[/green]")
-    console.print(Panel(table, title="[bold green]Ingestion complete[/bold green]"))
+
+@app.command()
+def worker(
+    poll_interval: Annotated[int, typer.Option(help="Seconds between polls when queue is empty")] = 5,
+    stuck_minutes: Annotated[int, typer.Option(help="Minutes before a processing job is considered stuck")] = 30,
+) -> None:
+    """Start the ingestion worker. Processes pending jobs until Ctrl+C."""
+    from rag.worker import run_worker
+    run_worker(poll_interval=poll_interval, stuck_minutes=stuck_minutes)
 
 
 @sources_app.command("list")
@@ -163,6 +208,13 @@ def sources_delete(
                 "UPDATE sources SET deleted_at = now() WHERE id = %s",
                 (source_id,),
             )
+        _write_audit_log(
+            conn,
+            "source_hard_deleted" if hard else "source_soft_deleted",
+            "source",
+            source_id,
+            {"hard": hard},
+        )
         conn.commit()
 
     if hard:
@@ -211,7 +263,7 @@ def jobs_status(
     """Show job details and stage log."""
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT id, source_id, status, current_stage, stage_log, created_at, updated_at FROM jobs WHERE id = %s",
+            "SELECT id, source_id, status, current_stage, stage_log, created_at, updated_at, error_detail FROM jobs WHERE id = %s",
             (job_id,),
         ).fetchone()
 
@@ -236,6 +288,10 @@ def jobs_status(
     if row[4]:
         import json
         console.print(Panel(json.dumps(row[4], indent=2), title="Stage Log"))
+
+    if row[7]:
+        import json
+        console.print(Panel(json.dumps(row[7], indent=2), title="[red]Error Detail[/red]"))
 
 
 @jobs_app.command("retry")
