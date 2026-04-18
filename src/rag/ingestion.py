@@ -1,9 +1,11 @@
 import hashlib
+import time
 import uuid
 from pathlib import Path
 
 import psycopg
 import psycopg.types.json
+import structlog
 
 from rag.chunk_validation import validate_chunks
 from rag.chunking import ChunkData, chunk_document
@@ -15,7 +17,7 @@ from rag.graph_linking import link_graph
 from rag.metadata_extraction import extract_metadata
 from rag.parser import ParseError, parse_to_markdown
 from rag.profiling import profile_document
-from rag.storage import delete_stored_file, store_file
+from rag.storage import store_file
 
 STAGE_ORDER = [
     "parsing", "profiling", "chunking", "validation",
@@ -49,11 +51,51 @@ def _update_stage(conn: psycopg.Connection, job_id: str, stage: str) -> None:
     conn.commit()
 
 
-def _fail_stage(conn: psycopg.Connection, job_id: str, stage: str) -> None:
+def _write_audit_log(
+    conn: psycopg.Connection,
+    action: str,
+    resource_type: str,
+    resource_id: str,
+    metadata: dict | None = None,
+    api_key_name: str | None = None,
+) -> None:
     conn.execute(
-        "UPDATE jobs SET status = %s, current_stage = %s, updated_at = now() WHERE id = %s",
-        (f"failed:{stage}", stage, job_id),
+        """INSERT INTO audit_log (id, api_key_name, action, resource_type, resource_id, metadata)
+           VALUES (gen_random_uuid(), %s, %s, %s, %s, %s)""",
+        (api_key_name, action, resource_type, resource_id,
+         psycopg.types.json.Jsonb(metadata or {}))
     )
+
+
+def _fail_stage(
+    conn: psycopg.Connection,
+    job_id: str,
+    stage: str,
+    exc: Exception | None = None,
+) -> None:
+    import traceback as tb
+    error_detail = None
+    if exc is not None:
+        error_detail = psycopg.types.json.Jsonb({
+            "stage": stage,
+            "message": str(exc),
+            "traceback": tb.format_exc(),
+        })
+    conn.execute(
+        """UPDATE jobs
+           SET status = %s, current_stage = %s, updated_at = now(),
+               error_detail = %s,
+               stage_log = COALESCE(stage_log, '{}'::jsonb) ||
+                           jsonb_build_object(%s::text,
+                               jsonb_build_object(
+                                   'failed_at', to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS'),
+                                   'error', %s))
+           WHERE id = %s""",
+        (f"failed:{stage}", stage, error_detail,
+         stage, str(exc) if exc else "unknown", job_id),
+    )
+    _write_audit_log(conn, "job_failed", "job", job_id,
+                     {"stage": stage, "error": str(exc) if exc else "unknown"})
     conn.commit()
 
 
@@ -147,7 +189,7 @@ def cleanup_from_stage(
     conn.commit()
 
 
-def ingest_file(
+def submit_ingestion_job(
     file_path: Path,
     name: str | None = None,
     metadata: dict | None = None,
@@ -176,107 +218,178 @@ def ingest_file(
                 (source_id, source_name, file_path.name, file_type,
                  str(stored_path), md5, psycopg.types.json.Jsonb(metadata or {})),
             )
-            conn.execute(
-                "INSERT INTO jobs (id, source_id, status, current_stage, stage_log) VALUES (%s, %s, 'processing:parsing', 'parsing', '{}'::jsonb)",
-                (job_id, source_id),
-            )
-            conn.commit()
+        except psycopg.errors.UniqueViolation:
+            raise ValueError(f"Duplicate: file already ingested as source {source_id}")
 
-            # --- Parsing ---
-            try:
-                markdown = parse_to_markdown(stored_path)
-            except ParseError:
-                _fail_stage(conn, job_id, "parsing")
-                raise
-            extracted = extract_metadata(markdown)
-            combined_metadata = {**extracted, **(metadata or {})}
-            conn.execute(
-                "UPDATE sources SET markdown_content = %s, metadata = %s WHERE id = %s",
-                (markdown, psycopg.types.json.Jsonb(combined_metadata), source_id),
-            )
-            conn.commit()
+        conn.execute(
+            "INSERT INTO jobs (id, source_id, status, current_stage, stage_log) VALUES (%s, %s, 'pending', NULL, '{}'::jsonb)",
+            (job_id, source_id),
+        )
+        _write_audit_log(conn, "job_submitted", "job", job_id,
+                         {"file_name": file_path.name, "source_id": source_id})
+        conn.commit()
 
-            # --- Profiling ---
-            _update_stage(conn, job_id, "profiling")
-            profile = profile_document(markdown)
+    return {"source_id": source_id, "job_id": job_id, "status": "pending"}
 
-            # --- Chunking ---
-            _update_stage(conn, job_id, "chunking")
-            try:
-                chunks = chunk_document(markdown, profile)
-                chunk_rows = _insert_chunks(conn, source_id, job_id, chunks)
-                conn.commit()
-            except Exception:
-                _fail_stage(conn, job_id, "chunking")
-                raise
 
-            # --- Validation ---
-            _update_stage(conn, job_id, "validation")
-            try:
-                passed = validate_chunks(chunks, domain=profile.domain)
-                if not passed:
-                    conn.execute("UPDATE chunks SET deleted_at = now() WHERE job_id = %s", (job_id,))
-                    _fail_stage(conn, job_id, "validation")
-                    raise ValueError("Chunk validation failed: too many low-quality chunks")
-            except ValueError:
-                raise
-            except Exception:
-                _fail_stage(conn, job_id, "validation")
-                raise
+def execute_ingestion_pipeline(job_id: str, source_id: str) -> dict:
+    structlog.contextvars.clear_contextvars()
 
-            # --- Embedding ---
-            _update_stage(conn, job_id, "embedding")
-            try:
-                embed_and_store_chunks(conn, chunk_rows)
-                conn.commit()
-            except Exception:
-                _fail_stage(conn, job_id, "embedding")
-                raise
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT s.storage_path, j.api_key_name FROM jobs j JOIN sources s ON s.id = j.source_id WHERE j.id = %s",
+            (job_id,)
+        ).fetchone()
+        if not row:
+            raise ValueError(f"Job not found: {job_id}")
+        stored_path = Path(row[0])
+        api_key_name = row[1]
 
-            # --- Graph Extraction ---
-            _update_stage(conn, job_id, "graph_extraction")
-            with get_graph_driver() as driver:
-                with driver.session() as session:
-                    session.run(
-                        "MERGE (s:Source {source_id: $source_id})",
-                        source_id=source_id,
-                    )
-                    for chunk_id, _ in chunk_rows:
-                        session.run(
-                            "MERGE (c:Chunk {chunk_id: $chunk_id}) SET c.source_id = $source_id",
-                            chunk_id=chunk_id, source_id=source_id,
-                        )
-                        session.run(
-                            "MATCH (s:Source {source_id: $source_id}), (c:Chunk {chunk_id: $chunk_id}) "
-                            "MERGE (s)-[:INCLUDES]->(c)",
-                            source_id=source_id, chunk_id=chunk_id,
-                        )
-                try:
-                    extract_and_store_graph(conn, driver, source_id, job_id, chunk_rows)
-                except Exception:
-                    _fail_stage(conn, job_id, "graph_extraction")
-                    raise
+    structlog.contextvars.bind_contextvars(
+        job_id=job_id, source_id=source_id, api_key_name=api_key_name
+    )
+    log = structlog.get_logger()
 
-                # --- Graph Linking ---
-                _update_stage(conn, job_id, "graph_linking")
-                try:
-                    link_graph(conn, driver, source_id, job_id)
-                except Exception:
-                    _fail_stage(conn, job_id, "graph_linking")
-                    raise
-
-            conn.execute(
-                "UPDATE jobs SET status = 'completed', current_stage = 'completed', updated_at = now() WHERE id = %s",
-                (job_id,),
-            )
-            conn.commit()
-
-        except Exception:
-            conn.rollback()
-            delete_stored_file(source_id)
+    with get_connection() as conn:
+        # --- Parsing ---
+        structlog.contextvars.bind_contextvars(stage="parsing")
+        t0 = time.perf_counter()
+        try:
+            markdown = parse_to_markdown(stored_path)
+        except ParseError as exc:
+            _fail_stage(conn, job_id, "parsing", exc)
             raise
+        except Exception as exc:
+            _fail_stage(conn, job_id, "parsing", exc)
+            raise
+        extracted = extract_metadata(markdown)
+        stored_meta_row = conn.execute(
+            "SELECT metadata FROM sources WHERE id = %s", (source_id,)
+        ).fetchone()
+        stored_metadata = stored_meta_row[0] if stored_meta_row else {}
+        combined_metadata = {**extracted, **(stored_metadata or {})}
+        conn.execute(
+            "UPDATE sources SET markdown_content = %s, metadata = %s WHERE id = %s",
+            (markdown, psycopg.types.json.Jsonb(combined_metadata), source_id),
+        )
+        conn.commit()
+        log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
 
+        # --- Profiling ---
+        _update_stage(conn, job_id, "profiling")
+        structlog.contextvars.bind_contextvars(stage="profiling")
+        t0 = time.perf_counter()
+        try:
+            profile = profile_document(markdown)
+        except Exception as exc:
+            _fail_stage(conn, job_id, "profiling", exc)
+            raise
+        log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
+
+        # --- Chunking ---
+        _update_stage(conn, job_id, "chunking")
+        structlog.contextvars.bind_contextvars(stage="chunking")
+        t0 = time.perf_counter()
+        try:
+            chunks = chunk_document(markdown, profile)
+            chunk_rows = _insert_chunks(conn, source_id, job_id, chunks)
+            conn.commit()
+        except Exception as exc:
+            _fail_stage(conn, job_id, "chunking", exc)
+            raise
+        log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
+
+        # --- Validation ---
+        _update_stage(conn, job_id, "validation")
+        structlog.contextvars.bind_contextvars(stage="validation")
+        t0 = time.perf_counter()
+        try:
+            passed = validate_chunks(chunks, domain=profile.domain)
+            if not passed:
+                conn.execute("UPDATE chunks SET deleted_at = now() WHERE job_id = %s", (job_id,))
+                _fail_stage(conn, job_id, "validation")
+                raise ValueError("Chunk validation failed: too many low-quality chunks")
+        except ValueError as exc:
+            if "validation failed" in str(exc).lower():
+                raise
+            _fail_stage(conn, job_id, "validation", exc)
+            raise
+        except Exception as exc:
+            _fail_stage(conn, job_id, "validation", exc)
+            raise
+        log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
+
+        # --- Embedding ---
+        _update_stage(conn, job_id, "embedding")
+        structlog.contextvars.bind_contextvars(stage="embedding")
+        t0 = time.perf_counter()
+        try:
+            embed_and_store_chunks(conn, chunk_rows)
+            conn.commit()
+        except Exception as exc:
+            _fail_stage(conn, job_id, "embedding", exc)
+            raise
+        log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
+
+        # --- Graph Extraction ---
+        _update_stage(conn, job_id, "graph_extraction")
+        structlog.contextvars.bind_contextvars(stage="graph_extraction")
+        t0 = time.perf_counter()
+        with get_graph_driver() as driver:
+            with driver.session() as session:
+                session.run("MERGE (s:Source {source_id: $source_id})", source_id=source_id)
+                for chunk_id, _ in chunk_rows:
+                    session.run(
+                        "MERGE (c:Chunk {chunk_id: $chunk_id}) SET c.source_id = $source_id",
+                        chunk_id=chunk_id, source_id=source_id,
+                    )
+                    session.run(
+                        "MATCH (s:Source {source_id: $source_id}), (c:Chunk {chunk_id: $chunk_id}) "
+                        "MERGE (s)-[:INCLUDES]->(c)",
+                        source_id=source_id, chunk_id=chunk_id,
+                    )
+            try:
+                extract_and_store_graph(conn, driver, source_id, job_id, chunk_rows)
+            except Exception as exc:
+                _fail_stage(conn, job_id, "graph_extraction", exc)
+                raise
+            log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
+
+            # --- Graph Linking ---
+            _update_stage(conn, job_id, "graph_linking")
+            structlog.contextvars.bind_contextvars(stage="graph_linking")
+            t0 = time.perf_counter()
+            try:
+                link_graph(conn, driver, source_id, job_id)
+            except Exception as exc:
+                _fail_stage(conn, job_id, "graph_linking", exc)
+                raise
+            log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
+
+        conn.execute(
+            "UPDATE jobs SET status = 'completed', current_stage = 'completed', updated_at = now() WHERE id = %s",
+            (job_id,),
+        )
+        _write_audit_log(conn, "job_completed", "job", job_id, {}, api_key_name)
+        conn.commit()
+
+    log.info("job_complete", action="job_end", status="completed")
     return {"source_id": source_id, "job_id": job_id, "status": "completed"}
+
+
+def ingest_file(
+    file_path: Path,
+    name: str | None = None,
+    metadata: dict | None = None,
+) -> dict:
+    result = submit_ingestion_job(file_path, name=name, metadata=metadata)
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE jobs SET status='processing:parsing', current_stage='parsing', updated_at=now() WHERE id=%s",
+            (result["job_id"],)
+        )
+        conn.commit()
+    return execute_ingestion_pipeline(result["job_id"], result["source_id"])
 
 
 def retry_job(job_id: str, from_stage: str | None = None) -> dict:
@@ -317,6 +430,9 @@ def retry_job(job_id: str, from_stage: str | None = None) -> dict:
                 "UPDATE jobs SET retry_of = %s, retry_from_stage = %s, updated_at = now() WHERE id = %s",
                 (job_id, start_stage, job_id),
             )
+            _write_audit_log(conn, "job_retried", "job", job_id,
+                             {"from_stage": start_stage})
+            conn.commit()
 
             start_idx = STAGE_ORDER.index(start_stage)
 
@@ -331,15 +447,19 @@ def retry_job(job_id: str, from_stage: str | None = None) -> dict:
                         (markdown, psycopg.types.json.Jsonb(combined), source_id),
                     )
                     conn.commit()
-                except Exception:
-                    _fail_stage(conn, job_id, "parsing")
+                except Exception as exc:
+                    _fail_stage(conn, job_id, "parsing", exc)
                     raise
             else:
                 markdown = source_row[2]
 
             if start_idx <= STAGE_ORDER.index("profiling"):
                 _update_stage(conn, job_id, "profiling")
-                profile = profile_document(markdown)
+                try:
+                    profile = profile_document(markdown)
+                except Exception as exc:
+                    _fail_stage(conn, job_id, "profiling", exc)
+                    raise
             else:
                 from rag.profiling import _DEFAULT_PROFILE
                 profile = _DEFAULT_PROFILE
@@ -350,8 +470,8 @@ def retry_job(job_id: str, from_stage: str | None = None) -> dict:
                     chunks = chunk_document(markdown, profile)
                     chunk_rows = _insert_chunks(conn, source_id, job_id, chunks)
                     conn.commit()
-                except Exception:
-                    _fail_stage(conn, job_id, "chunking")
+                except Exception as exc:
+                    _fail_stage(conn, job_id, "chunking", exc)
                     raise
             else:
                 rows = conn.execute(
@@ -370,8 +490,8 @@ def retry_job(job_id: str, from_stage: str | None = None) -> dict:
                         raise ValueError("Chunk validation failed")
                 except ValueError:
                     raise
-                except Exception:
-                    _fail_stage(conn, job_id, "validation")
+                except Exception as exc:
+                    _fail_stage(conn, job_id, "validation", exc)
                     raise
 
             if start_idx <= STAGE_ORDER.index("embedding"):
@@ -379,8 +499,8 @@ def retry_job(job_id: str, from_stage: str | None = None) -> dict:
                 try:
                     embed_and_store_chunks(conn, chunk_rows)
                     conn.commit()
-                except Exception:
-                    _fail_stage(conn, job_id, "embedding")
+                except Exception as exc:
+                    _fail_stage(conn, job_id, "embedding", exc)
                     raise
 
             if start_idx <= STAGE_ORDER.index("graph_extraction"):
@@ -398,16 +518,16 @@ def retry_job(job_id: str, from_stage: str | None = None) -> dict:
                         )
                 try:
                     extract_and_store_graph(conn, driver, source_id, job_id, chunk_rows)
-                except Exception:
-                    _fail_stage(conn, job_id, "graph_extraction")
+                except Exception as exc:
+                    _fail_stage(conn, job_id, "graph_extraction", exc)
                     raise
 
             if start_idx <= STAGE_ORDER.index("graph_linking"):
                 _update_stage(conn, job_id, "graph_linking")
                 try:
                     link_graph(conn, driver, source_id, job_id)
-                except Exception:
-                    _fail_stage(conn, job_id, "graph_linking")
+                except Exception as exc:
+                    _fail_stage(conn, job_id, "graph_linking", exc)
                     raise
 
             conn.execute(
