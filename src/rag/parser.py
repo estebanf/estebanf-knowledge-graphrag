@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from pathlib import Path
 
 from docling.datamodel.base_models import InputFormat
@@ -9,10 +10,18 @@ class ParseError(Exception):
     pass
 
 
+@dataclass(frozen=True)
+class ParseResult:
+    markdown: str
+    element_tree: str
+
+
 _TXT_EXTENSIONS = {".txt", ".text"}
+_MARKDOWN_EXTENSIONS = {".md", ".markdown"}
 
 _pdf_options = PdfPipelineOptions()
-_pdf_options.do_ocr = False
+_pdf_options.do_ocr = True
+_pdf_options.do_table_structure = True
 _pdf_options.generate_page_images = False
 _pdf_options.generate_picture_images = False
 
@@ -23,12 +32,39 @@ _converter = DocumentConverter(
 )
 
 
-def parse_to_markdown(file_path: Path) -> str:
+def _plaintext_to_element_tree(text: str) -> str:
+    lines = [line.strip() for line in text.splitlines()]
+    nonempty = [line for line in lines if line]
+
+    tree_lines = ["0: document with name=_root_"]
+    if nonempty and nonempty[0].startswith("#"):
+        title = nonempty[0].lstrip("#").strip()
+        tree_lines.append(f" 1: title: {title}")
+        body = nonempty[1:]
+    else:
+        body = nonempty
+
+    for index, line in enumerate(body, start=2):
+        tree_lines.append(f" {index}: paragraph: {line}")
+
+    return "\n".join(tree_lines)
+
+
+def parse_document(file_path: Path) -> ParseResult:
     try:
-        if file_path.suffix.lower() in _TXT_EXTENSIONS:
-            return file_path.read_text(encoding="utf-8", errors="replace")
+        suffix = file_path.suffix.lower()
+        if suffix in _TXT_EXTENSIONS | _MARKDOWN_EXTENSIONS:
+            text = file_path.read_text(encoding="utf-8", errors="replace")
+            return ParseResult(markdown=text, element_tree=_plaintext_to_element_tree(text))
 
         result = _converter.convert(str(file_path))
-        return result.document.export_to_markdown()
+        return ParseResult(
+            markdown=result.document.export_to_markdown(),
+            element_tree=result.document.export_to_element_tree(),
+        )
     except Exception as exc:
         raise ParseError(f"Failed to parse {file_path.name}: {exc}") from exc
+
+
+def parse_to_markdown(file_path: Path) -> str:
+    return parse_document(file_path).markdown

@@ -39,6 +39,21 @@ def test_jobs_list_with_status_filter():
     assert result.exit_code == 0
 
 
+def test_jobs_list_failed_uses_prefix_filter():
+    with patch("rag.cli.get_connection") as mock_conn:
+        conn = MagicMock()
+        mock_conn.return_value.__enter__.return_value = conn
+        conn.execute.return_value.fetchall.return_value = []
+        from rag.cli import app
+        result = runner.invoke(app, ["jobs", "list", "--status", "failed"])
+
+    assert result.exit_code == 0
+    sql = conn.execute.call_args[0][0]
+    params = conn.execute.call_args[0][1]
+    assert "LIKE" in sql
+    assert params == ("failed:%",)
+
+
 def test_jobs_status_shows_record():
     row = _make_job_row(stage_log={"parsing": "2026-04-17T00:00:00"})
     with patch("rag.cli.get_connection") as mock_conn:
@@ -81,25 +96,28 @@ def test_jobs_retry_shows_error_on_failure():
 
 
 def test_jobs_cancel_sets_cancelled_status():
-    with patch("rag.cli.get_connection") as mock_conn:
-        conn_mock = MagicMock()
-        mock_conn.return_value.__enter__.return_value = conn_mock
-        conn_mock.execute.return_value.fetchone.return_value = ("job-1", "src-1", "processing:chunking")
+    with patch("rag.cli.cancel_job", create=True, return_value={"job_id": "job-1"}) as mock_cancel:
         from rag.cli import app
         result = runner.invoke(app, ["jobs", "cancel", "job-1"])
+
     assert result.exit_code == 0
-    update_calls = [str(c) for c in conn_mock.execute.call_args_list]
-    assert any("cancelled" in c for c in update_calls)
+    mock_cancel.assert_called_once_with("job-1")
 
 
 def test_jobs_cancel_rejects_completed_job():
-    with patch("rag.cli.get_connection") as mock_conn:
-        conn_mock = MagicMock()
-        mock_conn.return_value.__enter__.return_value = conn_mock
-        conn_mock.execute.return_value.fetchone.return_value = ("job-1", "src-1", "completed")
+    with patch("rag.cli.cancel_job", create=True, side_effect=ValueError("Job job-1 cannot be cancelled (status: completed)")):
         from rag.cli import app
         result = runner.invoke(app, ["jobs", "cancel", "job-1"])
     assert result.exit_code == 1
+
+
+def test_jobs_cancel_rejects_failed_job():
+    with patch("rag.cli.cancel_job", create=True, side_effect=ValueError("Job job-1 cannot be cancelled (status: failed:chunking)")):
+        from rag.cli import app
+        result = runner.invoke(app, ["jobs", "cancel", "job-1"])
+
+    assert result.exit_code == 1
+    assert "cannot be cancelled" in result.output
 
 
 @patch("rag.cli.get_connection")

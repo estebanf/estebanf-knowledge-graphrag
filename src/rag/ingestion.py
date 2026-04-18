@@ -1,6 +1,7 @@
 import hashlib
 import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import psycopg
@@ -15,7 +16,7 @@ from rag.graph_db import get_graph_driver
 from rag.graph_extraction import extract_and_store_graph
 from rag.graph_linking import link_graph
 from rag.metadata_extraction import extract_metadata
-from rag.parser import ParseError, parse_to_markdown
+from rag.parser import ParseError, parse_document
 from rag.profiling import profile_document
 from rag.storage import store_file
 
@@ -23,6 +24,41 @@ STAGE_ORDER = [
     "parsing", "profiling", "chunking", "validation",
     "embedding", "graph_extraction", "graph_linking",
 ]
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
+
+
+def _build_processing_stage_entry() -> dict:
+    return {
+        "status": "processing",
+        "started_at": _now_iso(),
+        "error": None,
+    }
+
+
+def _build_failed_stage_entry(
+    exc: Exception | None = None,
+    partial_output: dict | None = None,
+    traceback_text: str | None = None,
+) -> dict:
+    return {
+        "status": "failed",
+        "failed_at": _now_iso(),
+        "error": str(exc) if exc else "unknown",
+        "traceback": traceback_text,
+        "partial_output": partial_output,
+    }
+
+
+def _build_completed_stage_entry(output: dict | None = None) -> dict:
+    return {
+        "status": "completed",
+        "completed_at": _now_iso(),
+        "output": output or {},
+        "error": None,
+    }
 
 
 def compute_md5(path: Path) -> str:
@@ -42,11 +78,29 @@ def check_duplicate(conn: psycopg.Connection, md5: str) -> str | None:
 
 
 def _update_stage(conn: psycopg.Connection, job_id: str, stage: str) -> None:
+    stage_entry = _build_processing_stage_entry()
     conn.execute(
         """UPDATE jobs SET status = %s, current_stage = %s, updated_at = now(),
-           stage_log = COALESCE(stage_log, '{}'::jsonb) || jsonb_build_object(%s::text, to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS'))
+           stage_log = COALESCE(stage_log, '{}'::jsonb) || jsonb_build_object(%s::text, %s::jsonb)
            WHERE id = %s""",
-        (f"processing:{stage}", stage, stage, job_id),
+        (f"processing:{stage}", stage, stage, psycopg.types.json.Jsonb(stage_entry), job_id),
+    )
+    conn.commit()
+
+
+def _complete_stage(
+    conn: psycopg.Connection,
+    job_id: str,
+    stage: str,
+    output: dict | None = None,
+) -> None:
+    stage_entry = _build_completed_stage_entry(output)
+    conn.execute(
+        """UPDATE jobs
+           SET stage_log = COALESCE(stage_log, '{}'::jsonb) || jsonb_build_object(%s::text, %s::jsonb),
+               updated_at = now()
+           WHERE id = %s""",
+        (stage, psycopg.types.json.Jsonb(stage_entry), job_id),
     )
     conn.commit()
 
@@ -72,27 +126,32 @@ def _fail_stage(
     job_id: str,
     stage: str,
     exc: Exception | None = None,
+    partial_output: dict | None = None,
 ) -> None:
     import traceback as tb
+    traceback_text = tb.format_exc() if exc is not None else None
     error_detail = None
     if exc is not None:
         error_detail = psycopg.types.json.Jsonb({
             "stage": stage,
             "message": str(exc),
-            "traceback": tb.format_exc(),
+            "traceback": traceback_text,
+            "partial_output": partial_output,
         })
+    stage_entry = _build_failed_stage_entry(
+        exc,
+        partial_output=partial_output,
+        traceback_text=traceback_text,
+    )
     conn.execute(
         """UPDATE jobs
            SET status = %s, current_stage = %s, updated_at = now(),
                error_detail = %s,
                stage_log = COALESCE(stage_log, '{}'::jsonb) ||
-                           jsonb_build_object(%s::text,
-                               jsonb_build_object(
-                                   'failed_at', to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS'),
-                                   'error', %s))
+                           jsonb_build_object(%s::text, %s::jsonb)
            WHERE id = %s""",
         (f"failed:{stage}", stage, error_detail,
-         stage, str(exc) if exc else "unknown", job_id),
+         stage, psycopg.types.json.Jsonb(stage_entry), job_id),
     )
     _write_audit_log(conn, "job_failed", "job", job_id,
                      {"stage": stage, "error": str(exc) if exc else "unknown"})
@@ -209,7 +268,7 @@ def submit_ingestion_job(
         if existing:
             raise ValueError(f"Duplicate: file already ingested as source {existing}")
 
-        stored_path = store_file(source_id, file_path)
+        stored_path = store_file(source_id, file_path, version=1)
 
         try:
             conn.execute(
@@ -255,7 +314,8 @@ def execute_ingestion_pipeline(job_id: str, source_id: str) -> dict:
         structlog.contextvars.bind_contextvars(stage="parsing")
         t0 = time.perf_counter()
         try:
-            markdown = parse_to_markdown(stored_path)
+            parse_result = parse_document(stored_path)
+            markdown = parse_result.markdown
         except ParseError as exc:
             _fail_stage(conn, job_id, "parsing", exc)
             raise
@@ -273,6 +333,7 @@ def execute_ingestion_pipeline(job_id: str, source_id: str) -> dict:
             (markdown, psycopg.types.json.Jsonb(combined_metadata), source_id),
         )
         conn.commit()
+        _complete_stage(conn, job_id, "parsing", {"markdown_chars": len(markdown)})
         log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
 
         # --- Profiling ---
@@ -284,6 +345,7 @@ def execute_ingestion_pipeline(job_id: str, source_id: str) -> dict:
         except Exception as exc:
             _fail_stage(conn, job_id, "profiling", exc)
             raise
+        _complete_stage(conn, job_id, "profiling", {"domain": profile.domain})
         log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
 
         # --- Chunking ---
@@ -297,6 +359,7 @@ def execute_ingestion_pipeline(job_id: str, source_id: str) -> dict:
         except Exception as exc:
             _fail_stage(conn, job_id, "chunking", exc)
             raise
+        _complete_stage(conn, job_id, "chunking", {"chunk_count": len(chunks)})
         log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
 
         # --- Validation ---
@@ -317,6 +380,7 @@ def execute_ingestion_pipeline(job_id: str, source_id: str) -> dict:
         except Exception as exc:
             _fail_stage(conn, job_id, "validation", exc)
             raise
+        _complete_stage(conn, job_id, "validation", {"validated_chunks": len(chunks)})
         log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
 
         # --- Embedding ---
@@ -329,6 +393,7 @@ def execute_ingestion_pipeline(job_id: str, source_id: str) -> dict:
         except Exception as exc:
             _fail_stage(conn, job_id, "embedding", exc)
             raise
+        _complete_stage(conn, job_id, "embedding", {"embedded_chunks": len(chunk_rows)})
         log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
 
         # --- Graph Extraction ---
@@ -353,6 +418,7 @@ def execute_ingestion_pipeline(job_id: str, source_id: str) -> dict:
             except Exception as exc:
                 _fail_stage(conn, job_id, "graph_extraction", exc)
                 raise
+            _complete_stage(conn, job_id, "graph_extraction", {"chunk_nodes": len(chunk_rows)})
             log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
 
             # --- Graph Linking ---
@@ -364,6 +430,7 @@ def execute_ingestion_pipeline(job_id: str, source_id: str) -> dict:
             except Exception as exc:
                 _fail_stage(conn, job_id, "graph_linking", exc)
                 raise
+            _complete_stage(conn, job_id, "graph_linking")
             log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
 
         conn.execute(
@@ -439,7 +506,8 @@ def retry_job(job_id: str, from_stage: str | None = None) -> dict:
             if start_idx <= STAGE_ORDER.index("parsing"):
                 _update_stage(conn, job_id, "parsing")
                 try:
-                    markdown = parse_to_markdown(stored_path)
+                    parse_result = parse_document(stored_path)
+                    markdown = parse_result.markdown
                     extracted = extract_metadata(markdown)
                     combined = {**extracted, **(source_row[1] or {})}
                     conn.execute(
@@ -447,6 +515,7 @@ def retry_job(job_id: str, from_stage: str | None = None) -> dict:
                         (markdown, psycopg.types.json.Jsonb(combined), source_id),
                     )
                     conn.commit()
+                    _complete_stage(conn, job_id, "parsing", {"markdown_chars": len(markdown)})
                 except Exception as exc:
                     _fail_stage(conn, job_id, "parsing", exc)
                     raise
@@ -460,6 +529,7 @@ def retry_job(job_id: str, from_stage: str | None = None) -> dict:
                 except Exception as exc:
                     _fail_stage(conn, job_id, "profiling", exc)
                     raise
+                _complete_stage(conn, job_id, "profiling", {"domain": profile.domain})
             else:
                 from rag.profiling import _DEFAULT_PROFILE
                 profile = _DEFAULT_PROFILE
@@ -473,6 +543,7 @@ def retry_job(job_id: str, from_stage: str | None = None) -> dict:
                 except Exception as exc:
                     _fail_stage(conn, job_id, "chunking", exc)
                     raise
+                _complete_stage(conn, job_id, "chunking", {"chunk_count": len(chunks)})
             else:
                 rows = conn.execute(
                     "SELECT id, content FROM chunks WHERE job_id = %s AND deleted_at IS NULL ORDER BY chunk_index",
@@ -493,6 +564,7 @@ def retry_job(job_id: str, from_stage: str | None = None) -> dict:
                 except Exception as exc:
                     _fail_stage(conn, job_id, "validation", exc)
                     raise
+                _complete_stage(conn, job_id, "validation", {"validated_chunks": len(chunks)})
 
             if start_idx <= STAGE_ORDER.index("embedding"):
                 _update_stage(conn, job_id, "embedding")
@@ -502,6 +574,7 @@ def retry_job(job_id: str, from_stage: str | None = None) -> dict:
                 except Exception as exc:
                     _fail_stage(conn, job_id, "embedding", exc)
                     raise
+                _complete_stage(conn, job_id, "embedding", {"embedded_chunks": len(chunk_rows)})
 
             if start_idx <= STAGE_ORDER.index("graph_extraction"):
                 _update_stage(conn, job_id, "graph_extraction")
@@ -521,6 +594,7 @@ def retry_job(job_id: str, from_stage: str | None = None) -> dict:
                 except Exception as exc:
                     _fail_stage(conn, job_id, "graph_extraction", exc)
                     raise
+                _complete_stage(conn, job_id, "graph_extraction", {"chunk_nodes": len(chunk_rows)})
 
             if start_idx <= STAGE_ORDER.index("graph_linking"):
                 _update_stage(conn, job_id, "graph_linking")
@@ -529,6 +603,7 @@ def retry_job(job_id: str, from_stage: str | None = None) -> dict:
                 except Exception as exc:
                     _fail_stage(conn, job_id, "graph_linking", exc)
                     raise
+                _complete_stage(conn, job_id, "graph_linking")
 
             conn.execute(
                 "UPDATE jobs SET status = 'completed', current_stage = 'completed', updated_at = now() WHERE id = %s",
@@ -537,3 +612,32 @@ def retry_job(job_id: str, from_stage: str | None = None) -> dict:
             conn.commit()
 
     return {"job_id": job_id, "status": "completed"}
+
+
+def cancel_job(job_id: str) -> dict:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id, source_id, status, current_stage FROM jobs WHERE id = %s",
+            (job_id,),
+        ).fetchone()
+        if not row:
+            raise ValueError(f"Job not found: {job_id}")
+
+        _, source_id, status, current_stage = row
+        source_id = str(source_id)
+
+        if status != "pending" and not status.startswith("processing:"):
+            raise ValueError(f"Job {job_id} cannot be cancelled (status: {status})")
+
+        if current_stage in STAGE_ORDER:
+            with get_graph_driver() as driver:
+                cleanup_from_stage(conn, driver, job_id, source_id, current_stage)
+
+        conn.execute(
+            "UPDATE jobs SET status = 'cancelled', updated_at = now() WHERE id = %s",
+            (job_id,),
+        )
+        _write_audit_log(conn, "job_cancelled", "job", job_id, {"stage": current_stage})
+        conn.commit()
+
+    return {"job_id": job_id, "status": "cancelled"}

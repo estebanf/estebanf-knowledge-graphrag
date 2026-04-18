@@ -7,10 +7,18 @@ from rich.panel import Panel
 from rich.table import Table
 
 from rag.db import get_connection
-from rag.ingestion import ingest_file, retry_job, STAGE_ORDER, submit_ingestion_job, _write_audit_log
+from rag.graph_db import get_graph_driver
+from rag.ingestion import (
+    STAGE_ORDER,
+    _write_audit_log,
+    cancel_job,
+    ingest_file,
+    retry_job,
+    submit_ingestion_job,
+)
 from rag.storage import delete_stored_file
 
-SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".md", ".txt"}
+SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".md", ".txt"}
 
 app = typer.Typer(help="RAG CLI — document ingestion and management")
 sources_app = typer.Typer(help="Manage ingested sources")
@@ -19,6 +27,23 @@ app.add_typer(sources_app, name="sources")
 app.add_typer(jobs_app, name="jobs")
 
 console = Console()
+
+
+@app.command()
+def health() -> None:
+    """Check Postgres and Memgraph connectivity."""
+    try:
+        with get_connection() as conn:
+            conn.execute("SELECT 1").fetchone()
+
+        with get_graph_driver() as driver:
+            with driver.session() as session:
+                session.run("RETURN 1")
+    except Exception as e:
+        console.print(f"[red]Unhealthy: {e}[/red]")
+        raise typer.Exit(1)
+
+    console.print("[green]Ready: Postgres and Memgraph are reachable.[/green]")
 
 
 @app.command()
@@ -201,6 +226,8 @@ def sources_delete(
             raise typer.Exit(1)
 
         if hard:
+            conn.execute("DELETE FROM entities WHERE source_id = %s", (source_id,))
+            conn.execute("DELETE FROM chunks WHERE source_id = %s", (source_id,))
             conn.execute("DELETE FROM jobs WHERE source_id = %s", (source_id,))
             conn.execute("DELETE FROM sources WHERE id = %s", (source_id,))
         else:
@@ -231,10 +258,16 @@ def jobs_list(
     """List ingestion jobs."""
     with get_connection() as conn:
         if status:
-            rows = conn.execute(
-                "SELECT id, source_id, status, current_stage, stage_log, created_at, updated_at FROM jobs WHERE status = %s ORDER BY created_at DESC",
-                (status,),
-            ).fetchall()
+            if status == "failed":
+                rows = conn.execute(
+                    "SELECT id, source_id, status, current_stage, stage_log, created_at, updated_at FROM jobs WHERE status LIKE %s ORDER BY created_at DESC",
+                    ("failed:%",),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, source_id, status, current_stage, stage_log, created_at, updated_at FROM jobs WHERE status = %s ORDER BY created_at DESC",
+                    (status,),
+                ).fetchall()
         else:
             rows = conn.execute(
                 "SELECT id, source_id, status, current_stage, stage_log, created_at, updated_at FROM jobs ORDER BY created_at DESC LIMIT 50"
@@ -319,24 +352,13 @@ def jobs_cancel(
     job_id: Annotated[str, typer.Argument(help="Job UUID to cancel")],
 ) -> None:
     """Cancel a pending or processing job."""
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT id, source_id, status FROM jobs WHERE id = %s",
-            (job_id,),
-        ).fetchone()
-        if not row:
-            console.print(f"[red]Job not found: {job_id}[/red]")
-            raise typer.Exit(1)
+    try:
+        result = cancel_job(job_id)
+    except ValueError as e:
+        console.print(f"[yellow]{e}[/yellow]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Cancellation failed: {e}[/red]")
+        raise typer.Exit(1)
 
-        status = row[2]
-        if status == "completed" or status == "cancelled":
-            console.print(f"[yellow]Job {job_id} cannot be cancelled (status: {status}).[/yellow]")
-            raise typer.Exit(1)
-
-        conn.execute(
-            "UPDATE jobs SET status = 'cancelled', updated_at = now() WHERE id = %s",
-            (job_id,),
-        )
-        conn.commit()
-
-    console.print(f"[green]Job {job_id} has been cancelled.[/green]")
+    console.print(f"[green]Job {result['job_id']} has been cancelled.[/green]")

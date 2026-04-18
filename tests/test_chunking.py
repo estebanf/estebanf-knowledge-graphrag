@@ -46,12 +46,12 @@ def test_select_strategy_well_structured():
 
 def test_select_strategy_transcript():
     profile = _make_profile(primary_content_type="transcript")
-    assert select_strategy(profile) == "recursive"
+    assert select_strategy(profile) == "semantic"
 
 
 def test_select_strategy_fallback():
     profile = _make_profile(structure_type="loosely-structured")
-    assert select_strategy(profile) == "recursive"
+    assert select_strategy(profile) == "semantic"
 
 
 def test_chunk_document_returns_list_of_chunkdata():
@@ -115,3 +115,20 @@ def test_proposition_chunks_have_parent_chunk_id(monkeypatch):
     proposition_chunks = [c for c in chunks if c.chunking_strategy == "proposition"]
     assert all(c.parent_chunk_id is not None for c in proposition_chunks)
     assert all(c.parent_chunk_id.isdigit() for c in proposition_chunks)
+
+
+def test_hierarchical_chunking_preserves_base_strategy_metadata():
+    profile = _make_profile(
+        structure_type="well-structured",
+        heading_consistency="consistent",
+        avg_section_length="long",
+    )
+    chunks = chunk_document(WELL_STRUCTURED_MD * 30, profile)
+
+    parent_chunks = [c for c in chunks if c.parent_chunk_id is None]
+    child_chunks = [c for c in chunks if c.parent_chunk_id is not None]
+
+    assert parent_chunks
+    assert child_chunks
+    assert all(c.chunking_strategy == "markdown-header" for c in parent_chunks)
+    assert all(c.metadata.get("base_strategy") == "markdown-header" for c in child_chunks)

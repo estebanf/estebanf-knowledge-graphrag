@@ -36,7 +36,11 @@ def select_strategy(profile: DocumentProfile) -> str:
     if (profile.structure_type == "well-structured"
             and profile.heading_consistency == "consistent"):
         return "markdown-header"
-    return "recursive"
+    if profile.primary_content_type in {"transcript", "qa_pairs"}:
+        return "semantic"
+    if profile.content_density == "uniform" and profile.structure_type == "unstructured":
+        return "recursive"
+    return "semantic"
 
 
 def _recursive_splitter(chunk_size_tokens: int = _CHUNK_SIZE) -> RecursiveCharacterTextSplitter:
@@ -66,6 +70,43 @@ def _split_markdown_header(text: str) -> list[str]:
 def _split_recursive(text: str, chunk_size_tokens: int = _CHUNK_SIZE) -> list[str]:
     splitter = _recursive_splitter(chunk_size_tokens)
     return [t for t in splitter.split_text(text) if t.strip()]
+
+
+def _split_semantic(text: str, chunk_size_tokens: int = _CHUNK_SIZE) -> list[str]:
+    sentences = [
+        part.strip()
+        for part in re.split(r"(?<=[.!?])\s+|\n{2,}", text)
+        if part.strip()
+    ]
+    if not sentences:
+        return []
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_tokens = 0
+
+    for sentence in sentences:
+        sentence_tokens = _token_count(sentence)
+        if current and current_tokens + sentence_tokens > chunk_size_tokens:
+            chunks.append(" ".join(current).strip())
+            current = [sentence]
+            current_tokens = sentence_tokens
+        else:
+            current.append(sentence)
+            current_tokens += sentence_tokens
+
+    if current:
+        chunks.append(" ".join(current).strip())
+
+    return chunks
+
+
+def _split_by_strategy(text: str, strategy: str, chunk_size_tokens: int = _CHUNK_SIZE) -> list[str]:
+    if strategy == "markdown-header":
+        return _split_markdown_header(text)
+    if strategy == "semantic":
+        return _split_semantic(text, chunk_size_tokens)
+    return _split_recursive(text, chunk_size_tokens)
 
 
 def _decompose_to_propositions(text: str) -> list[str]:
@@ -112,22 +153,19 @@ def chunk_document(markdown: str, profile: DocumentProfile) -> list[ChunkData]:
 
     # Base splitting
     if use_hierarchical:
-        parent_texts = _split_recursive(markdown, _PARENT_SIZE)
+        parent_texts = _split_by_strategy(markdown, strategy, _PARENT_SIZE)
         raw_items: list[tuple[str, str, int | None]] = []
         running_idx = 0
         for parent_text in parent_texts:
             parent_idx = running_idx
             raw_items.append((parent_text, strategy, None))
             running_idx += 1
-            children = _split_recursive(parent_text, _CHUNK_SIZE)
+            children = _split_by_strategy(parent_text, strategy, _CHUNK_SIZE)
             for child in children:
                 raw_items.append((child, "hierarchical", parent_idx))
                 running_idx += 1
     else:
-        if strategy == "markdown-header":
-            texts = _split_markdown_header(markdown)
-        else:
-            texts = _split_recursive(markdown)
+        texts = _split_by_strategy(markdown, strategy)
         raw_items = [(t, strategy, None) for t in texts]
 
     # Build initial chunks
@@ -140,6 +178,7 @@ def chunk_document(markdown: str, profile: DocumentProfile) -> list[ChunkData]:
             parent_chunk_id=str(parent_idx_ref) if parent_idx_ref is not None else None,
             chunking_strategy=strat,
             chunking_config=base_config,
+            metadata={"base_strategy": strategy} if parent_idx_ref is not None else {},
         ))
 
     if not use_propositions:

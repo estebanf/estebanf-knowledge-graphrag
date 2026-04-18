@@ -45,13 +45,14 @@ def test_ingest_multiple_files_shows_table(mock_submit, tmp_path):
 def test_ingest_folder_finds_supported_files(mock_submit, tmp_path):
     (tmp_path / "doc.pdf").write_bytes(b"pdf content")
     (tmp_path / "notes.txt").write_bytes(b"txt content")
+    (tmp_path / "slides.pptx").write_bytes(b"pptx content")
 
     mock_submit.return_value = {"source_id": "sx", "job_id": "jx", "status": "pending"}
 
     result = runner.invoke(app, ["ingest", str(tmp_path)])
 
     assert result.exit_code == 0
-    assert mock_submit.call_count == 2
+    assert mock_submit.call_count == 3
 
 
 @patch("rag.cli.submit_ingestion_job")

@@ -3,6 +3,22 @@ import logging
 import structlog
 
 
+def _add_event_defaults(logger, method_name, event_dict):
+    defaults = {
+        "job_id": None,
+        "api_key_name": None,
+        "stage": None,
+        "duration_ms": 0,
+        "model_used": None,
+        "token_count": 0,
+        "status": "unknown",
+        "error": None,
+    }
+    for key, value in defaults.items():
+        event_dict.setdefault(key, value)
+    return event_dict
+
+
 def configure_logging(log_level: str = "INFO") -> None:
     """Configure structlog for JSON output with contextvars support.
 
@@ -21,6 +37,7 @@ def configure_logging(log_level: str = "INFO") -> None:
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
+            _add_event_defaults,
             structlog.stdlib.add_log_level,
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.StackInfoRenderer(),
