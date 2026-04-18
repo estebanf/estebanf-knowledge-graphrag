@@ -12,6 +12,7 @@ from rag.ingestion import (
     STAGE_ORDER,
     _write_audit_log,
     cancel_job,
+    delete_source_artifacts,
     ingest_file,
     retry_job,
     submit_ingestion_job,
@@ -226,10 +227,8 @@ def sources_delete(
             raise typer.Exit(1)
 
         if hard:
-            conn.execute("DELETE FROM entities WHERE source_id = %s", (source_id,))
-            conn.execute("DELETE FROM chunks WHERE source_id = %s", (source_id,))
-            conn.execute("DELETE FROM jobs WHERE source_id = %s", (source_id,))
-            conn.execute("DELETE FROM sources WHERE id = %s", (source_id,))
+            with get_graph_driver() as driver:
+                delete_source_artifacts(conn, driver, source_id)
         else:
             conn.execute(
                 "UPDATE sources SET deleted_at = now() WHERE id = %s",

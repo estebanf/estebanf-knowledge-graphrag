@@ -197,6 +197,25 @@ def _insert_chunks(
     return [(chunk_id, chunk.content) for chunk_id, chunk in zip(chunk_ids, chunks)]
 
 
+def _delete_graph_nodes(driver, source_id: str, entity_ids: list[str]) -> None:
+    if not driver:
+        return
+    with driver.session() as session:
+        if entity_ids:
+            session.run(
+                "MATCH (e:Entity) WHERE e.entity_id IN $ids DETACH DELETE e",
+                ids=entity_ids,
+            )
+        session.run(
+            "MATCH (c:Chunk {source_id: $source_id}) DETACH DELETE c",
+            source_id=source_id,
+        )
+        session.run(
+            "MATCH (s:Source {source_id: $source_id}) DETACH DELETE s",
+            source_id=source_id,
+        )
+
+
 def _cleanup_graph_artifacts(conn: psycopg.Connection, driver, source_id: str) -> None:
     entity_ids = [
         str(r[0]) for r in conn.execute(
@@ -204,12 +223,25 @@ def _cleanup_graph_artifacts(conn: psycopg.Connection, driver, source_id: str) -
         ).fetchall()
     ]
     conn.execute("DELETE FROM entities WHERE source_id = %s", (source_id,))
-    if entity_ids and driver:
-        with driver.session() as session:
-            session.run(
-                "MATCH (e:Entity) WHERE e.entity_id IN $ids DETACH DELETE e",
-                ids=entity_ids,
-            )
+    _delete_graph_nodes(driver, source_id, entity_ids)
+
+
+def delete_source_artifacts(
+    conn: psycopg.Connection,
+    driver,
+    source_id: str,
+) -> None:
+    """Delete all Postgres records and Memgraph nodes for a source. Caller must commit."""
+    entity_ids = [
+        str(r[0]) for r in conn.execute(
+            "SELECT id FROM entities WHERE source_id = %s", (source_id,)
+        ).fetchall()
+    ]
+    conn.execute("DELETE FROM entities WHERE source_id = %s", (source_id,))
+    conn.execute("DELETE FROM chunks WHERE source_id = %s", (source_id,))
+    conn.execute("DELETE FROM jobs WHERE source_id = %s", (source_id,))
+    conn.execute("DELETE FROM sources WHERE id = %s", (source_id,))
+    _delete_graph_nodes(driver, source_id, entity_ids)
 
 
 def cleanup_from_stage(
