@@ -33,8 +33,8 @@ class Settings(BaseSettings):
 
     # Graph pipeline
     MEMGRAPH_URL: str = "bolt://localhost:7687"
-    MODEL_ENTITY_EXTRACTION: str = "qwen/qwen2.5-7b-instruct"
-    MODEL_RELATIONSHIP_EXTRACTION: str = "qwen/qwen2.5-7b-instruct"
+    MODEL_ENTITY_EXTRACTION: str = "qwen/qwen-2.5-7b-instruct"
+    MODEL_RELATIONSHIP_EXTRACTION: str = "qwen/qwen-2.5-7b-instruct"
     RELATIONSHIP_CONFIDENCE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.75
     ENTITY_DEDUP_COSINE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.92
 
