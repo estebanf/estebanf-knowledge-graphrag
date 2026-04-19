@@ -1,6 +1,8 @@
 import json
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -257,8 +259,10 @@ def dense_retrieve(
     source_ids: list[str],
     filters: dict[str, str],
     top_n: int,
+    vector: Optional[list[float]] = None,
 ) -> list[RetrievalCandidate]:
-    vector = get_embeddings([query_text])[0]
+    if vector is None:
+        vector = get_embeddings([query_text])[0]
     where_sql, params = _build_chunk_filter_sql(source_ids, filters)
     vector_param = _vector_literal(vector)
     rows = conn.execute(
@@ -324,7 +328,7 @@ def _trace_candidates(
 
 def run_first_stage_retrieval(
     *,
-    conn,
+    conn=None,  # unused — each variant thread opens its own connection
     query: str,
     variants: dict[str, object],
     source_ids: list[str],
@@ -332,46 +336,65 @@ def run_first_stage_retrieval(
     rrf_k: int,
     trace_logger: Optional[TraceLogger] = None,
 ) -> list[RetrievalCandidate]:
+    # Build the ordered list of (name, text, dense_only) specs
+    variant_specs: list[tuple[str, str, bool]] = []
+    variant_specs.append(("original", str(variants["original"]), False))
+    if isinstance(variants.get("expanded"), str):
+        variant_specs.append(("expanded", variants["expanded"], False))
+    if isinstance(variants.get("step_back"), str):
+        variant_specs.append(("step_back", variants["step_back"], False))
+    if isinstance(variants.get("hyde"), str):
+        variant_specs.append(("hyde", variants["hyde"], True))
+    for index, subquery in enumerate(variants.get("decomposed", []) or []):
+        variant_specs.append((f"decomposed_{index}", subquery, False))
+
+    # Batch-embed all variant texts in a single API call
+    all_texts = [text for _, text, _ in variant_specs]
+    all_vectors = get_embeddings(all_texts)
+    text_to_vector: dict[str, list[float]] = dict(zip(all_texts, all_vectors))
+
     candidate_lists: dict[str, list[RetrievalCandidate]] = {}
     weights: dict[str, float] = {}
+    results_lock = threading.Lock()
 
-    def _add_variant(name: str, variant_text: str, *, dense_only: bool = False) -> None:
-        dense_key = f"dense:{name}"
-        dense_candidates = dense_retrieve(
-            conn,
-            variant_text,
-            source_ids=source_ids,
-            filters=filters,
-            top_n=settings.RETRIEVAL_FIRST_STAGE_TOP_N,
-        )
-        candidate_lists[dense_key] = dense_candidates
-        weights[dense_key] = settings.retrieval_variant_weight(name)
-        _trace_candidates(trace_logger, f"dense hits for {name}", dense_candidates)
+    def _run_dense(name: str, text: str) -> None:
+        with get_connection() as thread_conn:
+            candidates = dense_retrieve(
+                thread_conn,
+                text,
+                source_ids=source_ids,
+                filters=filters,
+                top_n=settings.RETRIEVAL_FIRST_STAGE_TOP_N,
+                vector=text_to_vector[text],
+            )
+        _trace_candidates(trace_logger, f"dense hits for {name}", candidates)
+        with results_lock:
+            candidate_lists[f"dense:{name}"] = candidates
+            weights[f"dense:{name}"] = settings.retrieval_variant_weight(name)
 
-        if dense_only:
-            return
+    def _run_sparse(name: str, text: str) -> None:
+        with get_connection() as thread_conn:
+            candidates = sparse_retrieve(
+                thread_conn,
+                text,
+                source_ids=source_ids,
+                filters=filters,
+                top_n=settings.RETRIEVAL_FIRST_STAGE_TOP_N,
+            )
+        _trace_candidates(trace_logger, f"sparse hits for {name}", candidates)
+        with results_lock:
+            candidate_lists[f"sparse:{name}"] = candidates
+            weights[f"sparse:{name}"] = settings.retrieval_variant_weight(name)
 
-        sparse_key = f"sparse:{name}"
-        sparse_candidates = sparse_retrieve(
-            conn,
-            variant_text,
-            source_ids=source_ids,
-            filters=filters,
-            top_n=settings.RETRIEVAL_FIRST_STAGE_TOP_N,
-        )
-        candidate_lists[sparse_key] = sparse_candidates
-        weights[sparse_key] = settings.retrieval_variant_weight(name)
-        _trace_candidates(trace_logger, f"sparse hits for {name}", sparse_candidates)
+    futures = []
+    with ThreadPoolExecutor(max_workers=len(variant_specs) * 2) as executor:
+        for name, text, dense_only in variant_specs:
+            futures.append(executor.submit(_run_dense, name, text))
+            if not dense_only:
+                futures.append(executor.submit(_run_sparse, name, text))
 
-    _add_variant("original", str(variants["original"]))
-    if isinstance(variants.get("expanded"), str):
-        _add_variant("expanded", variants["expanded"])
-    if isinstance(variants.get("step_back"), str):
-        _add_variant("step_back", variants["step_back"])
-    if isinstance(variants.get("hyde"), str):
-        _add_variant("hyde", variants["hyde"], dense_only=True)
-    for index, subquery in enumerate(variants.get("decomposed", []) or []):
-        _add_variant(f"decomposed_{index}", subquery)
+    for future in futures:
+        future.result()  # re-raise any thread exception
 
     fused = weighted_reciprocal_rank_fusion(
         candidate_lists,
@@ -693,6 +716,21 @@ Candidates:
     return selected
 
 
+def _consume_llm_budget(budget: dict, lock: Optional[threading.Lock]) -> bool:
+    """Atomically check and consume one LLM budget slot. Returns False if exhausted."""
+    max_calls = settings.RETRIEVAL_MAX_GRAPH_LLM_CALLS
+    if lock is not None:
+        with lock:
+            if budget["llm_calls"] >= max_calls:
+                return False
+            budget["llm_calls"] += 1
+            return True
+    if budget["llm_calls"] >= max_calls:
+        return False
+    budget["llm_calls"] += 1
+    return True
+
+
 def expand_seed_candidate(
     seed: RetrievalCandidate,
     query: str,
@@ -706,6 +744,7 @@ def expand_seed_candidate(
     driver,
     trace_logger: Optional[TraceLogger] = None,
     budget: Optional[dict[str, float]] = None,
+    budget_lock: Optional[threading.Lock] = None,
 ) -> dict:
     if budget is None:
         budget = {"llm_calls": 0, "query_started_at": time.monotonic()}
@@ -725,11 +764,14 @@ def expand_seed_candidate(
         "_multi_path_bonus": 0.0,
     }
 
-    if budget["llm_calls"] >= settings.RETRIEVAL_MAX_GRAPH_LLM_CALLS:
+    def _time_exhausted() -> bool:
+        return (time.monotonic() - seed_started_at) * 1000 >= settings.RETRIEVAL_MAX_GRAPH_EXPANSION_MS_PER_SEED
+
+    if not _consume_llm_budget(budget, budget_lock):
         if trace_logger:
             trace_logger.emit(f"graph budget exhausted before expanding seed {seed.chunk_id}")
         return root_result
-    if (time.monotonic() - seed_started_at) * 1000 >= settings.RETRIEVAL_MAX_GRAPH_EXPANSION_MS_PER_SEED:
+    if _time_exhausted():
         if trace_logger:
             trace_logger.emit(f"graph time budget exhausted before expanding seed {seed.chunk_id}")
         return root_result
@@ -740,19 +782,15 @@ def expand_seed_candidate(
             f"loaded {len(entities)} entities for seed {seed.chunk_id}: "
             f"{json.dumps([entity.name for entity in entities[:settings.RETRIEVAL_TRACE_MAX_ENTITIES]], ensure_ascii=True)}"
         )
-    budget["llm_calls"] += 1
     selected_names = _select_entity_names(query, seed, entities, trace_logger=trace_logger)
     selected_entities = [entity for entity in entities if entity.name in selected_names]
 
     for entity in selected_entities[: settings.RETRIEVAL_ENTITY_SELECTION_COUNT]:
-        budget_hit = budget["llm_calls"] >= settings.RETRIEVAL_MAX_GRAPH_LLM_CALLS
-        time_hit = (time.monotonic() - seed_started_at) * 1000 >= settings.RETRIEVAL_MAX_GRAPH_EXPANSION_MS_PER_SEED
-        if budget_hit or time_hit:
+        if not _consume_llm_budget(budget, budget_lock) or _time_exhausted():
             if trace_logger:
                 trace_logger.emit(f"stopping lower-priority branches for seed {seed.chunk_id}")
             break
 
-        budget["llm_calls"] += 1
         first_hop_query = _generate_entity_query(query, seed, entity.name)
         if trace_logger:
             trace_logger.emit(f"first-hop query for {entity.name}: {first_hop_query}")
@@ -793,8 +831,7 @@ def expand_seed_candidate(
         }
 
         second_hop_candidates = _load_second_hop_entities(driver, entity.entity_id, entity_confidence_threshold)
-        if second_hop_candidates:
-            budget["llm_calls"] += 1
+        if second_hop_candidates and _consume_llm_budget(budget, budget_lock):
             selected_second_hops = _select_second_hop_entities(
                 query,
                 seed,
@@ -806,9 +843,8 @@ def expand_seed_candidate(
             selected_second_hops = []
 
         for second_hop in selected_second_hops:
-            if budget["llm_calls"] >= settings.RETRIEVAL_MAX_GRAPH_LLM_CALLS:
+            if not _consume_llm_budget(budget, budget_lock):
                 break
-            budget["llm_calls"] += 1
             second_hop_query = _generate_entity_query(
                 query,
                 seed,
@@ -865,39 +901,50 @@ def finalize_root_results(
             deduped.setdefault(chunk["chunk_id"], chunk)
         return list(deduped.values())
 
-    final_results: list[dict] = []
+    # Deduplicate within each root first
     for root in root_results:
         for related in root["related"]:
             related["chunks"] = _dedupe_chunks(related["chunks"])
             for second_level in related["second_level_related"]:
                 second_level["chunks"] = _dedupe_chunks(second_level["chunks"])
 
-        related_chunks: list[dict] = []
+    # Collect all unique related chunks across all roots for a single reranker call
+    all_related_by_id: dict[str, dict] = {}
+    for root in root_results:
         for related in root["related"]:
-            related_chunks.extend(related["chunks"])
+            for chunk in related["chunks"]:
+                all_related_by_id.setdefault(chunk["chunk_id"], chunk)
             for second_level in related["second_level_related"]:
-                related_chunks.extend(second_level["chunks"])
+                for chunk in second_level["chunks"]:
+                    all_related_by_id.setdefault(chunk["chunk_id"], chunk)
 
-        if related_chunks:
-            reranked_related = rerank_documents(
-                query,
-                [chunk["chunk"] for chunk in related_chunks],
-                top_n=len(related_chunks),
-            )
-            reranked_scores = {
-                related_chunks[item["index"]]["chunk_id"]: float(item["relevance_score"])
-                for item in reranked_related
-            }
+    if all_related_by_id:
+        unique_chunks = list(all_related_by_id.values())
+        reranked_all = rerank_documents(
+            query,
+            [chunk["chunk"] for chunk in unique_chunks],
+            top_n=len(unique_chunks),
+        )
+        global_rerank_scores: dict[str, float] = {
+            unique_chunks[item["index"]]["chunk_id"]: float(item["relevance_score"])
+            for item in reranked_all
+        }
+    else:
+        global_rerank_scores = {}
+
+    final_results: list[dict] = []
+    for root in root_results:
+        if global_rerank_scores:
             first_hop_scores: list[float] = []
             second_hop_scores: list[float] = []
             for related in root["related"]:
                 first_hop_scores.extend(
-                    reranked_scores.get(chunk["chunk_id"], chunk["score"])
+                    global_rerank_scores.get(chunk["chunk_id"], chunk["score"])
                     for chunk in related["chunks"]
                 )
                 for second_level in related["second_level_related"]:
                     second_hop_scores.extend(
-                        reranked_scores.get(chunk["chunk_id"], chunk["score"])
+                        global_rerank_scores.get(chunk["chunk_id"], chunk["score"])
                         for chunk in second_level["chunks"]
                     )
         else:
@@ -1004,9 +1051,10 @@ def retrieve(
     )
 
     variants = generate_query_variants(query, trace_logger=trace_logger)
-    with get_connection() as conn, get_graph_driver() as driver:
+    # first-stage retrieval opens its own per-thread connections internally
+    with get_graph_driver() as driver:
         fused_candidates = run_first_stage_retrieval(
-            conn=conn,
+            conn=None,  # unused — each thread opens its own connection
             query=query,
             variants=variants,
             source_ids=source_ids,
@@ -1022,23 +1070,29 @@ def retrieve(
         )[: params.seed_count]
         trace_logger.emit(f"selected {len(seed_candidates)} seed chunks")
 
-        budget = {"llm_calls": 0, "started_at": time.monotonic()}
-        root_results = [
-            expand_seed_candidate(
-                seed,
-                query,
-                source_ids,
-                filters,
-                params.entity_confidence_threshold,
-                params.first_hop_similarity_threshold,
-                params.second_hop_similarity_threshold,
-                conn=conn,
-                driver=driver,
-                trace_logger=trace_logger,
-                budget=budget,
-            )
-            for seed in seed_candidates
-        ]
+        budget: dict = {"llm_calls": 0, "started_at": time.monotonic()}
+        budget_lock = threading.Lock()
+
+        def _expand_one(seed: RetrievalCandidate) -> dict:
+            with get_connection() as seed_conn:
+                return expand_seed_candidate(
+                    seed,
+                    query,
+                    source_ids,
+                    filters,
+                    params.entity_confidence_threshold,
+                    params.first_hop_similarity_threshold,
+                    params.second_hop_similarity_threshold,
+                    conn=seed_conn,
+                    driver=driver,
+                    trace_logger=trace_logger,
+                    budget=budget,
+                    budget_lock=budget_lock,
+                )
+
+        with ThreadPoolExecutor(max_workers=len(seed_candidates)) as pool:
+            root_results = list(pool.map(_expand_one, seed_candidates))
+
         final_results = finalize_root_results(
             query,
             root_results,
