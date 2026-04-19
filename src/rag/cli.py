@@ -324,10 +324,10 @@ def jobs_list(
     """List ingestion jobs."""
     with get_connection() as conn:
         if status:
-            if status == "failed":
+            if status in ("failed", "processing"):
                 rows = conn.execute(
                     "SELECT id, source_id, status, current_stage, stage_log, created_at, updated_at FROM jobs WHERE status LIKE %s ORDER BY created_at DESC",
-                    ("failed:%",),
+                    (f"{status}:%",),
                 ).fetchall()
             else:
                 rows = conn.execute(
@@ -336,7 +336,7 @@ def jobs_list(
                 ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT id, source_id, status, current_stage, stage_log, created_at, updated_at FROM jobs ORDER BY created_at DESC LIMIT 50"
+                "SELECT id, source_id, status, current_stage, stage_log, created_at, updated_at FROM jobs ORDER BY updated_at DESC LIMIT 50"
             ).fetchall()
 
     if not rows:
