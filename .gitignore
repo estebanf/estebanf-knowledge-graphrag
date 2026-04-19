@@ -21,3 +21,6 @@ build/
 .vscode/
 .idea/
 *.swp
+
+# Git worktrees
+.worktrees/
