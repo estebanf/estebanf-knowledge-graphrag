@@ -45,10 +45,10 @@ def recover_stuck_jobs(conn: psycopg.Connection, stuck_minutes: int) -> int:
     return len(rows)
 
 
-def claim_next_job(conn: psycopg.Connection) -> tuple[str, str] | None:
+def claim_next_job(conn: psycopg.Connection) -> tuple[str, str, str] | None:
     row = conn.execute(
         """
-        SELECT id, source_id FROM jobs
+        SELECT id, source_id, retry_from_stage FROM jobs
         WHERE status = 'pending'
         ORDER BY created_at
         LIMIT 1
@@ -60,12 +60,13 @@ def claim_next_job(conn: psycopg.Connection) -> tuple[str, str] | None:
         return None
     job_id = str(row[0])
     source_id = str(row[1])
+    start_stage = row[2] or "parsing"
     conn.execute(
-        "UPDATE jobs SET status = 'processing:parsing', current_stage = 'parsing', updated_at = now() WHERE id = %s",
-        (job_id,),
+        "UPDATE jobs SET status = %s, current_stage = %s, updated_at = now() WHERE id = %s",
+        (f"processing:{start_stage}", start_stage, job_id),
     )
     conn.commit()
-    return job_id, source_id
+    return job_id, source_id, start_stage
 
 
 def run_worker(poll_interval: int | None = None, stuck_minutes: int | None = None) -> None:
@@ -90,10 +91,10 @@ def run_worker(poll_interval: int | None = None, stuck_minutes: int | None = Non
             with get_connection() as conn:
                 claimed = claim_next_job(conn)
             if claimed:
-                job_id, source_id = claimed
-                log.info("job_claimed", action="claim", job_id=job_id, source_id=source_id)
+                job_id, source_id, start_stage = claimed
+                log.info("job_claimed", action="claim", job_id=job_id, source_id=source_id, start_stage=start_stage)
                 try:
-                    execute_ingestion_pipeline(job_id, source_id)
+                    execute_ingestion_pipeline(job_id, source_id, start_stage=start_stage)
                 except Exception as exc:
                     log.error("pipeline_error", action="pipeline_error", job_id=job_id, error=str(exc), exc_info=True)
             else:

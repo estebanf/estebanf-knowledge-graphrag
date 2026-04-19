@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     MODEL_CHUNK_VALIDATION: str = "qwen/qwen2.5-7b-instruct"
     MODEL_PROPOSITION_CHUNKING: str = "qwen/qwen2.5-14b-instruct"
     MODEL_EMBEDDING: str = "qwen/qwen3-embedding-8b"
+    MODEL_RETRIEVAL_QUERY_VARIANTS: str = "google/gemini-2.5-flash-lite"
+    MODEL_RETRIEVAL_GRAPH: str = "google/gemini-2.5-flash-lite"
+    MODEL_RETRIEVAL_RERANKER: str = "cohere/rerank-v3.5"
 
     # Embedding
     EMBEDDING_DIMENSIONS: Annotated[int, Field(gt=0)] = 4096
@@ -38,9 +41,52 @@ class Settings(BaseSettings):
     RELATIONSHIP_CONFIDENCE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.75
     ENTITY_DEDUP_COSINE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.92
 
+    # Retrieval
+    RETRIEVAL_RRF_K: Annotated[int, Field(gt=0)] = 60
+    RETRIEVAL_RRF_SCORE_FLOOR: float = 0.0
+    RETRIEVAL_SEED_COUNT: Annotated[int, Field(gt=0)] = 10
+    RETRIEVAL_RESULT_COUNT: Annotated[int, Field(gt=0)] = 5
+    RETRIEVAL_MAX_DECOMPOSED_QUERIES: Annotated[int, Field(gt=0)] = 5
+    RETRIEVAL_FIRST_STAGE_TOP_N: Annotated[int, Field(gt=0)] = 20
+    RETRIEVAL_FUSED_CANDIDATE_COUNT: Annotated[int, Field(gt=0)] = 50
+    RETRIEVAL_ENTITY_SELECTION_COUNT: Annotated[int, Field(gt=0)] = 5
+    RETRIEVAL_SECOND_HOP_SELECTION_COUNT: Annotated[int, Field(gt=0)] = 5
+    RETRIEVAL_FIRST_HOP_CHUNK_COUNT: Annotated[int, Field(gt=0)] = 5
+    RETRIEVAL_SECOND_HOP_CHUNK_COUNT: Annotated[int, Field(gt=0)] = 5
+    RETRIEVAL_FIRST_HOP_SIMILARITY_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.5
+    RETRIEVAL_SECOND_HOP_SIMILARITY_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.5
+    RETRIEVAL_ENTITY_CONFIDENCE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.75
+    RETRIEVAL_MAX_GRAPH_LLM_CALLS: Annotated[int, Field(gt=0)] = 100
+    RETRIEVAL_MAX_GRAPH_EXPANSION_MS: Annotated[int, Field(gt=0)] = 4000
+    RETRIEVAL_MAX_GRAPH_EXPANSION_MS_PER_SEED: Annotated[int, Field(gt=0)] = 4000
+    RETRIEVAL_TEXT_SEARCH_CONFIG: str = "english"
+    RETRIEVAL_WEIGHT_ORIGINAL: Annotated[float, Field(ge=0.0)] = 1.0
+    RETRIEVAL_WEIGHT_DECOMPOSED: Annotated[float, Field(ge=0.0)] = 1.0
+    RETRIEVAL_WEIGHT_EXPANDED: Annotated[float, Field(ge=0.0)] = 0.85
+    RETRIEVAL_WEIGHT_STEP_BACK: Annotated[float, Field(ge=0.0)] = 0.75
+    RETRIEVAL_WEIGHT_HYDE: Annotated[float, Field(ge=0.0)] = 0.65
+    RETRIEVAL_FINAL_ROOT_WEIGHT: Annotated[float, Field(ge=0.0)] = 0.60
+    RETRIEVAL_FINAL_FIRST_HOP_WEIGHT: Annotated[float, Field(ge=0.0)] = 0.25
+    RETRIEVAL_FINAL_SECOND_HOP_WEIGHT: Annotated[float, Field(ge=0.0)] = 0.15
+    RETRIEVAL_MULTI_PATH_BONUS: Annotated[float, Field(ge=0.0)] = 0.05
+    RETRIEVAL_SAME_SOURCE_NEIGHBOR_WINDOW: Annotated[int, Field(ge=0)] = 2
+    RETRIEVAL_SAME_SOURCE_NEIGHBOR_COUNT: Annotated[int, Field(gt=0)] = 3
+    RETRIEVAL_TRACE_MAX_CANDIDATES: Annotated[int, Field(gt=0)] = 5
+    RETRIEVAL_TRACE_MAX_ENTITIES: Annotated[int, Field(gt=0)] = 5
+
     # Worker
     WORKER_POLL_INTERVAL: int = 5       # seconds between polls when queue is empty
     WORKER_STUCK_JOB_MINUTES: int = 30  # minutes before a processing job is declared stuck
+
+    def retrieval_variant_weight(self, variant_name: str) -> float:
+        if variant_name.startswith("decomposed_"):
+            return self.RETRIEVAL_WEIGHT_DECOMPOSED
+        return {
+            "original": self.RETRIEVAL_WEIGHT_ORIGINAL,
+            "expanded": self.RETRIEVAL_WEIGHT_EXPANDED,
+            "step_back": self.RETRIEVAL_WEIGHT_STEP_BACK,
+            "hyde": self.RETRIEVAL_WEIGHT_HYDE,
+        }.get(variant_name, 1.0)
 
 
 settings = Settings()

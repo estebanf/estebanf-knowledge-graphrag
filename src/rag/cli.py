@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -17,6 +18,7 @@ from rag.ingestion import (
     retry_job,
     submit_ingestion_job,
 )
+from rag.retrieval import retrieve
 from rag.storage import delete_stored_file
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".md", ".txt"}
@@ -28,6 +30,16 @@ app.add_typer(sources_app, name="sources")
 app.add_typer(jobs_app, name="jobs")
 
 console = Console()
+
+
+def _parse_key_value_pairs(items: Optional[list[str]], label: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for item in items or []:
+        if "=" not in item:
+            raise ValueError(f"Invalid {label} format: {item!r} (expected key=value)")
+        key, _, value = item.partition("=")
+        parsed[key.strip()] = value.strip()
+    return parsed
 
 
 @app.command()
@@ -57,13 +69,11 @@ def ingest(
     ] = None,
 ) -> None:
     """Ingest one or more documents, or all supported files in a folder."""
-    parsed_metadata: dict = {}
-    for item in metadata or []:
-        if "=" not in item:
-            console.print(f"[red]Invalid metadata format: {item!r} (expected key=value)[/red]")
-            raise typer.Exit(1)
-        k, _, v = item.partition("=")
-        parsed_metadata[k.strip()] = v.strip()
+    try:
+        parsed_metadata = _parse_key_value_pairs(metadata, "metadata")
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
 
     # Resolve file list
     if len(paths) == 1 and paths[0].is_dir():
@@ -127,6 +137,63 @@ def worker(
     """Start the ingestion worker. Processes pending jobs until Ctrl+C."""
     from rag.worker import run_worker
     run_worker(poll_interval=poll_interval, stuck_minutes=stuck_minutes)
+
+
+@app.command("retrieve")
+def retrieve_command(
+    query: Annotated[str, typer.Argument(help="Natural language query")],
+    source_id: Annotated[
+        Optional[list[str]],
+        typer.Option("--source-id", help="Restrict retrieval to one or more source IDs"),
+    ] = None,
+    filter: Annotated[
+        Optional[list[str]],
+        typer.Option("--filter", help="Metadata filter as key=value"),
+    ] = None,
+    seed_count: Annotated[Optional[int], typer.Option(help="Root seed count override")] = None,
+    result_count: Annotated[Optional[int], typer.Option(help="Final result count override")] = None,
+    rrf_k: Annotated[Optional[int], typer.Option(help="RRF k override")] = None,
+    entity_confidence_threshold: Annotated[
+        Optional[float],
+        typer.Option(help="Relationship confidence threshold override"),
+    ] = None,
+    first_hop_similarity_threshold: Annotated[
+        Optional[float],
+        typer.Option(help="First-hop similarity threshold override"),
+    ] = None,
+    second_hop_similarity_threshold: Annotated[
+        Optional[float],
+        typer.Option(help="Second-hop similarity threshold override"),
+    ] = None,
+    trace: Annotated[bool, typer.Option("--trace", help="Print retrieval activity to stdout")] = False,
+) -> None:
+    """Run retrieval and print the final JSON response."""
+    try:
+        parsed_filters = _parse_key_value_pairs(filter, "filter")
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    trace_printer = None
+    if trace:
+        def _printer(message: str) -> None:
+            console.print(f"[trace] {message}", markup=False)
+        trace_printer = _printer
+
+    response = retrieve(
+        query=query,
+        source_ids=source_id or [],
+        filters=parsed_filters,
+        seed_count=seed_count,
+        result_count=result_count,
+        rrf_k=rrf_k,
+        entity_confidence_threshold=entity_confidence_threshold,
+        first_hop_similarity_threshold=first_hop_similarity_threshold,
+        second_hop_similarity_threshold=second_hop_similarity_threshold,
+        trace=trace,
+        trace_printer=trace_printer,
+    )
+    console.print_json(json.dumps(response))
 
 
 @sources_app.command("list")
@@ -343,7 +410,7 @@ def jobs_retry(
     except Exception as e:
         console.print(f"[red]Retry failed: {e}[/red]")
         raise typer.Exit(1)
-    console.print(f"[green]Job {result['job_id']} completed successfully.[/green]")
+    console.print(f"[green]Job {result['job_id']} queued for retry from stage '{result['retry_from_stage']}'.[/green]")
 
 
 @jobs_app.command("cancel")

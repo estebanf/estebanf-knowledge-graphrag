@@ -53,18 +53,21 @@ def test_claim_next_job_returns_none_when_empty():
 def test_claim_next_job_claims_and_transitions():
     job_uuid = uuid.uuid4()
     source_uuid = uuid.uuid4()
-    conn = _make_conn(fetchone=(job_uuid, source_uuid))
+    conn = _make_conn(fetchone=(job_uuid, source_uuid, None))
 
     result = claim_next_job(conn)
 
     assert result is not None
-    job_id, source_id = result
+    job_id, source_id, start_stage = result
     assert job_id == str(job_uuid)
     assert source_id == str(source_uuid)
+    assert start_stage == "parsing"
 
-    # Verify the UPDATE was called with 'processing:parsing'
+    # Verify the UPDATE was called with the expected stage transition.
     update_call = conn.execute.call_args_list[1]
     sql = update_call[0][0]
-    assert "processing:parsing" in sql
+    params = update_call[0][1]
+    assert "UPDATE jobs SET status = %s" in sql
+    assert params == ("processing:parsing", "parsing", str(job_uuid))
 
     conn.commit.assert_called_once()

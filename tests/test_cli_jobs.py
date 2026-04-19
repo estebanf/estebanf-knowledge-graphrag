@@ -73,7 +73,10 @@ def test_jobs_status_not_found():
 
 
 def test_jobs_retry_calls_retry_job():
-    with patch("rag.cli.retry_job", return_value={"job_id": "job-1", "status": "completed"}) as mock_retry:
+    with patch(
+        "rag.cli.retry_job",
+        return_value={"job_id": "job-1", "status": "pending", "retry_from_stage": "chunking"},
+    ) as mock_retry:
         from rag.cli import app
         result = runner.invoke(app, ["jobs", "retry", "job-1"])
     assert result.exit_code == 0
@@ -81,7 +84,10 @@ def test_jobs_retry_calls_retry_job():
 
 
 def test_jobs_retry_with_from_stage():
-    with patch("rag.cli.retry_job", return_value={"job_id": "j", "status": "completed"}) as mock_retry:
+    with patch(
+        "rag.cli.retry_job",
+        return_value={"job_id": "j", "status": "pending", "retry_from_stage": "chunking"},
+    ) as mock_retry:
         from rag.cli import app
         result = runner.invoke(app, ["jobs", "retry", "job-1", "--from-stage", "chunking"])
     mock_retry.assert_called_once_with("job-1", from_stage="chunking")
