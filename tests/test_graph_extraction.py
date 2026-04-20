@@ -121,6 +121,25 @@ def test_store_entities_and_edges_creates_related_to_edges():
     assert any("RELATED_TO" in c for c in cypher_calls)
 
 
+def test_store_entities_and_edges_stores_embedding():
+    conn = MagicMock()
+    driver = MagicMock()
+    driver.session.return_value.__enter__ = MagicMock(return_value=MagicMock())
+    driver.session.return_value.__exit__ = MagicMock(return_value=False)
+
+    entities = [{"canonical_name": "Acme", "entity_type": "ORGANIZATION", "aliases": []}]
+    fake_vec = [0.1] * 4096
+
+    with patch("rag.graph_extraction.get_embeddings", return_value=[fake_vec]) as mock_embed:
+        from rag.graph_extraction import store_entities_and_edges
+        store_entities_and_edges(conn, driver, "chunk-uuid", "source-uuid", entities, [])
+
+    mock_embed.assert_called_once_with(["Acme"])
+    insert_sql, insert_params = conn.execute.call_args_list[0][0]
+    assert "embedding" in insert_sql
+    assert f"[{','.join(str(v) for v in fake_vec)}]" in insert_params
+
+
 def test_extract_and_store_graph_iterates_all_chunks():
     conn = MagicMock()
     driver = MagicMock()

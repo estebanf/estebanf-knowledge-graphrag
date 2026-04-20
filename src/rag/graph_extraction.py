@@ -5,6 +5,7 @@ import uuid
 import requests
 
 from rag.config import settings
+from rag.embedding import get_embeddings
 
 _ENTITY_TYPES = ["ORGANIZATION", "PERSON", "POLICY", "PRODUCT", "REGULATION", "CONCEPT", "LOCATION"]
 
@@ -99,15 +100,26 @@ def store_entities_and_edges(
     entity_ids: list[str] = []
     name_to_id: dict[str, str] = {}
 
+    if not entities:
+        return entity_ids
+
+    names = [e["canonical_name"] for e in entities]
+    try:
+        vecs = get_embeddings(names)
+    except Exception:
+        vecs = [None] * len(entities)
+
     with driver.session() as session:
-        for entity in entities:
+        for entity, vec in zip(entities, vecs):
             entity_id = str(uuid.uuid4())
             entity_ids.append(entity_id)
             name_to_id[entity["canonical_name"]] = entity_id
 
+            embedding_str = f"[{','.join(str(v) for v in vec)}]" if vec is not None else None
+
             conn.execute(
-                """INSERT INTO entities (id, canonical_name, entity_type, aliases, source_id)
-                   VALUES (%s, %s, %s, %s, %s)
+                """INSERT INTO entities (id, canonical_name, entity_type, aliases, source_id, embedding)
+                   VALUES (%s, %s, %s, %s, %s, %s::vector)
                    ON CONFLICT DO NOTHING""",
                 (
                     entity_id,
@@ -115,6 +127,7 @@ def store_entities_and_edges(
                     entity["entity_type"],
                     entity.get("aliases", []),
                     source_id,
+                    embedding_str,
                 ),
             )
 
