@@ -5,15 +5,18 @@ def find_dedup_candidates(conn, source_id: str) -> list[tuple[str, str, float]]:
     """Return (source_entity_id, existing_entity_id, similarity) pairs above threshold."""
     rows = conn.execute(
         """
-        SELECT src.id, ex.id, 1 - (src.embedding <=> ex.embedding) AS similarity
-        FROM entities src
-        JOIN entities ex
-          ON ex.source_id != src.source_id
-         AND ex.source_id IS NOT NULL
-         AND ex.embedding IS NOT NULL
-        WHERE src.source_id = %s
-          AND src.embedding IS NOT NULL
-          AND 1 - (src.embedding <=> ex.embedding) >= %s
+        SELECT src_id, ex_id, similarity FROM (
+            SELECT src.id AS src_id, ex.id AS ex_id,
+                   1 - (src.embedding <=> ex.embedding) AS similarity
+            FROM entities src
+            JOIN entities ex
+              ON ex.source_id != src.source_id
+             AND ex.source_id IS NOT NULL
+             AND ex.embedding IS NOT NULL
+            WHERE src.source_id = %s
+              AND src.embedding IS NOT NULL
+        ) sub
+        WHERE similarity >= %s
         ORDER BY similarity DESC
         """,
         (source_id, settings.ENTITY_DEDUP_COSINE_THRESHOLD),

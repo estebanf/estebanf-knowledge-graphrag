@@ -109,6 +109,9 @@ def store_entities_and_edges(
     except Exception:
         vecs = [None] * len(entities)
 
+    if len(vecs) != len(names):
+        vecs = [None] * len(entities)
+
     with driver.session() as session:
         for entity, vec in zip(entities, vecs):
             entity_id = str(uuid.uuid4())
