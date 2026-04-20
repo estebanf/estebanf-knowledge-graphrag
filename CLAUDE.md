@@ -25,7 +25,7 @@ Full ingestion pipeline: `pending → parsing → profiling → chunking → val
 - **Validation**: `src/rag/chunk_validation.py` — sample-based LLM check; 10% general / 25% high-stakes / 100% first-of-type
 - **Embedding**: `src/rag/embedding.py` — OpenRouter `/api/v1/embeddings` in batches of 32; stored as `vector(4096)`
 - **Graph extraction**: `src/rag/graph_extraction.py` — LLM entity/relationship extraction per chunk
-- **Graph linking**: `src/rag/graph_linking.py` — entity dedup, MENTIONED_IN edges
+- **Graph linking**: `src/rag/graph_linking.py` — entity dedup, MENTIONED_IN edges; Entity embeddings stored at extraction time; dedup uses pgvector `<=>` in SQL (no re-embedding at link time); `MENTIONED_IN` edges created via single `UNWIND` Cypher.
 - **Versioned file storage**: `{STORAGE_BASE_PATH}/{source_id}/{version}/original_{filename}`
 - **Tests**: 85 tests — all pass
 
@@ -51,6 +51,7 @@ psql $POSTGRES_URL -f scripts/migrate/001_add_markdown_content.sql
 psql $POSTGRES_URL -f scripts/migrate/002_update_vector_dimensions.sql
 psql $POSTGRES_URL -f scripts/migrate/003_add_graph_tables.sql
 psql $POSTGRES_URL -f scripts/migrate/004_job_improvements.sql
+psql $POSTGRES_URL -f scripts/migrate/005_entity_embeddings.sql
 ```
 
 Or use the inline form for the latest migration only:
