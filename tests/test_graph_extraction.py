@@ -77,8 +77,9 @@ def test_store_entities_and_edges_inserts_to_postgres():
     driver.session.return_value.__exit__ = MagicMock(return_value=False)
 
     entities = [{"canonical_name": "Acme", "entity_type": "ORGANIZATION", "aliases": ["Acme Inc"]}]
-    from rag.graph_extraction import store_entities_and_edges
-    entity_ids = store_entities_and_edges(conn, driver, "chunk-uuid", "source-uuid", entities, [])
+    with patch("rag.graph_extraction.get_embeddings", return_value=[[0.1]*4096]):
+        from rag.graph_extraction import store_entities_and_edges
+        entity_ids = store_entities_and_edges(conn, driver, "chunk-uuid", "source-uuid", entities, [])
 
     assert len(entity_ids) == 1
     assert conn.execute.called
@@ -94,8 +95,9 @@ def test_store_entities_and_edges_creates_memgraph_nodes():
     driver.session.return_value.__exit__ = MagicMock(return_value=False)
 
     entities = [{"canonical_name": "Acme", "entity_type": "ORGANIZATION", "aliases": []}]
-    from rag.graph_extraction import store_entities_and_edges
-    store_entities_and_edges(conn, driver, "chunk-uuid", "source-uuid", entities, [])
+    with patch("rag.graph_extraction.get_embeddings", return_value=[[0.1]*4096]):
+        from rag.graph_extraction import store_entities_and_edges
+        store_entities_and_edges(conn, driver, "chunk-uuid", "source-uuid", entities, [])
 
     cypher_calls = [str(c) for c in session_mock.run.call_args_list]
     assert any("MERGE" in c and "Entity" in c for c in cypher_calls)
@@ -114,8 +116,9 @@ def test_store_entities_and_edges_creates_related_to_edges():
         {"canonical_name": "Bob", "entity_type": "PERSON", "aliases": []},
     ]
     rels = [{"source": "Acme", "target": "Bob", "type": "EMPLOYS", "confidence": 0.9}]
-    from rag.graph_extraction import store_entities_and_edges
-    store_entities_and_edges(conn, driver, "chunk-uuid", "source-uuid", entities, rels)
+    with patch("rag.graph_extraction.get_embeddings", return_value=[[0.1]*4096, [0.1]*4096]):
+        from rag.graph_extraction import store_entities_and_edges
+        store_entities_and_edges(conn, driver, "chunk-uuid", "source-uuid", entities, rels)
 
     cypher_calls = [str(c) for c in session_mock.run.call_args_list]
     assert any("RELATED_TO" in c for c in cypher_calls)
