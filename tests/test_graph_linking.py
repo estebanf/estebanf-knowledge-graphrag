@@ -1,4 +1,3 @@
-import pytest
 from unittest.mock import patch, MagicMock
 
 
@@ -15,6 +14,11 @@ def test_find_dedup_candidates_uses_sql_similarity():
 
     assert len(pairs) == 1
     assert pairs[0] == ("src-id-1", "ex-id-1", 0.97)
+
+    # Verify no embedding API is called from graph_linking
+    with patch("rag.graph_linking.get_embeddings", create=True) as mock_embed:
+        find_dedup_candidates(conn, "source-uuid")
+    mock_embed.assert_not_called()
 
 
 def test_find_dedup_candidates_returns_empty_when_no_matches():
