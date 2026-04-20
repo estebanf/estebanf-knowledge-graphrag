@@ -1,48 +1,24 @@
 from rag.config import settings
-from rag.embedding import get_embeddings
-
-
-def embed_entity_names(names: list[str]) -> list[list[float]]:
-    if not names:
-        return []
-    return get_embeddings(names)
-
-
-def _cosine_sim(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = sum(x * x for x in a) ** 0.5
-    norm_b = sum(x * x for x in b) ** 0.5
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
 
 
 def find_dedup_candidates(conn, source_id: str) -> list[tuple[str, str, float]]:
     """Return (source_entity_id, existing_entity_id, similarity) pairs above threshold."""
-    source_rows = [(str(r[0]), r[1]) for r in conn.execute(
-        "SELECT id, canonical_name FROM entities WHERE source_id = %s",
-        (source_id,),
-    ).fetchall()]
-    if not source_rows:
-        return []
-
-    existing_rows = [(str(r[0]), r[1]) for r in conn.execute(
-        "SELECT id, canonical_name FROM entities WHERE source_id != %s AND source_id IS NOT NULL",
-        (source_id,),
-    ).fetchall()]
-    if not existing_rows:
-        return []
-
-    source_vecs = embed_entity_names([r[1] for r in source_rows])
-    existing_vecs = embed_entity_names([r[1] for r in existing_rows])
-
-    candidates = []
-    for i, (src_id, _) in enumerate(source_rows):
-        for j, (ex_id, _) in enumerate(existing_rows):
-            sim = _cosine_sim(source_vecs[i], existing_vecs[j])
-            if sim >= settings.ENTITY_DEDUP_COSINE_THRESHOLD:
-                candidates.append((src_id, ex_id, sim))
-    return candidates
+    rows = conn.execute(
+        """
+        SELECT src.id, ex.id, 1 - (src.embedding <=> ex.embedding) AS similarity
+        FROM entities src
+        JOIN entities ex
+          ON ex.source_id != src.source_id
+         AND ex.source_id IS NOT NULL
+         AND ex.embedding IS NOT NULL
+        WHERE src.source_id = %s
+          AND src.embedding IS NOT NULL
+          AND 1 - (src.embedding <=> ex.embedding) >= %s
+        ORDER BY similarity DESC
+        """,
+        (source_id, settings.ENTITY_DEDUP_COSINE_THRESHOLD),
+    ).fetchall()
+    return [(str(r[0]), str(r[1]), float(r[2])) for r in rows]
 
 
 def merge_entities(conn, driver, canonical_id: str, duplicate_id: str) -> None:
@@ -78,25 +54,24 @@ def merge_entities(conn, driver, canonical_id: str, duplicate_id: str) -> None:
 
 
 def create_mentioned_in_edges(conn, driver, source_id: str) -> None:
-    """Create (Entity)-[:MENTIONED_IN]->(Chunk) edges for all chunks in source."""
-    rows = conn.execute(
-        """
-        SELECT e.id, c.id
-        FROM entities e
-        JOIN chunks c ON c.source_id = e.source_id
-        WHERE e.source_id = %s AND c.deleted_at IS NULL
-        """,
-        (source_id,),
-    ).fetchall()
+    """Create (Entity)-[:MENTIONED_IN]->(Chunk) edges using existing MENTIONS edges."""
+    chunk_ids = [
+        str(r[0])
+        for r in conn.execute(
+            "SELECT id FROM chunks WHERE source_id = %s AND deleted_at IS NULL",
+            (source_id,),
+        ).fetchall()
+    ]
+    if not chunk_ids:
+        return
 
     with driver.session() as session:
-        for entity_id, chunk_id in rows:
-            session.run(
-                "MATCH (e:Entity {entity_id: $entity_id}), (c:Chunk {chunk_id: $chunk_id}) "
-                "MERGE (e)-[:MENTIONED_IN]->(c)",
-                entity_id=str(entity_id),
-                chunk_id=str(chunk_id),
-            )
+        session.run(
+            "UNWIND $chunk_ids AS cid "
+            "MATCH (c:Chunk {chunk_id: cid})-[:MENTIONS]->(e:Entity) "
+            "MERGE (e)-[:MENTIONED_IN]->(c)",
+            chunk_ids=chunk_ids,
+        )
 
 
 def link_graph(conn, driver, source_id: str, job_id: str) -> None:

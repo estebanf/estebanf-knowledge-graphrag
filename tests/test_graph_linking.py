@@ -2,72 +2,34 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 
-def _make_embedding(seed: float, dim: int = 4096) -> list[float]:
-    # Use seed as first element, 0 elsewhere → orthogonal unit vectors
-    vec = [seed] + [0.0] * (dim - 1)
-    norm = abs(seed) if seed != 0 else 1.0
-    return [x / norm for x in vec]
-
-
-def test_embed_entity_names_delegates_to_get_embeddings():
-    vectors = [[0.1] * 4096, [0.2] * 4096]
-    with patch("rag.graph_linking.get_embeddings", return_value=vectors) as mock_embed:
-        from rag.graph_linking import embed_entity_names
-        result = embed_entity_names(["Acme", "Bob"])
-    mock_embed.assert_called_once_with(["Acme", "Bob"])
-    assert result == vectors
-
-
-def test_embed_entity_names_empty_returns_empty():
-    with patch("rag.graph_linking.get_embeddings") as mock_embed:
-        from rag.graph_linking import embed_entity_names
-        result = embed_entity_names([])
-    assert result == []
-    mock_embed.assert_not_called()
-
-
-def test_find_dedup_candidates_returns_high_similarity_pairs(monkeypatch):
-    monkeypatch.setattr("rag.graph_linking.settings.ENTITY_DEDUP_COSINE_THRESHOLD", 0.92)
-
-    vec_a = _make_embedding(1.0)
-    vec_b = _make_embedding(1.0)    # identical → cosine = 1.0
-    # orthogonal vector: second element is 1, first is 0
-    vec_c = [0.0] + [1.0] + [0.0] * (4096 - 2)  # cosine with vec_a = 0.0
-
+def test_find_dedup_candidates_uses_sql_similarity():
+    """find_dedup_candidates must query DB for similarity, not call embedding API."""
     conn = MagicMock()
-    conn.execute.return_value.fetchall.side_effect = [
-        [("src-id-1", "Acme Corp")],
-        [("ex-id-1", "Acme Corporation"), ("ex-id-2", "Widgets")],
+    # SQL returns (src_id, ex_id, similarity) rows already above threshold
+    conn.execute.return_value.fetchall.return_value = [
+        ("src-id-1", "ex-id-1", 0.97),
     ]
 
-    with patch("rag.graph_linking.embed_entity_names", side_effect=[
-        [vec_a], [vec_b, vec_c]
-    ]):
-        from rag.graph_linking import find_dedup_candidates
-        pairs = find_dedup_candidates(conn, "source-uuid")
+    from rag.graph_linking import find_dedup_candidates
+    pairs = find_dedup_candidates(conn, "source-uuid")
 
     assert len(pairs) == 1
-    assert pairs[0][0] == "src-id-1"
-    assert pairs[0][1] == "ex-id-1"
+    assert pairs[0] == ("src-id-1", "ex-id-1", 0.97)
 
 
-def test_find_dedup_candidates_no_existing_returns_empty():
+def test_find_dedup_candidates_returns_empty_when_no_matches():
     conn = MagicMock()
-    conn.execute.return_value.fetchall.side_effect = [
-        [("src-id-1", "Acme")],
-        [],
-    ]
-    with patch("rag.graph_linking.embed_entity_names", return_value=[[0.1] * 4096]):
-        from rag.graph_linking import find_dedup_candidates
-        result = find_dedup_candidates(conn, "source-uuid")
+    conn.execute.return_value.fetchall.return_value = []
+
+    from rag.graph_linking import find_dedup_candidates
+    result = find_dedup_candidates(conn, "source-uuid")
     assert result == []
 
 
-def test_create_mentioned_in_edges_creates_memgraph_edges():
+def test_create_mentioned_in_edges_uses_single_unwind_query():
     conn = MagicMock()
     conn.execute.return_value.fetchall.return_value = [
-        ("entity-1", "chunk-1"),
-        ("entity-1", "chunk-2"),
+        ("chunk-1",), ("chunk-2",),
     ]
     session_mock = MagicMock()
     driver = MagicMock()
@@ -77,9 +39,24 @@ def test_create_mentioned_in_edges_creates_memgraph_edges():
     from rag.graph_linking import create_mentioned_in_edges
     create_mentioned_in_edges(conn, driver, "source-uuid")
 
-    assert session_mock.run.call_count == 2
-    cypher_calls = [str(c) for c in session_mock.run.call_args_list]
-    assert all("MENTIONED_IN" in c for c in cypher_calls)
+    # exactly one Cypher call with UNWIND
+    assert session_mock.run.call_count == 1
+    cypher = session_mock.run.call_args[0][0]
+    kwargs = session_mock.run.call_args[1]
+    assert "UNWIND" in cypher
+    assert "MENTIONED_IN" in cypher
+    assert kwargs["chunk_ids"] == ["chunk-1", "chunk-2"]
+
+
+def test_create_mentioned_in_edges_no_chunks_skips_memgraph():
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = []
+    driver = MagicMock()
+
+    from rag.graph_linking import create_mentioned_in_edges
+    create_mentioned_in_edges(conn, driver, "source-uuid")
+
+    driver.session.assert_not_called()
 
 
 def test_link_graph_calls_dedup_and_linking():
