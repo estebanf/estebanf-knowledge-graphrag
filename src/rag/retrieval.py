@@ -321,13 +321,37 @@ def hybrid_search(
     with get_connection() as conn:
         dense = dense_retrieve(conn, query, source_ids=[], filters={}, top_n=top_n)
         sparse = sparse_retrieve(conn, query, source_ids=[], filters={}, top_n=top_n)
+
+    # RRF for deduplication and ordering; scores are unintuitive (~0.01-0.04)
+    # so we replace them with the original cosine similarity (dense preferred over sparse)
+    dense_scores = {c.chunk_id: c.score for c in dense}
+    sparse_scores = {c.chunk_id: c.score for c in sparse}
+
     fused = weighted_reciprocal_rank_fusion(
         {"dense": dense, "sparse": sparse},
         rrf_k=settings.RETRIEVAL_RRF_K,
         weights={"dense": 1.0, "sparse": 1.0},
-        score_floor=min_score,
+        score_floor=0.0,
     )
-    return fused[:limit]
+
+    results: list[RetrievalCandidate] = []
+    for candidate in fused:
+        score = dense_scores.get(candidate.chunk_id) or sparse_scores.get(candidate.chunk_id, 0.0)
+        if score < min_score:
+            continue
+        results.append(
+            RetrievalCandidate(
+                chunk_id=candidate.chunk_id,
+                chunk=candidate.chunk,
+                source_id=candidate.source_id,
+                source_path=candidate.source_path,
+                source_metadata=candidate.source_metadata,
+                score=score,
+            )
+        )
+
+    results.sort(key=lambda r: r.score, reverse=True)
+    return results[:limit]
 
 
 def _trace_candidates(
