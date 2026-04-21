@@ -539,9 +539,9 @@ def retry_job(job_id: str, from_stage: str | None = None) -> dict:
         conn.execute(
             """UPDATE jobs
                SET status = 'pending', current_stage = NULL,
-                   retry_of = %s, retry_from_stage = %s, updated_at = now()
+                   retry_from_stage = %s, updated_at = now()
                WHERE id = %s""",
-            (job_id, start_stage, job_id),
+            (start_stage, job_id),
         )
         _write_audit_log(conn, "job_retried", "job", job_id, {"from_stage": start_stage})
         conn.commit()
