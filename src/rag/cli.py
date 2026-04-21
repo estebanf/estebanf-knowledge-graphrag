@@ -18,7 +18,7 @@ from rag.ingestion import (
     retry_job,
     submit_ingestion_job,
 )
-from rag.retrieval import retrieve
+from rag.retrieval import hybrid_search, retrieve
 from rag.storage import delete_stored_file
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".md", ".txt"}
@@ -194,6 +194,31 @@ def retrieve_command(
         trace_printer=trace_printer,
     )
     console.print_json(json.dumps(response))
+
+
+@app.command("search")
+def search_command(
+    query: Annotated[str, typer.Argument(help="Search query")],
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Maximum number of results")] = 10,
+    min_score: Annotated[float, typer.Option("--min-score", help="Minimum score threshold")] = 0.0,
+) -> None:
+    """Hybrid search over chunks and return ranked results as a JSON array."""
+    results = hybrid_search(query, limit=limit, min_score=min_score)
+    console.print_json(
+        json.dumps(
+            [
+                {
+                    "score": r.score,
+                    "chunk": r.chunk,
+                    "chunk_id": r.chunk_id,
+                    "source_id": r.source_id,
+                    "source_path": r.source_path,
+                    "source_metadata": r.source_metadata,
+                }
+                for r in results
+            ]
+        )
+    )
 
 
 @sources_app.command("list")
