@@ -8,12 +8,14 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "docling>=2.0",
+    "fastapi>=0.115",
     "psycopg[binary]>=3.1",
     "pydantic-settings>=2.0",
     "typer[all]>=0.12",
     "structlog>=24.0",
     "python-dotenv>=1.0",
     "pytest>=8.0",
+    "uvicorn>=0.34",
     "langchain-text-splitters>=0.3",
     "tiktoken>=0.7",
     "pgvector>=0.3",

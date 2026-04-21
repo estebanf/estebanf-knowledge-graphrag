@@ -20,6 +20,7 @@ from rag.ingestion import (
     submit_ingestion_job,
 )
 from rag.retrieval import hybrid_search, retrieve
+from rag.sources import get_source_detail
 from rag.storage import delete_stored_file
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".md", ".txt"}
@@ -227,21 +228,12 @@ def source_command(
     source_id: Annotated[str, typer.Argument(help="Source UUID")],
 ) -> None:
     """Print the stored markdown for a source."""
-    with get_connection() as conn:
-        row = conn.execute(
-            """
-            SELECT markdown_content
-            FROM sources
-            WHERE id = %s AND deleted_at IS NULL
-            """,
-            (source_id,),
-        ).fetchone()
-
-    if not row:
+    detail = get_source_detail(source_id, connection_factory=get_connection)
+    if not detail:
         console.print(f"[red]Source not found: {source_id}[/red]")
         raise typer.Exit(1)
 
-    console.print(row[0] or "", markup=False)
+    console.print(detail["markdown_content"], markup=False)
 
 
 @sources_app.command("list")
