@@ -8,6 +8,42 @@ from rag.cli import app
 runner = CliRunner()
 
 
+@patch("rag.cli.get_connection")
+def test_source_command_prints_markdown_only(mock_conn):
+    conn = MagicMock()
+    mock_conn.return_value.__enter__.return_value = conn
+    conn.execute.return_value.fetchone.return_value = ("# Title\n\nBody",)
+
+    result = runner.invoke(app, ["source", "source-1"])
+
+    assert result.exit_code == 0
+    assert result.stdout == "# Title\n\nBody\n"
+
+
+@patch("rag.cli.get_connection")
+def test_source_command_returns_empty_output_for_null_markdown(mock_conn):
+    conn = MagicMock()
+    mock_conn.return_value.__enter__.return_value = conn
+    conn.execute.return_value.fetchone.return_value = (None,)
+
+    result = runner.invoke(app, ["source", "source-1"])
+
+    assert result.exit_code == 0
+    assert result.stdout == "\n"
+
+
+@patch("rag.cli.get_connection")
+def test_source_command_exits_when_source_missing(mock_conn):
+    conn = MagicMock()
+    mock_conn.return_value.__enter__.return_value = conn
+    conn.execute.return_value.fetchone.return_value = None
+
+    result = runner.invoke(app, ["source", "missing"])
+
+    assert result.exit_code == 1
+    assert "Source not found: missing" in result.stdout
+
+
 @patch("rag.cli.delete_stored_file")
 @patch("rag.ingestion.get_graph_driver")
 @patch("rag.cli.get_connection")

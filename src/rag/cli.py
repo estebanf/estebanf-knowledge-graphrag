@@ -222,6 +222,28 @@ def search_command(
     )
 
 
+@app.command("source")
+def source_command(
+    source_id: Annotated[str, typer.Argument(help="Source UUID")],
+) -> None:
+    """Print the stored markdown for a source."""
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT markdown_content
+            FROM sources
+            WHERE id = %s AND deleted_at IS NULL
+            """,
+            (source_id,),
+        ).fetchone()
+
+    if not row:
+        console.print(f"[red]Source not found: {source_id}[/red]")
+        raise typer.Exit(1)
+
+    console.print(row[0] or "", markup=False)
+
+
 @sources_app.command("list")
 def sources_list() -> None:
     """List all active sources."""
