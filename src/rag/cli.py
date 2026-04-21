@@ -7,6 +7,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from rag.config import settings
 from rag.db import get_connection
 from rag.graph_db import get_graph_driver
 from rag.ingestion import (
@@ -199,8 +200,8 @@ def retrieve_command(
 @app.command("search")
 def search_command(
     query: Annotated[str, typer.Argument(help="Search query")],
-    limit: Annotated[int, typer.Option("--limit", "-n", help="Maximum number of results")] = 10,
-    min_score: Annotated[float, typer.Option("--min-score", help="Minimum score threshold")] = 0.0,
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Maximum number of results")] = settings.SEARCH_DEFAULT_LIMIT,
+    min_score: Annotated[float, typer.Option("--min-score", help="Minimum score threshold")] = settings.SEARCH_MIN_SCORE,
 ) -> None:
     """Hybrid search over chunks and return ranked results as a JSON array."""
     results = hybrid_search(query, limit=limit, min_score=min_score)

@@ -37,7 +37,7 @@ def test_search_command_prints_json_array(mock_search):
     assert "source_id" in payload[0]
     assert "source_path" in payload[0]
     assert "source_metadata" in payload[0]
-    mock_search.assert_called_once_with("what happened", limit=10, min_score=0.0)
+    mock_search.assert_called_once_with("what happened", limit=10, min_score=0.7)
 
 
 @patch("rag.cli.hybrid_search")
@@ -57,7 +57,7 @@ def test_search_command_short_limit_flag(mock_search):
     result = runner.invoke(app, ["search", "what happened", "-n", "3"])
 
     assert result.exit_code == 0
-    mock_search.assert_called_once_with("what happened", limit=3, min_score=0.0)
+    mock_search.assert_called_once_with("what happened", limit=3, min_score=0.7)
 
 
 @patch("rag.cli.hybrid_search")
@@ -68,3 +68,4 @@ def test_search_command_returns_empty_array_when_no_results(mock_search):
 
     assert result.exit_code == 0
     assert json.loads(result.output) == []
+    mock_search.assert_called_once_with("obscure query", limit=10, min_score=0.7)

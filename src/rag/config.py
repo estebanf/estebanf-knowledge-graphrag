@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     RETRIEVAL_TRACE_MAX_CANDIDATES: Annotated[int, Field(gt=0)] = 5
     RETRIEVAL_TRACE_MAX_ENTITIES: Annotated[int, Field(gt=0)] = 5
 
+    # Search command
+    SEARCH_DEFAULT_LIMIT: Annotated[int, Field(gt=0)] = 10
+    SEARCH_MIN_SCORE: Annotated[float, Field(ge=0.0)] = 0.7
+
     # Worker
     WORKER_POLL_INTERVAL: int = 5       # seconds between polls when queue is empty
     WORKER_STUCK_JOB_MINUTES: int = 30  # minutes before a processing job is declared stuck
