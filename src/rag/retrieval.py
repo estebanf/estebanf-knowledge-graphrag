@@ -311,6 +311,25 @@ def sparse_retrieve(
     return [_row_to_candidate(row) for row in rows]
 
 
+def hybrid_search(
+    query: str,
+    *,
+    limit: int,
+    min_score: float,
+) -> list[RetrievalCandidate]:
+    top_n = max(limit * 3, 20)
+    with get_connection() as conn:
+        dense = dense_retrieve(conn, query, source_ids=[], filters={}, top_n=top_n)
+        sparse = sparse_retrieve(conn, query, source_ids=[], filters={}, top_n=top_n)
+    fused = weighted_reciprocal_rank_fusion(
+        {"dense": dense, "sparse": sparse},
+        rrf_k=settings.RETRIEVAL_RRF_K,
+        weights={"dense": 1.0, "sparse": 1.0},
+        score_floor=min_score,
+    )
+    return fused[:limit]
+
+
 def _trace_candidates(
     trace_logger: Optional[TraceLogger],
     label: str,
