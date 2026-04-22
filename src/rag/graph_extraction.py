@@ -176,6 +176,5 @@ def extract_and_store_graph(
 ) -> None:
     for chunk_id, content in chunk_rows:
         entities = extract_entities(content)
-        relationships = extract_relationships(content, entities)
-        store_entities_and_edges(conn, driver, chunk_id, source_id, entities, relationships)
+        store_entities_and_edges(conn, driver, chunk_id, source_id, entities, [])
     conn.commit()

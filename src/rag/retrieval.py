@@ -33,11 +33,10 @@ class EntityCandidate:
 
 @dataclass
 class SecondHopEntityCandidate:
-    entity_id: str
+    chunk_id: str
     name: str
     entity_type: str
-    relationship_label: str
-    relationship_metadata: dict
+    chunk: str
 
 
 @dataclass
@@ -533,8 +532,7 @@ def _generate_entity_query(
     seed: RetrievalCandidate,
     entity_name: str,
     *,
-    relationship_label: Optional[str] = None,
-    relationship_metadata: Optional[dict] = None,
+    entity_context: Optional[dict] = None,
 ) -> str:
     prompt = f"""You are generating a retrieval sub-query.
 Return ONLY a JSON object with key query.
@@ -548,10 +546,8 @@ Seed chunk:
 Entity:
 {entity_name}
 """
-    if relationship_label:
-        prompt += f"\nRelationship label:\n{relationship_label}\n"
-    if relationship_metadata:
-        prompt += f"\nRelationship metadata:\n{json.dumps(relationship_metadata, ensure_ascii=True)}\n"
+    if entity_context:
+        prompt += f"\nPath context:\n{json.dumps(entity_context, ensure_ascii=True)}\n"
 
     try:
         response = _chat_json(settings.MODEL_RETRIEVAL_GRAPH, prompt, timeout=60)
@@ -567,8 +563,7 @@ def _load_seed_entities(driver, chunk_id: str) -> list[EntityCandidate]:
     with driver.session() as session:
         rows = session.run(
             """
-            MATCH (c:Chunk {chunk_id: $chunk_id})-[r]-(e:Entity)
-            WHERE type(r) IN ['MENTIONS', 'MENTIONED_IN']
+            MATCH (c:Chunk {chunk_id: $chunk_id})-[:MENTIONS]->(e:Entity)
             RETURN e.entity_id AS entity_id, e.canonical_name AS name, e.entity_type AS entity_type
             """,
             chunk_id=chunk_id,
@@ -583,46 +578,52 @@ def _load_seed_entities(driver, chunk_id: str) -> list[EntityCandidate]:
         ]
 
 
-def _load_second_hop_entities(
+def _load_entities_for_chunks(
     driver,
-    entity_id: str,
-    confidence_threshold: float,
-) -> list[SecondHopEntityCandidate]:
+    chunk_ids: list[str],
+) -> dict[str, list[EntityCandidate]]:
     with driver.session() as session:
         rows = session.run(
             """
-            MATCH (e1:Entity {entity_id: $entity_id})-[r:RELATED_TO]->(e2:Entity)
-            WHERE coalesce(r.confidence, 0.0) >= $confidence_threshold
-            RETURN e2.entity_id AS entity_id,
-                   e2.canonical_name AS name,
-                   e2.entity_type AS entity_type,
-                   r.type AS relationship_label,
-                   properties(r) AS relationship_metadata
+            UNWIND $chunk_ids AS chunk_id
+            MATCH (c:Chunk {chunk_id: chunk_id})-[:MENTIONS]->(e:Entity)
+            RETURN c.chunk_id AS chunk_id,
+                   e.entity_id AS entity_id,
+                   e.canonical_name AS name,
+                   e.entity_type AS entity_type
             """,
-            entity_id=entity_id,
-            confidence_threshold=confidence_threshold,
+            chunk_ids=chunk_ids,
         )
-        return [
-            SecondHopEntityCandidate(
-                entity_id=record["entity_id"],
-                name=record["name"],
-                entity_type=record["entity_type"] or "",
-                relationship_label=record["relationship_label"] or "RELATED_TO",
-                relationship_metadata=record["relationship_metadata"] or {},
+        entities_by_chunk: dict[str, dict[tuple[str, str], EntityCandidate]] = {}
+        for record in rows:
+            chunk_id = record["chunk_id"]
+            chunk_entities = entities_by_chunk.setdefault(chunk_id, {})
+            key = (record["name"] or "", record["entity_type"] or "")
+            chunk_entities.setdefault(
+                key,
+                EntityCandidate(
+                    entity_id=record["entity_id"],
+                    name=record["name"],
+                    entity_type=record["entity_type"] or "",
+                ),
             )
-            for record in rows
-        ]
+        return {
+            chunk_id: list(chunk_entities.values())
+            for chunk_id, chunk_entities in entities_by_chunk.items()
+        }
 
 
-def _load_chunk_ids_for_entity(driver, entity_id: str) -> list[str]:
+def _load_chunk_ids_for_entity(driver, entity_name: str, entity_type: str) -> list[str]:
     with driver.session() as session:
         rows = session.run(
             """
-            MATCH (c:Chunk)-[r]-(e:Entity {entity_id: $entity_id})
-            WHERE type(r) IN ['MENTIONS', 'MENTIONED_IN']
-            RETURN c.chunk_id AS chunk_id
+            MATCH (c:Chunk)-[:MENTIONS]->(e:Entity)
+            WHERE e.canonical_name = $entity_name
+              AND e.entity_type = $entity_type
+            RETURN DISTINCT c.chunk_id AS chunk_id
             """,
-            entity_id=entity_id,
+            entity_name=entity_name,
+            entity_type=entity_type,
         )
         return [record["chunk_id"] for record in rows]
 
@@ -719,15 +720,41 @@ def _fetch_same_source_neighbor_candidates(
     return [_row_to_candidate(row) for row in rows]
 
 
-def _select_second_hop_entities(
+def _select_second_hop_entities_from_chunks(
     query: str,
     seed: RetrievalCandidate,
     entity_name: str,
-    candidates: list[SecondHopEntityCandidate],
+    chunk_entity_map: dict[str, dict],
     trace_logger: Optional[TraceLogger] = None,
-) -> list[SecondHopEntityCandidate]:
-    if not candidates:
+) -> list[tuple[RetrievalCandidate, EntityCandidate]]:
+    if not chunk_entity_map:
         return []
+    candidates: list[SecondHopEntityCandidate] = []
+    for chunk_id, payload in chunk_entity_map.items():
+        chunk = payload["chunk"]
+        for entity in payload["entities"]:
+            if entity.name == entity_name:
+                continue
+            candidates.append(
+                SecondHopEntityCandidate(
+                    chunk_id=chunk_id,
+                    name=entity.name,
+                    entity_type=entity.entity_type,
+                    chunk=chunk.chunk,
+                )
+            )
+
+    deduped_candidates: list[SecondHopEntityCandidate] = []
+    seen: set[tuple[str, str, str]] = set()
+    for candidate in candidates:
+        key = (candidate.chunk_id, candidate.name, candidate.entity_type)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped_candidates.append(candidate)
+    if not deduped_candidates:
+        return []
+
     prompt = f"""You are selecting second-hop graph entities to expand for retrieval.
 Return ONLY a JSON object with key selected_entities containing up to {settings.RETRIEVAL_SECOND_HOP_SELECTION_COUNT} entity names.
 
@@ -741,20 +768,36 @@ Current entity:
 {entity_name}
 
 Candidates:
-{json.dumps([candidate.__dict__ for candidate in candidates], ensure_ascii=True)}
+{json.dumps([candidate.__dict__ for candidate in deduped_candidates], ensure_ascii=True)}
 """
     try:
         response = _chat_json(settings.MODEL_RETRIEVAL_GRAPH, prompt, timeout=60)
         names = [value for value in response.get("selected_entities", []) if isinstance(value, str)]
     except Exception:
-        names = [candidate.name for candidate in candidates[: settings.RETRIEVAL_SECOND_HOP_SELECTION_COUNT]]
+        names = [candidate.name for candidate in deduped_candidates[: settings.RETRIEVAL_SECOND_HOP_SELECTION_COUNT]]
 
-    selected = [candidate for candidate in candidates if candidate.name in names]
-    selected = selected[: settings.RETRIEVAL_SECOND_HOP_SELECTION_COUNT]
+    selected: list[tuple[RetrievalCandidate, EntityCandidate]] = []
+    for candidate in deduped_candidates:
+        if candidate.name not in names:
+            continue
+        payload = chunk_entity_map[candidate.chunk_id]
+        matching_entity = next(
+            (
+                entity
+                for entity in payload["entities"]
+                if entity.name == candidate.name and entity.entity_type == candidate.entity_type
+            ),
+            None,
+        )
+        if matching_entity is None:
+            continue
+        selected.append((payload["chunk"], matching_entity))
+        if len(selected) >= settings.RETRIEVAL_SECOND_HOP_SELECTION_COUNT:
+            break
     if trace_logger:
         trace_logger.emit(
             f"selected second-hop entities for {entity_name}: "
-            f"{json.dumps([candidate.name for candidate in selected], ensure_ascii=True)}"
+            f"{json.dumps([entity.name for _, entity in selected], ensure_ascii=True)}"
         )
     return selected
 
@@ -839,7 +882,7 @@ def expand_seed_candidate(
             trace_logger.emit(f"first-hop query for {entity.name}: {first_hop_query}")
         first_hop_candidates = _fetch_chunk_candidates_by_ids(
             conn,
-            _load_chunk_ids_for_entity(driver, entity.entity_id),
+            _load_chunk_ids_for_entity(driver, entity.name, entity.entity_type),
             first_hop_query,
             source_ids=source_ids,
             filters=filters,
@@ -873,36 +916,58 @@ def expand_seed_candidate(
             "second_level_related": [],
         }
 
-        second_hop_candidates = _load_second_hop_entities(driver, entity.entity_id, entity_confidence_threshold)
-        if second_hop_candidates and _consume_llm_budget(budget, budget_lock):
-            selected_second_hops = _select_second_hop_entities(
+        first_hop_entity_map = _load_entities_for_chunks(
+            driver,
+            [candidate.chunk_id for candidate in first_hop_candidates],
+        )
+        candidate_entity_map = {
+            candidate.chunk_id: {
+                "chunk": candidate,
+                "entities": [
+                    chunk_entity
+                    for chunk_entity in first_hop_entity_map.get(candidate.chunk_id, [])
+                    if chunk_entity.name != entity.name
+                ],
+            }
+            for candidate in first_hop_candidates
+        }
+        candidate_entity_map = {
+            chunk_id: payload
+            for chunk_id, payload in candidate_entity_map.items()
+            if payload["entities"]
+        }
+        if candidate_entity_map and _consume_llm_budget(budget, budget_lock):
+            selected_second_hops = _select_second_hop_entities_from_chunks(
                 query,
                 seed,
                 entity.name,
-                second_hop_candidates,
+                candidate_entity_map,
                 trace_logger=trace_logger,
             )
         else:
             selected_second_hops = []
 
-        for second_hop in selected_second_hops:
+        for first_hop_chunk, second_hop in selected_second_hops:
             if not _consume_llm_budget(budget, budget_lock):
                 break
             second_hop_query = _generate_entity_query(
                 query,
                 seed,
                 second_hop.name,
-                relationship_label=second_hop.relationship_label,
-                relationship_metadata=second_hop.relationship_metadata,
+                entity_context={
+                    "entity1": entity.name,
+                    "entity2": second_hop.name,
+                    "first_hop_chunk": first_hop_chunk.chunk[:1200],
+                },
             )
             if trace_logger:
                 trace_logger.emit(
-                    f"second-hop query for {entity.name} -> {second_hop.relationship_label} -> "
+                    f"second-hop query for {entity.name} via {first_hop_chunk.chunk_id} -> "
                     f"{second_hop.name}: {second_hop_query}"
                 )
             second_hop_chunks = _fetch_chunk_candidates_by_ids(
                 conn,
-                _load_chunk_ids_for_entity(driver, second_hop.entity_id),
+                _load_chunk_ids_for_entity(driver, second_hop.name, second_hop.entity_type),
                 second_hop_query,
                 source_ids=source_ids,
                 filters=filters,
@@ -920,8 +985,11 @@ def expand_seed_candidate(
                 {
                     "entity": second_hop.name,
                     "relationship": {
-                        "label": second_hop.relationship_label,
-                        "metadata": second_hop.relationship_metadata,
+                        "label": "CO_MENTIONED_IN_FIRST_HOP_CHUNK",
+                        "metadata": {
+                            "entity1": entity.name,
+                            "first_hop_chunk_id": first_hop_chunk.chunk_id,
+                        },
                     },
                     "chunks": [candidate.__dict__ for candidate in second_hop_chunks],
                 }
@@ -1027,6 +1095,59 @@ def finalize_root_results(
         root.pop("_multi_path_bonus", None)
         root.pop("_final_score", None)
     return ordered
+
+
+def _expand_neighbor_contexts(conn, retrieval_results: list[dict]) -> None:
+    chunk_ids: set[str] = set()
+    for root in retrieval_results:
+        chunk_ids.add(root["chunk_id"])
+        for related in root["related"]:
+            for chunk in related["chunks"]:
+                chunk_ids.add(chunk["chunk_id"])
+            for second_level in related["second_level_related"]:
+                for chunk in second_level["chunks"]:
+                    chunk_ids.add(chunk["chunk_id"])
+
+    if not chunk_ids:
+        return
+
+    rows = conn.execute(
+        """
+        WITH selected AS (
+            SELECT id, source_id, chunk_index
+            FROM chunks
+            WHERE id::text = ANY(%s::text[])
+        )
+        SELECT selected.id::text AS center_id,
+               neighbor.id::text AS chunk_id,
+               neighbor.chunk_index,
+               neighbor.content,
+               neighbor.source_id::text
+        FROM selected
+        JOIN chunks neighbor
+          ON neighbor.source_id = selected.source_id
+         AND neighbor.deleted_at IS NULL
+         AND neighbor.chunk_index BETWEEN selected.chunk_index - 1 AND selected.chunk_index + 1
+        ORDER BY selected.id, neighbor.chunk_index
+        """,
+        (list(chunk_ids),),
+    ).fetchall()
+
+    expanded_by_id: dict[str, str] = {}
+    grouped: dict[str, list[str]] = {}
+    for center_id, _, _, content, _ in rows:
+        grouped.setdefault(str(center_id), []).append(content or "")
+    for center_id, contents in grouped.items():
+        expanded_by_id[center_id] = "\n\n".join(content for content in contents if content)
+
+    for root in retrieval_results:
+        root["chunk"] = expanded_by_id.get(root["chunk_id"], root["chunk"])
+        for related in root["related"]:
+            for chunk in related["chunks"]:
+                chunk["chunk"] = expanded_by_id.get(chunk["chunk_id"], chunk["chunk"])
+            for second_level in related["second_level_related"]:
+                for chunk in second_level["chunks"]:
+                    chunk["chunk"] = expanded_by_id.get(chunk["chunk_id"], chunk["chunk"])
 
 
 def _resolved_params(
@@ -1142,4 +1263,6 @@ def retrieve(
             params.result_count,
             trace_logger=trace_logger,
         )
+        with get_connection() as conn:
+            _expand_neighbor_contexts(conn, final_results)
     return {"retrieval_results": final_results}

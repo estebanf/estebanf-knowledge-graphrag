@@ -124,6 +124,22 @@ def test_store_entities_and_edges_creates_related_to_edges():
     assert any("RELATED_TO" in c for c in cypher_calls)
 
 
+def test_extract_and_store_graph_skips_relationship_extraction():
+    conn = MagicMock()
+    driver = MagicMock()
+    chunk_rows = [("chunk-1", "Text one.")]
+
+    with patch("rag.graph_extraction.extract_entities", return_value=[]) as mock_ent, \
+         patch("rag.graph_extraction.extract_relationships", return_value=[]) as mock_rel, \
+         patch("rag.graph_extraction.store_entities_and_edges") as mock_store:
+        from rag.graph_extraction import extract_and_store_graph
+        extract_and_store_graph(conn, driver, "source-uuid", "job-uuid", chunk_rows)
+
+    mock_ent.assert_called_once_with("Text one.")
+    mock_rel.assert_not_called()
+    mock_store.assert_called_once_with(conn, driver, "chunk-1", "source-uuid", [], [])
+
+
 def test_store_entities_and_edges_stores_embedding():
     conn = MagicMock()
     driver = MagicMock()
@@ -155,5 +171,5 @@ def test_extract_and_store_graph_iterates_all_chunks():
         extract_and_store_graph(conn, driver, "source-uuid", "job-uuid", chunk_rows)
 
     assert mock_ent.call_count == 2
-    assert mock_rel.call_count == 2
+    assert mock_rel.call_count == 0
     assert mock_store.call_count == 2

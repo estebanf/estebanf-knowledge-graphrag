@@ -1,7 +1,10 @@
+from unittest.mock import MagicMock
+
 from rag.retrieval import (
     EntityCandidate,
     RetrievalCandidate,
     TraceLogger,
+    _expand_neighbor_contexts,
     _load_chunk_ids_for_entity,
     _load_seed_entities,
     aggregate_root_score,
@@ -225,9 +228,12 @@ def test_expand_seed_candidate_falls_back_to_same_source_neighbors(monkeypatch):
     monkeypatch.setattr("rag.retrieval._load_seed_entities", lambda driver, chunk_id: [entity])
     monkeypatch.setattr("rag.retrieval._select_entity_names", lambda *args, **kwargs: ["agentic identity"])
     monkeypatch.setattr("rag.retrieval._generate_entity_query", lambda *args, **kwargs: "agentic identity security")
-    monkeypatch.setattr("rag.retrieval._load_chunk_ids_for_entity", lambda driver, entity_id: ["seed-1"])
+    monkeypatch.setattr(
+        "rag.retrieval._load_chunk_ids_for_entity",
+        lambda driver, entity_name, entity_type: ["seed-1"],
+    )
     monkeypatch.setattr("rag.retrieval._fetch_chunk_candidates_by_ids", lambda *args, **kwargs: [seed])
-    monkeypatch.setattr("rag.retrieval._load_second_hop_entities", lambda *args, **kwargs: [])
+    monkeypatch.setattr("rag.retrieval._load_entities_for_chunks", lambda *args, **kwargs: {})
     monkeypatch.setattr(
         "rag.retrieval._fetch_same_source_neighbor_candidates",
         lambda *args, **kwargs: [fallback_chunk],
@@ -252,7 +258,7 @@ def test_expand_seed_candidate_falls_back_to_same_source_neighbors(monkeypatch):
     assert any("falling back to same-source neighbors for entity agentic identity" in entry for entry in traces)
 
 
-def test_load_seed_entities_accepts_mentions_or_mentioned_in():
+def test_load_seed_entities_uses_mentions_only():
     class FakeSession:
         def __init__(self):
             self.query = None
@@ -278,17 +284,17 @@ def test_load_seed_entities_accepts_mentions_or_mentioned_in():
     _load_seed_entities(driver, "chunk-1")
 
     assert "MENTIONS" in driver.session_obj.query
-    assert "MENTIONED_IN" in driver.session_obj.query
-    assert "EXISTS" not in driver.session_obj.query
+    assert "MENTIONED_IN" not in driver.session_obj.query
 
 
-def test_load_chunk_ids_for_entity_accepts_mentions_or_mentioned_in():
+def test_load_chunk_ids_for_entity_matches_name_and_type_via_mentions():
     class FakeSession:
         def __init__(self):
             self.query = None
 
         def run(self, query, **kwargs):
             self.query = query
+            self.kwargs = kwargs
             return []
 
         def __enter__(self):
@@ -305,8 +311,161 @@ def test_load_chunk_ids_for_entity_accepts_mentions_or_mentioned_in():
             return self.session_obj
 
     driver = FakeDriver()
-    _load_chunk_ids_for_entity(driver, "entity-1")
+    _load_chunk_ids_for_entity(driver, "Acme", "ORGANIZATION")
 
     assert "MENTIONS" in driver.session_obj.query
-    assert "MENTIONED_IN" in driver.session_obj.query
-    assert "EXISTS" not in driver.session_obj.query
+    assert "MENTIONED_IN" not in driver.session_obj.query
+    assert "canonical_name" in driver.session_obj.query
+    assert "entity_type" in driver.session_obj.query
+    assert driver.session_obj.kwargs["entity_name"] == "Acme"
+    assert driver.session_obj.kwargs["entity_type"] == "ORGANIZATION"
+
+
+def test_expand_seed_candidate_uses_chunk_mediated_second_hop(monkeypatch):
+    seed = RetrievalCandidate(
+        chunk_id="seed-1",
+        chunk="seed chunk",
+        source_id="source-1",
+        source_path="/tmp/source.md",
+        source_metadata={},
+        score=0.9,
+    )
+    entity1 = EntityCandidate(entity_id="entity-1", name="identity", entity_type="CONCEPT")
+    entity2 = EntityCandidate(entity_id="entity-2", name="policy", entity_type="POLICY")
+    first_hop_chunk = RetrievalCandidate(
+        chunk_id="chunk-2",
+        chunk="identity policy chunk",
+        source_id="source-2",
+        source_path="/tmp/source-2.md",
+        source_metadata={},
+        score=0.81,
+    )
+    second_hop_chunk = RetrievalCandidate(
+        chunk_id="chunk-3",
+        chunk="policy implementation chunk",
+        source_id="source-3",
+        source_path="/tmp/source-3.md",
+        source_metadata={},
+        score=0.77,
+    )
+
+    second_hop_queries = []
+
+    monkeypatch.setattr("rag.retrieval.time.monotonic", lambda: 10.0)
+    monkeypatch.setattr("rag.retrieval._load_seed_entities", lambda driver, chunk_id: [entity1])
+    monkeypatch.setattr("rag.retrieval._select_entity_names", lambda *args, **kwargs: ["identity"])
+    monkeypatch.setattr(
+        "rag.retrieval._generate_entity_query",
+        lambda query, seed, entity_name, **kwargs: (
+            second_hop_queries.append((entity_name, kwargs)) or f"query for {entity_name}"
+        ),
+    )
+    monkeypatch.setattr(
+        "rag.retrieval._load_chunk_ids_for_entity",
+        lambda driver, entity_name, entity_type: ["chunk-2"] if entity_name == "identity" else ["chunk-3"],
+    )
+    monkeypatch.setattr(
+        "rag.retrieval._fetch_chunk_candidates_by_ids",
+        lambda conn, chunk_ids, query_text, **kwargs: (
+            [first_hop_chunk] if chunk_ids == ["chunk-2"] else [second_hop_chunk]
+        ),
+    )
+    monkeypatch.setattr(
+        "rag.retrieval._load_entities_for_chunks",
+        lambda driver, chunk_ids: {"chunk-2": [entity1, entity2]},
+    )
+    monkeypatch.setattr(
+        "rag.retrieval._select_second_hop_entities_from_chunks",
+        lambda query, seed, entity_name, chunk_entity_map, trace_logger=None: [(first_hop_chunk, entity2)],
+    )
+
+    result = expand_seed_candidate(
+        seed,
+        query="what happened",
+        source_ids=[],
+        filters={},
+        entity_confidence_threshold=0.8,
+        first_hop_similarity_threshold=0.5,
+        second_hop_similarity_threshold=0.5,
+        conn=object(),
+        driver=object(),
+        budget={"llm_calls": 0, "query_started_at": 10.0},
+    )
+
+    assert result["related"][0]["second_level_related"][0]["entity"] == "policy"
+    assert result["related"][0]["second_level_related"][0]["chunks"][0]["chunk_id"] == "chunk-3"
+    assert second_hop_queries[1][0] == "policy"
+    assert second_hop_queries[1][1]["entity_context"]["entity1"] == "identity"
+    assert second_hop_queries[1][1]["entity_context"]["entity2"] == "policy"
+
+
+def test_expand_neighbor_contexts_expands_roots_and_related_chunks():
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = [
+        ("root", "root-prev", 0, "root previous", "source-1"),
+        ("root", "root", 1, "root current", "source-1"),
+        ("root", "root-next", 2, "root next", "source-1"),
+        ("related", "related", 3, "related current", "source-1"),
+        ("related", "related-next", 4, "related next", "source-1"),
+        ("second", "second-prev", 8, "second previous", "source-2"),
+        ("second", "second", 9, "second current", "source-2"),
+    ]
+    results = [
+        {
+            "chunk_id": "root",
+            "chunk": "root current",
+            "score": 0.9,
+            "related": [
+                {
+                    "entity": "entity-1",
+                    "chunks": [
+                        {"chunk_id": "related", "chunk": "related current", "score": 0.6},
+                    ],
+                    "second_level_related": [
+                        {
+                            "entity": "entity-2",
+                            "relationship": {"label": "X", "metadata": {}},
+                            "chunks": [
+                                {"chunk_id": "second", "chunk": "second current", "score": 0.5},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+
+    _expand_neighbor_contexts(conn, results)
+
+    assert results[0]["chunk"] == "root previous\n\nroot current\n\nroot next"
+    assert results[0]["related"][0]["chunks"][0]["chunk"] == "related current\n\nrelated next"
+    assert results[0]["related"][0]["second_level_related"][0]["chunks"][0]["chunk"] == (
+        "second previous\n\nsecond current"
+    )
+
+
+def test_expand_neighbor_contexts_dedupes_chunk_lookups():
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = [
+        ("root", "root", 1, "root current", "source-1"),
+    ]
+    results = [
+        {
+            "chunk_id": "root",
+            "chunk": "root current",
+            "score": 0.9,
+            "related": [
+                {
+                    "entity": "entity-1",
+                    "chunks": [
+                        {"chunk_id": "root", "chunk": "root current", "score": 0.6},
+                    ],
+                    "second_level_related": [],
+                }
+            ],
+        }
+    ]
+
+    _expand_neighbor_contexts(conn, results)
+
+    conn.execute.assert_called_once()
