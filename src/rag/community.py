@@ -173,6 +173,10 @@ def _load_entity_embeddings(entity_ids: list[str]) -> dict[str, list[float]]:
     return result
 
 
+_MAX_COOC_ENTITIES_PER_SOURCE = 100
+_MAX_ENTITIES_FOR_SEMANTIC = 500
+
+
 def _build_igraph(
     entities: dict[str, EntityNode],
     chunk_to_source: dict[str, str],
@@ -211,8 +215,12 @@ def _build_igraph(
         for sid in node.source_ids:
             source_entities[sid].add(eid)
 
+    # Skip source co-occurrence for large sources — chunk co-occurrence edges already
+    # connect most entity pairs; the weak fallback edge is only useful for small sources.
     for src_eids in source_entities.values():
         src_list = list(src_eids)
+        if len(src_list) > _MAX_COOC_ENTITIES_PER_SOURCE:
+            continue
         for i in range(len(src_list)):
             for j in range(i + 1, len(src_list)):
                 a, b = src_list[i], src_list[j]
@@ -220,27 +228,35 @@ def _build_igraph(
                 if key not in edge_weights:
                     edge_weights[key] = source_cooc_weight
 
-    cross_source_pairs = [
-        (i, j, entity_ids[i], entity_ids[j])
-        for i in range(len(entity_ids))
-        for j in range(i + 1, len(entity_ids))
-        if not (entities[entity_ids[i]].source_ids & entities[entity_ids[j]].source_ids)
-    ]
+    # Skip O(N²) semantic cross-source computation when entity count is too large.
+    if len(entity_ids) <= _MAX_ENTITIES_FOR_SEMANTIC:
+        source_entity_sets: dict[str, set[str]] = defaultdict(set)
+        for eid, node in entities.items():
+            for sid in node.source_ids:
+                source_entity_sets[sid].add(eid)
 
-    if cross_source_pairs:
-        embeddings = _load_entity_embeddings(entity_ids)
-        for vi, vj, a_id, b_id in cross_source_pairs:
-            emb_a = embeddings.get(a_id)
-            emb_b = embeddings.get(b_id)
-            if emb_a is None or emb_b is None:
-                continue
-            sim = _cosine_similarity(emb_a, emb_b)
-            if sim < semantic_threshold:
-                continue
-            key = (vi, vj)
-            sem_w = sim * 0.5
-            if key not in edge_weights or edge_weights[key] < sem_w:
-                edge_weights[key] = sem_w
+        source_list = [(sid, list(eids)) for sid, eids in source_entity_sets.items()]
+        embeddings: dict[str, list[float]] = {}
+        for si in range(len(source_list)):
+            for sj in range(si + 1, len(source_list)):
+                _, eids_a = source_list[si]
+                _, eids_b = source_list[sj]
+                for a_id in eids_a:
+                    for b_id in eids_b:
+                        vi, vj = idx[a_id], idx[b_id]
+                        key = (min(vi, vj), max(vi, vj))
+                        if key in edge_weights:
+                            continue
+                        if not embeddings:
+                            embeddings = _load_entity_embeddings(entity_ids)
+                        emb_a = embeddings.get(a_id)
+                        emb_b = embeddings.get(b_id)
+                        if emb_a is None or emb_b is None:
+                            continue
+                        sim = _cosine_similarity(emb_a, emb_b)
+                        if sim < semantic_threshold:
+                            continue
+                        edge_weights[key] = sim * 0.5
 
     if edge_weights:
         edges = list(edge_weights.keys())
