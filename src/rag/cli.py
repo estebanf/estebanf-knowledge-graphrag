@@ -19,6 +19,7 @@ from rag.ingestion import (
     retry_job,
     submit_ingestion_job,
 )
+from rag.community import detect_communities
 from rag.retrieval import hybrid_search, retrieve
 from rag.sources import get_source_detail
 from rag.storage import delete_stored_file
@@ -28,8 +29,10 @@ SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".md", ".txt"}
 app = typer.Typer(help="RAG CLI — document ingestion and management")
 sources_app = typer.Typer(help="Manage ingested sources")
 jobs_app = typer.Typer(help="Manage ingestion jobs")
+community_app = typer.Typer(help="Community summarization")
 app.add_typer(sources_app, name="sources")
 app.add_typer(jobs_app, name="jobs")
+app.add_typer(community_app, name="community")
 
 console = Console()
 
@@ -468,3 +471,89 @@ def jobs_cancel(
         raise typer.Exit(1)
 
     console.print(f"[green]Job {result['job_id']} has been cancelled.[/green]")
+
+
+@community_app.command("ids")
+def community_ids(
+    source_id: Annotated[list[str], typer.Argument(help="Source IDs to scope")],
+    semantic_threshold: Annotated[Optional[float], typer.Option("--semantic-threshold", help="Cosine similarity threshold for semantic edges")] = None,
+    cutoff: Annotated[Optional[float], typer.Option("--cutoff", help="Minimum chunk score")] = None,
+    min_community_size: Annotated[Optional[int], typer.Option("--min-community-size", help="Minimum entities per community")] = None,
+    top_k: Annotated[Optional[int], typer.Option("--top-k", help="Max chunks per community")] = None,
+    summarize: Annotated[Optional[str], typer.Option("--summarize", help="Model name to summarize communities")] = None,
+) -> None:
+    """Detect communities from explicit source IDs."""
+    result = detect_communities(
+        scope_mode="ids", source_ids=list(source_id), criteria=[], filters={},
+        search_options={}, retrieve_options={},
+        semantic_threshold=semantic_threshold, cutoff=cutoff,
+        min_community_size=min_community_size, top_k_chunks=top_k,
+        summarize_model=summarize,
+    )
+    console.print_json(json.dumps(result))
+
+
+@community_app.command("search")
+def community_search(
+    criteria: Annotated[list[str], typer.Argument(help="Search criteria strings")],
+    filter: Annotated[Optional[list[str]], typer.Option("--filter", help="Metadata filter key=value")] = None,
+    limit: Annotated[int, typer.Option("--limit", help="Max results per criterion")] = settings.SEARCH_DEFAULT_LIMIT,
+    min_score: Annotated[float, typer.Option("--min-score", help="Min search score")] = settings.SEARCH_MIN_SCORE,
+    semantic_threshold: Annotated[Optional[float], typer.Option("--semantic-threshold")] = None,
+    cutoff: Annotated[Optional[float], typer.Option("--cutoff")] = None,
+    min_community_size: Annotated[Optional[int], typer.Option("--min-community-size")] = None,
+    top_k: Annotated[Optional[int], typer.Option("--top-k")] = None,
+    summarize: Annotated[Optional[str], typer.Option("--summarize")] = None,
+) -> None:
+    """Detect communities from sources matched by search criteria."""
+    try:
+        parsed_filters = _parse_key_value_pairs(filter, "filter")
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+    result = detect_communities(
+        scope_mode="search", source_ids=[], criteria=list(criteria),
+        filters=parsed_filters, search_options={"limit": limit, "min_score": min_score},
+        retrieve_options={}, semantic_threshold=semantic_threshold, cutoff=cutoff,
+        min_community_size=min_community_size, top_k_chunks=top_k, summarize_model=summarize,
+    )
+    console.print_json(json.dumps(result))
+
+
+@community_app.command("retrieve")
+def community_retrieve(
+    criteria: Annotated[list[str], typer.Argument(help="Retrieval criteria strings")],
+    filter: Annotated[Optional[list[str]], typer.Option("--filter")] = None,
+    seed_count: Annotated[Optional[int], typer.Option("--seed-count")] = None,
+    result_count: Annotated[Optional[int], typer.Option("--result-count")] = None,
+    rrf_k: Annotated[Optional[int], typer.Option("--rrf-k")] = None,
+    entity_confidence_threshold: Annotated[Optional[float], typer.Option("--entity-confidence-threshold")] = None,
+    first_hop_similarity_threshold: Annotated[Optional[float], typer.Option("--first-hop-similarity-threshold")] = None,
+    second_hop_similarity_threshold: Annotated[Optional[float], typer.Option("--second-hop-similarity-threshold")] = None,
+    trace: Annotated[bool, typer.Option("--trace")] = False,
+    semantic_threshold: Annotated[Optional[float], typer.Option("--semantic-threshold")] = None,
+    cutoff: Annotated[Optional[float], typer.Option("--cutoff")] = None,
+    min_community_size: Annotated[Optional[int], typer.Option("--min-community-size")] = None,
+    top_k: Annotated[Optional[int], typer.Option("--top-k")] = None,
+    summarize: Annotated[Optional[str], typer.Option("--summarize")] = None,
+) -> None:
+    """Detect communities from sources matched by retrieve criteria."""
+    try:
+        parsed_filters = _parse_key_value_pairs(filter, "filter")
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+    result = detect_communities(
+        scope_mode="retrieve", source_ids=[], criteria=list(criteria),
+        filters=parsed_filters, search_options={},
+        retrieve_options={
+            "seed_count": seed_count, "result_count": result_count, "rrf_k": rrf_k,
+            "entity_confidence_threshold": entity_confidence_threshold,
+            "first_hop_similarity_threshold": first_hop_similarity_threshold,
+            "second_hop_similarity_threshold": second_hop_similarity_threshold,
+            "trace": trace,
+        },
+        semantic_threshold=semantic_threshold, cutoff=cutoff,
+        min_community_size=min_community_size, top_k_chunks=top_k, summarize_model=summarize,
+    )
+    console.print_json(json.dumps(result))
