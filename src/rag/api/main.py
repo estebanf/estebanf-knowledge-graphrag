@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from rag.api.routes.answer import router as answer_router
+from rag.api.routes.community import router as community_router
 from rag.api.routes.retrieve import router as retrieve_router
 from rag.api.routes.search import router as search_router
 from rag.api.routes.sources import router as sources_router
@@ -32,6 +33,7 @@ def create_app() -> FastAPI:
     app.include_router(retrieve_router)
     app.include_router(answer_router)
     app.include_router(sources_router)
+    app.include_router(community_router)
     return app
 
 
