@@ -29,7 +29,7 @@ export default function App() {
   const [communityScopeMode, setCommunityScopeMode] = useState<"ids" | "search" | "retrieve">("ids");
   const [communityInput, setCommunityInput] = useState("");
   const [communitySearchLimit, setCommunitySearchLimit] = useState("10");
-  const [communitySearchMinScore, setCommunitySearchMinScore] = useState("0.0");
+  const [communitySearchMinScore, setCommunitySearchMinScore] = useState("0.7");
   const [communityRetrieveSeedCount, setCommunityRetrieveSeedCount] = useState("10");
   const [communityRetrieveResultCount, setCommunityRetrieveResultCount] = useState("5");
   const [communityRetrieveRrfK, setCommunityRetrieveRrfK] = useState("60");
