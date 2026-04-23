@@ -522,6 +522,115 @@ input {
   }
 }
 
+/* Community tab */
+
+.community-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  margin-bottom: 0.85rem;
+}
+
+.community-scope-row {
+  max-width: 200px;
+}
+
+.community-retrieve-controls {
+  grid-template-columns: repeat(3, minmax(0, 180px));
+}
+
+.community-options-grid {
+  grid-template-columns: repeat(4, minmax(0, 180px));
+}
+
+.community-textarea {
+  width: 100%;
+  padding: 0.85rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: rgba(255, 252, 247, 0.88);
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
+.community-summarize-row {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.community-summarize-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.community-actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-end;
+}
+
+.community-panel {
+  padding: 1.5rem;
+  min-height: 320px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 1.8rem;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(18px);
+}
+
+.community-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.community-card {
+  padding: 1.25rem;
+  border-radius: 1.3rem;
+  background: var(--panel-strong);
+  border: 1px solid rgba(83, 63, 44, 0.12);
+}
+
+.community-card__header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.community-card__sources {
+  margin-bottom: 0.75rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.community-card__summary {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.65;
+}
+
+.community-card__summary--empty {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.community-json {
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  overflow: hidden;
+  margin-top: 0.5rem;
+}
+
 @media (max-width: 720px) {
   .topbar {
     align-items: start;
@@ -548,5 +657,10 @@ input {
 
   .related-group {
     margin-left: 0.4rem;
+  }
+
+  .community-retrieve-controls,
+  .community-options-grid {
+    grid-template-columns: 1fr;
   }
 }

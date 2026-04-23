@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
+import MonacoEditor from "@monaco-editor/react";
 
 import ResultCard from "./components/ResultCard";
 import SourcePanel from "./components/SourcePanel";
-import type { AnswerModel, RetrieveResponse, SearchResponse, SourceDetail } from "./lib/api";
-import { getAnswerModels, getSource, retrieve, search, streamAnswer } from "./lib/api";
+import type { AnswerModel, CommunityRequestOptions, CommunityResponse, RetrieveResponse, SearchResponse, SourceDetail } from "./lib/api";
+import { community, getAnswerModels, getSource, retrieve, search, streamAnswer } from "./lib/api";
 
-type Mode = "search" | "retrieve" | "answer";
+type Mode = "search" | "retrieve" | "answer" | "community";
 
 export default function App() {
   const [mode, setMode] = useState<Mode>("search");
@@ -24,8 +25,24 @@ export default function App() {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [resultsCopied, setResultsCopied] = useState(false);
 
+  // Community tab state
+  const [communityScopeMode, setCommunityScopeMode] = useState<"ids" | "search" | "retrieve">("ids");
+  const [communityInput, setCommunityInput] = useState("");
+  const [communitySearchLimit, setCommunitySearchLimit] = useState("10");
+  const [communitySearchMinScore, setCommunitySearchMinScore] = useState("0.0");
+  const [communityRetrieveSeedCount, setCommunityRetrieveSeedCount] = useState("");
+  const [communityRetrieveResultCount, setCommunityRetrieveResultCount] = useState("");
+  const [communityRetrieveRrfK, setCommunityRetrieveRrfK] = useState("");
+  const [communitySemanticThreshold, setCommunitySemanticThreshold] = useState("");
+  const [communityCutoff, setCommunityCutoff] = useState("");
+  const [communityMinSize, setCommunityMinSize] = useState("");
+  const [communityTopK, setCommunityTopK] = useState("");
+  const [communitySummarize, setCommunitySummarize] = useState(false);
+  const [communityModel, setCommunityModel] = useState("");
+  const [communityResult, setCommunityResult] = useState<CommunityResponse | null>(null);
+
   useEffect(() => {
-    if (mode !== "answer" || answerModels.length > 0) {
+    if ((mode !== "answer" && mode !== "community") || answerModels.length > 0) {
       return;
     }
 
@@ -38,6 +55,7 @@ export default function App() {
         setAnswerModels(models);
         const defaultModel = models.find((item) => item.default)?.id ?? models[0]?.id ?? "";
         setSelectedAnswerModel(defaultModel);
+        setCommunityModel((prev) => prev || defaultModel);
       })
       .catch((modelError) => {
         if (active) {
@@ -51,7 +69,7 @@ export default function App() {
   }, [mode, answerModels.length]);
 
   async function handleSubmit() {
-    if (!query.trim()) {
+    if (mode !== "community" && !query.trim()) {
       return;
     }
     setIsLoading(true);
@@ -68,6 +86,36 @@ export default function App() {
       } else if (mode === "retrieve") {
         const response = await retrieve(query.trim());
         setRetrieveResults(response.retrieval_results);
+      } else if (mode === "community") {
+        const lines = communityInput.split("\n").map((s) => s.trim()).filter(Boolean);
+        const body: CommunityRequestOptions = { scope_mode: communityScopeMode };
+        if (communityScopeMode === "ids") {
+          body.source_ids = lines;
+        } else {
+          body.criteria = lines;
+        }
+        if (communityScopeMode === "search") {
+          body.search_options = {
+            limit: Number.parseInt(communitySearchLimit, 10),
+            min_score: Number.parseFloat(communitySearchMinScore),
+          };
+        }
+        if (communityScopeMode === "retrieve") {
+          body.retrieve_options = {
+            ...(communityRetrieveSeedCount ? { seed_count: Number.parseInt(communityRetrieveSeedCount, 10) } : {}),
+            ...(communityRetrieveResultCount ? { result_count: Number.parseInt(communityRetrieveResultCount, 10) } : {}),
+            ...(communityRetrieveRrfK ? { rrf_k: Number.parseInt(communityRetrieveRrfK, 10) } : {}),
+          };
+        }
+        const communityOpts: CommunityRequestOptions["community_options"] = {};
+        if (communitySemanticThreshold) communityOpts.semantic_threshold = Number.parseFloat(communitySemanticThreshold);
+        if (communityCutoff) communityOpts.cutoff = Number.parseFloat(communityCutoff);
+        if (communityMinSize) communityOpts.min_community_size = Number.parseInt(communityMinSize, 10);
+        if (communityTopK) communityOpts.top_k_chunks = Number.parseInt(communityTopK, 10);
+        if (Object.keys(communityOpts).length > 0) body.community_options = communityOpts;
+        if (communitySummarize && communityModel) body.summarize_model = communityModel;
+        const response = await community(body);
+        setCommunityResult(response);
       } else {
         setAnswerText("");
         setRetrieveResults([]);
@@ -115,12 +163,14 @@ export default function App() {
     setSearchResults([]);
     setRetrieveResults([]);
     setAnswerText("");
+    setCommunityResult(null);
+    setCommunityInput("");
     setError(null);
     closePreview();
   }
 
   async function copyResults() {
-    const payload = mode === "search" ? searchResults : retrieveResults;
+    const payload = mode === "search" ? searchResults : mode === "community" ? communityResult : retrieveResults;
     await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
     setResultsCopied(true);
     window.setTimeout(() => setResultsCopied(false), 1200);
@@ -174,11 +224,22 @@ export default function App() {
               >
                 Answer
               </button>
+              <button
+                aria-selected={mode === "community"}
+                className={`tab${mode === "community" ? " tab--active" : ""}`}
+                role="tab"
+                type="button"
+                onClick={() => setMode("community")}
+              >
+                Community
+              </button>
             </div>
 
-            <label className="query-panel__label" htmlFor="semantic-query">
-              Semantic Query
-            </label>
+            {mode !== "community" ? (
+              <label className="query-panel__label" htmlFor="semantic-query">
+                Semantic Query
+              </label>
+            ) : null}
             {mode === "search" ? (
               <div className="search-controls">
                 <label className="search-controls__field" htmlFor="minimum-score">
@@ -227,23 +288,131 @@ export default function App() {
                 </label>
               </div>
             ) : null}
-            <div className="query-panel__controls">
-              <input
-                id="semantic-query"
-                placeholder="Search across documents and research models..."
-                type="text"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-              />
-              <div className="query-panel__actions">
-                <button className="secondary-button" type="button" onClick={clearQueryAndResults}>
-                  Clear
-                </button>
-                <button className="primary-button" type="submit">
-                  {mode === "search" ? "Search" : mode === "retrieve" ? "Retrieve" : "Answer"}
-                </button>
+            {mode === "community" ? (
+              <div className="community-form">
+                <label className="search-controls__field community-scope-row" htmlFor="community-scope">
+                  <span>Scope Mode</span>
+                  <select
+                    id="community-scope"
+                    value={communityScopeMode}
+                    onChange={(e) => setCommunityScopeMode(e.target.value as "ids" | "search" | "retrieve")}
+                  >
+                    <option value="ids">IDs</option>
+                    <option value="search">Search</option>
+                    <option value="retrieve">Retrieve</option>
+                  </select>
+                </label>
+                <label className="query-panel__label" htmlFor="community-input">
+                  {communityScopeMode === "ids" ? "Source IDs (one per line)" : "Criteria (one per line)"}
+                </label>
+                <textarea
+                  className="community-textarea"
+                  id="community-input"
+                  placeholder={communityScopeMode === "ids" ? "uuid-1\nuuid-2" : "machine learning\nneural networks"}
+                  rows={4}
+                  value={communityInput}
+                  onChange={(e) => setCommunityInput(e.target.value)}
+                />
+                {communityScopeMode === "search" ? (
+                  <div className="search-controls">
+                    <label className="search-controls__field" htmlFor="comm-search-limit">
+                      <span>Limit</span>
+                      <input id="comm-search-limit" min="1" step="1" type="number" value={communitySearchLimit} onChange={(e) => setCommunitySearchLimit(e.target.value)} />
+                    </label>
+                    <label className="search-controls__field" htmlFor="comm-search-min-score">
+                      <span>Min Score</span>
+                      <input id="comm-search-min-score" max="1" min="0" step="0.01" type="number" value={communitySearchMinScore} onChange={(e) => setCommunitySearchMinScore(e.target.value)} />
+                    </label>
+                  </div>
+                ) : null}
+                {communityScopeMode === "retrieve" ? (
+                  <div className="search-controls community-retrieve-controls">
+                    <label className="search-controls__field" htmlFor="comm-seed-count">
+                      <span>Seed Count</span>
+                      <input id="comm-seed-count" min="1" step="1" type="number" value={communityRetrieveSeedCount} onChange={(e) => setCommunityRetrieveSeedCount(e.target.value)} />
+                    </label>
+                    <label className="search-controls__field" htmlFor="comm-result-count">
+                      <span>Result Count</span>
+                      <input id="comm-result-count" min="1" step="1" type="number" value={communityRetrieveResultCount} onChange={(e) => setCommunityRetrieveResultCount(e.target.value)} />
+                    </label>
+                    <label className="search-controls__field" htmlFor="comm-rrf-k">
+                      <span>RRF K</span>
+                      <input id="comm-rrf-k" min="1" step="1" type="number" value={communityRetrieveRrfK} onChange={(e) => setCommunityRetrieveRrfK(e.target.value)} />
+                    </label>
+                  </div>
+                ) : null}
+                <div className="search-controls community-options-grid">
+                  <label className="search-controls__field" htmlFor="comm-sem-threshold">
+                    <span>Semantic Threshold</span>
+                    <input id="comm-sem-threshold" max="1" min="0" step="0.01" type="number" value={communitySemanticThreshold} onChange={(e) => setCommunitySemanticThreshold(e.target.value)} />
+                  </label>
+                  <label className="search-controls__field" htmlFor="comm-cutoff">
+                    <span>Cutoff</span>
+                    <input id="comm-cutoff" max="1" min="0" step="0.01" type="number" value={communityCutoff} onChange={(e) => setCommunityCutoff(e.target.value)} />
+                  </label>
+                  <label className="search-controls__field" htmlFor="comm-min-size">
+                    <span>Min Community Size</span>
+                    <input id="comm-min-size" min="1" step="1" type="number" value={communityMinSize} onChange={(e) => setCommunityMinSize(e.target.value)} />
+                  </label>
+                  <label className="search-controls__field" htmlFor="comm-top-k">
+                    <span>Top K Chunks</span>
+                    <input id="comm-top-k" min="1" step="1" type="number" value={communityTopK} onChange={(e) => setCommunityTopK(e.target.value)} />
+                  </label>
+                </div>
+                <div className="community-summarize-row">
+                  <label className="community-summarize-label">
+                    <input
+                      checked={communitySummarize}
+                      type="checkbox"
+                      onChange={(e) => setCommunitySummarize(e.target.checked)}
+                    />
+                    <span>Enable Summarization</span>
+                  </label>
+                  {communitySummarize ? (
+                    <label className="search-controls__field" htmlFor="community-model">
+                      <span>Summarize Model</span>
+                      <select
+                        id="community-model"
+                        value={communityModel}
+                        onChange={(e) => setCommunityModel(e.target.value)}
+                      >
+                        {answerModels.map((model) => (
+                          <option key={model.id} value={model.id}>
+                            {model.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+                </div>
+                <div className="query-panel__actions community-actions">
+                  <button className="secondary-button" type="button" onClick={clearQueryAndResults}>
+                    Clear
+                  </button>
+                  <button className="primary-button" type="submit">
+                    Detect Communities
+                  </button>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="query-panel__controls">
+                <input
+                  id="semantic-query"
+                  placeholder="Search across documents and research models..."
+                  type="text"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                />
+                <div className="query-panel__actions">
+                  <button className="secondary-button" type="button" onClick={clearQueryAndResults}>
+                    Clear
+                  </button>
+                  <button className="primary-button" type="submit">
+                    {mode === "search" ? "Search" : mode === "retrieve" ? "Retrieve" : "Answer"}
+                  </button>
+                </div>
+              </div>
+            )}
           </form>
 
           {mode === "answer" ? (
@@ -257,54 +426,115 @@ export default function App() {
             </section>
           ) : null}
 
-          <section className="results-panel">
-            <div className="results-panel__header">
-              <div className="results-panel__title-row">
-                <h3>Top Results</h3>
-                <div className="feedback-anchor">
-                  <button aria-label="Copy Results" className="icon-button" type="button" onClick={copyResults}>
-                    ⧉
-                  </button>
-                  {resultsCopied ? (
-                    <span className="copy-popper" role="status">
-                      Results copied
-                    </span>
-                  ) : null}
+          {mode === "community" ? (
+            <section className="community-panel">
+              <div className="results-panel__header">
+                <div className="results-panel__title-row">
+                  <h3>Results</h3>
+                  <div className="feedback-anchor">
+                    <button aria-label="Copy Results" className="icon-button" type="button" onClick={copyResults}>
+                      ⧉
+                    </button>
+                    {resultsCopied ? (
+                      <span className="copy-popper" role="status">
+                        Results copied
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
+                <span>
+                  {isLoading
+                    ? "Loading..."
+                    : communityResult
+                      ? `${communityResult.communities.length} communit${communityResult.communities.length === 1 ? "y" : "ies"}`
+                      : "Run Detect Communities to see results"}
+                </span>
               </div>
-              <span>
-                {isLoading ? "Loading..." : `${currentResultsCount} result${currentResultsCount === 1 ? "" : "s"}`}
-              </span>
-            </div>
 
-            {error ? <p className="panel-state panel-state--error">{error}</p> : null}
+              {error ? <p className="panel-state panel-state--error">{error}</p> : null}
 
-            {mode === "search" ? (
-              <div className="results-stack">
-                {searchResults.map((result) => (
-                  <ResultCard key={result.chunk_id} result={result} onCopyChunk={copyChunk} onView={handleView} />
-                ))}
-              </div>
-            ) : (
-              <div className="results-stack">
-                {retrieveResults.map((result) => (
-                  <section className="retrieve-group" key={result.chunk_id}>
-                    <ResultCard result={result} onCopyChunk={copyChunk} onView={handleView} />
-                    {result.related.map((related) => (
-                      <div className="related-group" key={`${result.chunk_id}-${related.entity}`}>
-                        <div className="related-group__label">{related.entity}</div>
-                        <div className="related-group__stack">
-                          {related.chunks.map((chunk) => (
-                            <ResultCard compact key={chunk.chunk_id} result={chunk} onCopyChunk={copyChunk} onView={handleView} />
-                          ))}
-                        </div>
+              {communitySummarize && communityResult && communityResult.communities.length > 0 ? (
+                <div className="community-cards">
+                  {communityResult.communities.map((c) => (
+                    <div className="community-card" key={c.community_id}>
+                      <div className="community-card__header">
+                        <span className="badge">Community {c.community_id}</span>
+                        {c.is_cross_source ? <span className="badge">Cross-source</span> : null}
+                        <span className="score-chip">{c.entity_count} entities</span>
                       </div>
-                    ))}
-                  </section>
-                ))}
+                      <div className="community-card__sources">
+                        {c.contributing_sources.map((s) => s.source_name || s.source_id).join(", ")}
+                      </div>
+                      {c.summary ? (
+                        <p className="community-card__summary">{c.summary}</p>
+                      ) : (
+                        <p className="community-card__summary community-card__summary--empty">No summary generated.</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              <div className="community-json">
+                <MonacoEditor
+                  height="480px"
+                  language="json"
+                  options={{ readOnly: true, minimap: { enabled: false }, scrollBeyondLastLine: false, fontSize: 13 }}
+                  theme="vs"
+                  value={communityResult ? JSON.stringify(communityResult, null, 2) : "// Run Detect Communities to see results"}
+                />
               </div>
-            )}
-          </section>
+            </section>
+          ) : (
+            <section className="results-panel">
+              <div className="results-panel__header">
+                <div className="results-panel__title-row">
+                  <h3>Top Results</h3>
+                  <div className="feedback-anchor">
+                    <button aria-label="Copy Results" className="icon-button" type="button" onClick={copyResults}>
+                      ⧉
+                    </button>
+                    {resultsCopied ? (
+                      <span className="copy-popper" role="status">
+                        Results copied
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+                <span>
+                  {isLoading ? "Loading..." : `${currentResultsCount} result${currentResultsCount === 1 ? "" : "s"}`}
+                </span>
+              </div>
+
+              {error ? <p className="panel-state panel-state--error">{error}</p> : null}
+
+              {mode === "search" ? (
+                <div className="results-stack">
+                  {searchResults.map((result) => (
+                    <ResultCard key={result.chunk_id} result={result} onCopyChunk={copyChunk} onView={handleView} />
+                  ))}
+                </div>
+              ) : (
+                <div className="results-stack">
+                  {retrieveResults.map((result) => (
+                    <section className="retrieve-group" key={result.chunk_id}>
+                      <ResultCard result={result} onCopyChunk={copyChunk} onView={handleView} />
+                      {result.related.map((related) => (
+                        <div className="related-group" key={`${result.chunk_id}-${related.entity}`}>
+                          <div className="related-group__label">{related.entity}</div>
+                          <div className="related-group__stack">
+                            {related.chunks.map((chunk) => (
+                              <ResultCard compact key={chunk.chunk_id} result={chunk} onCopyChunk={copyChunk} onView={handleView} />
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </section>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
         </main>
       </div>
 
