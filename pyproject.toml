@@ -21,6 +21,8 @@ dependencies = [
     "pgvector>=0.3",
     "requests>=2.31",
     "neo4j>=5.0",
+    "leidenalg>=0.10",
+    "python-igraph>=0.11",
 ]
 
 [project.scripts]

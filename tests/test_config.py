@@ -24,3 +24,14 @@ def test_retrieval_config_defaults():
     assert settings.RETRIEVAL_MAX_GRAPH_EXPANSION_MS_PER_SEED == 4000
     assert settings.RETRIEVAL_SAME_SOURCE_NEIGHBOR_WINDOW == 2
     assert settings.RETRIEVAL_SAME_SOURCE_NEIGHBOR_COUNT == 3
+
+
+def test_community_settings_have_correct_defaults():
+    from rag.config import Settings
+    s = Settings()
+    assert s.COMMUNITY_SEMANTIC_THRESHOLD == 0.85
+    assert s.COMMUNITY_SOURCE_COOC_WEIGHT == 0.1
+    assert s.COMMUNITY_CUTOFF == 0.5
+    assert s.COMMUNITY_MIN_COMMUNITY_SIZE == 3
+    assert s.COMMUNITY_TOP_K_CHUNKS == 5
+    assert s.COMMUNITY_SUMMARIZATION_PROMPT == ""

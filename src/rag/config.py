@@ -80,6 +80,14 @@ class Settings(BaseSettings):
     SEARCH_DEFAULT_LIMIT: Annotated[int, Field(gt=0)] = 10
     SEARCH_MIN_SCORE: Annotated[float, Field(ge=0.0)] = 0.7
 
+    # Community summarization
+    COMMUNITY_SEMANTIC_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.85
+    COMMUNITY_SOURCE_COOC_WEIGHT: Annotated[float, Field(ge=0.0)] = 0.1
+    COMMUNITY_CUTOFF: Annotated[float, Field(ge=0.0, le=1.0)] = 0.5
+    COMMUNITY_MIN_COMMUNITY_SIZE: Annotated[int, Field(gt=0)] = 3
+    COMMUNITY_TOP_K_CHUNKS: Annotated[int, Field(gt=0)] = 5
+    COMMUNITY_SUMMARIZATION_PROMPT: str = ""
+
     # Worker
     WORKER_POLL_INTERVAL: int = 5       # seconds between polls when queue is empty
     WORKER_STUCK_JOB_MINUTES: int = 30  # minutes before a processing job is declared stuck
