@@ -499,23 +499,221 @@ After final reranking:
 
 ### 2.4 Community Summarization
 
-A standalone capability — separate from the per-query retrieval pipeline — that produces thematic summaries over a scoped set of sources.
-
-**Invocation:** Caller provides either an explicit list of source IDs or a metadata filter (e.g. `kind=podcast`, `domain=legal`, `author=X`). The system resolves the filter against source metadata to produce the working set.
-
-**Process:**
-1. Collect all chunk nodes and their linked entity nodes from the knowledge graph for the working set
-2. Run a graph clustering algorithm (Leiden or Louvain) over the entity subgraph induced by those chunks
-3. For each detected community, pull all chunks that mention any member entity
-4. Pass those chunks to an LLM to generate a natural language summary per community
-
-**Output per community:**
-- Natural language summary in proper Markdown
-- Key entities in the community
-- Source IDs and chunk IDs that contributed
-- The metadata filter or source list used to scope the run
+A standalone capability — separate from the per-query retrieval pipeline — that detects thematic communities across a scoped set of sources using graph clustering and optionally summarizes each community with an LLM.
 
 Community summaries are generated **on demand** against a scoped source set — they are not pre-computed at ingestion time.
+
+#### 2.4.1 Scope Resolution
+
+The caller defines the working set of sources using one of three modes:
+
+**`ids` mode** — explicit list of source IDs. No further resolution needed; the provided IDs are the scope.
+
+**`search` mode** — one or more free-text criteria strings. Each criterion runs a `hybrid_search` operation (same dense + sparse + RRF pipeline as `rag search`). The unique `source_id` values from all results across all criteria are unioned into the working set. Inherits `--limit` and `--min-score` from `rag search` as optional overrides.
+
+**`retrieve` mode** — one or more free-text criteria strings. Each criterion runs the full `retrieve()` pipeline — query variant generation, first-stage hybrid retrieval, graph expansion, and reranking. The unique `source_id` values from all `retrieval_results` (including source IDs from related chunks) are unioned into the working set. Inherits all optional parameters from `rag retrieve`: `--seed-count`, `--result-count`, `--rrf-k`, `--entity-confidence-threshold`, `--first-hop-similarity-threshold`, `--second-hop-similarity-threshold`, and `--trace`.
+
+`search` and `retrieve` modes accept `--filter key=value` (repeatable, AND semantics) to apply metadata constraints to chunk retrieval during scope resolution. Multiple criteria strings run independently; their source ID results are unioned.
+
+Sources in the working set that have zero entity connections in the graph are excluded from clustering and recorded in `metadata.sources_excluded` in the output.
+
+#### 2.4.2 Graph Construction
+
+The entity co-occurrence graph is built entirely **in memory at runtime** — nothing is written to Postgres or Memgraph. The graph is discarded after the clustering run.
+
+**Step 1 — Load chunk→entity edges**
+
+Query Memgraph for all `(Chunk)-[:MENTIONS]->(Entity)` edges where `chunk.source_id` is in the working set. This produces the base entity-chunk incidence map.
+
+**Step 2 — Chunk-level co-occurrence edges**
+
+For each chunk, every pair of entities that co-appear in that chunk receives an edge. Edge weight formula:
+
+```
+base_weight     = shared_chunk_count / sqrt(degree_A * degree_B)
+cross_source    = 1 if entity_A and entity_B come from different sources, else 0
+edge_weight     = base_weight * (1 + 0.5 * cross_source)
+```
+
+Where `degree` is the number of distinct chunks an entity appears in. The cross-source multiplier rewards entity pairs that co-occur across document boundaries, increasing the probability that Leiden detects cross-source communities.
+
+**Step 3 — Source-level co-occurrence edges (option 3)**
+
+For each source in the working set, every entity pair that shares the source but no common chunk receives a weak synthetic edge with weight `COMMUNITY_SOURCE_COOC_WEIGHT` (default: `0.1`). This edge is only added if no chunk-level edge already exists for the pair. This broadens the graph for sources with sparse chunk overlap.
+
+**Step 4 — Semantic cross-source edges (option 2)**
+
+For every pair of entities that come from **different sources**, compute the cosine similarity of their stored embeddings (loaded from the Postgres `entities.embedding` column). If the similarity meets or exceeds `COMMUNITY_SEMANTIC_THRESHOLD` (default: `0.85`), a semantic edge is added with weight `cosine_similarity * 0.5`. If a weaker edge already exists for the pair (from step 3), it is upgraded to the semantic weight. Semantic edges are only considered between cross-source entity pairs.
+
+This step allows entities that were extracted independently from different documents but represent the same concept (e.g. `Program Management Office (PMO)` and `Project Management Office`) to be connected even if they never co-appeared in a chunk.
+
+**Step 5 — Leiden clustering**
+
+Run the Leiden algorithm (`leidenalg.ModularityVertexPartition`) on the weighted in-memory graph. Leiden is preferred over Louvain because it produces better-connected, more reliable communities.
+
+Communities with fewer than `COMMUNITY_MIN_COMMUNITY_SIZE` entities (default: `3`) are dropped before output.
+
+#### 2.4.3 Chunk Scoring and Selection
+
+For each community, every chunk that mentions at least one community entity receives a representativeness score:
+
+```
+score = entity_overlap_count² / community_entity_count
+```
+
+Where `entity_overlap_count` is the number of community member entities the chunk mentions. Squaring the overlap count rewards chunks that are densely on-topic over chunks that are broadly tangential through a single hub entity.
+
+Chunks with `score < COMMUNITY_CUTOFF` (default: `0.5`) are excluded. If all chunks for a community fall below the cutoff, that community is omitted from the output entirely.
+
+From the qualifying chunks, up to `COMMUNITY_TOP_K_CHUNKS` (default: `5`) are selected. For cross-source communities, selection applies source diversity pressure: chunks are interleaved by source (highest-scoring chunk from source A, then source B, then back to A) to ensure multi-source representation in the output.
+
+#### 2.4.4 Optional Summarization
+
+When `--summarize <model_name>` is provided, each community's selected chunks are passed to the specified OpenRouter model with the following prompt:
+
+```
+Craft a compelling narrative summarizing these chunks of related information
+
+<chunks>
+{chunk_1_content}
+
+---
+
+{chunk_2_content}
+...
+</chunks>
+```
+
+The prompt template is overridable via the `COMMUNITY_SUMMARIZATION_PROMPT` environment variable. The `summary` field in the output is populated with the LLM response. When `--summarize` is not provided, `summary` is an empty string.
+
+Summarization calls are made per community and are not parallelized by default.
+
+#### 2.4.5 Output Schema
+
+Communities are ordered: cross-source communities first, then by entity count descending within each group.
+
+```json
+{
+  "metadata": {
+    "scope_mode": "ids | search | retrieve",
+    "source_count": 4,
+    "sources_excluded": [
+      { "source_id": "", "reason": "no entity connections" }
+    ],
+    "parameters": {
+      "semantic_threshold": 0.85,
+      "source_cooc_weight": 0.1,
+      "cutoff": 0.5,
+      "min_community_size": 3,
+      "top_k_chunks": 5
+    }
+  },
+  "communities": [
+    {
+      "community_id": "",
+      "is_cross_source": true,
+      "entity_count": 0,
+      "entities": [],
+      "contributing_sources": [
+        { "source_id": "", "source_name": "" }
+      ],
+      "chunks": [
+        {
+          "chunk_id": "",
+          "source_id": "",
+          "source_name": "",
+          "entity_overlap_count": 0,
+          "score": 0.0,
+          "content": ""
+        }
+      ],
+      "summary": ""
+    }
+  ]
+}
+```
+
+#### 2.4.6 Interfaces
+
+**CLI**
+
+```
+rag community <source_id> [<source_id> ...]
+    [--semantic-threshold FLOAT]
+    [--cutoff FLOAT]
+    [--min-community-size INT]
+    [--top-k INT]
+    [--summarize MODEL_NAME]
+
+rag community search "<criteria>" ["<criteria>" ...]
+    [--filter key=value ...]
+    [--limit INT] [--min-score FLOAT]
+    [--semantic-threshold FLOAT]
+    [--cutoff FLOAT]
+    [--min-community-size INT]
+    [--top-k INT]
+    [--summarize MODEL_NAME]
+
+rag community retrieve "<criteria>" ["<criteria>" ...]
+    [--filter key=value ...]
+    [--seed-count INT] [--result-count INT] [--rrf-k INT]
+    [--entity-confidence-threshold FLOAT]
+    [--first-hop-similarity-threshold FLOAT]
+    [--second-hop-similarity-threshold FLOAT]
+    [--trace]
+    [--semantic-threshold FLOAT]
+    [--cutoff FLOAT]
+    [--min-community-size INT]
+    [--top-k INT]
+    [--summarize MODEL_NAME]
+```
+
+**REST API**
+
+`POST /api/community`
+
+Request body:
+
+```json
+{
+  "scope_mode": "ids | search | retrieve",
+  "source_ids": [],
+  "criteria": [],
+  "filters": { "key": "value" },
+  "search_options": {
+    "limit": 10,
+    "min_score": 0.0
+  },
+  "retrieve_options": {
+    "seed_count": null,
+    "result_count": null,
+    "rrf_k": null,
+    "entity_confidence_threshold": null,
+    "first_hop_similarity_threshold": null,
+    "second_hop_similarity_threshold": null
+  },
+  "community_options": {
+    "semantic_threshold": null,
+    "cutoff": null,
+    "min_community_size": null,
+    "top_k_chunks": null
+  },
+  "summarize_model": null
+}
+```
+
+`source_ids` is required when `scope_mode` is `ids`. `criteria` is required for `search` and `retrieve` modes. All options fields default to their environment variable values when `null`.
+
+**Environment variables**
+
+```bash
+COMMUNITY_SEMANTIC_THRESHOLD=0.85
+COMMUNITY_SOURCE_COOC_WEIGHT=0.1
+COMMUNITY_CUTOFF=0.5
+COMMUNITY_MIN_COMMUNITY_SIZE=3
+COMMUNITY_TOP_K_CHUNKS=5
+COMMUNITY_SUMMARIZATION_PROMPT=     # optional prompt override
+```
 
 ### 2.5 Source & Document Management
 
