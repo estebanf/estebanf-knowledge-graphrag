@@ -4,6 +4,8 @@ from rag.retrieval import (
     EntityCandidate,
     RetrievalCandidate,
     TraceLogger,
+    _apply_expanded_chunk_text,
+    _expand_chunk_texts,
     _expand_neighbor_contexts,
     _load_chunk_ids_for_entity,
     _load_seed_entities,
@@ -399,17 +401,28 @@ def test_expand_seed_candidate_uses_chunk_mediated_second_hop(monkeypatch):
     assert second_hop_queries[1][1]["entity_context"]["entity2"] == "policy"
 
 
-def test_expand_neighbor_contexts_expands_roots_and_related_chunks():
+def test_expand_neighbor_contexts_expands_roots_and_related_chunks(monkeypatch):
     conn = MagicMock()
     conn.execute.return_value.fetchall.return_value = [
-        ("root", "root-prev", 0, "root previous", "source-1"),
-        ("root", "root", 1, "root current", "source-1"),
-        ("root", "root-next", 2, "root next", "source-1"),
-        ("related", "related", 3, "related current", "source-1"),
-        ("related", "related-next", 4, "related next", "source-1"),
-        ("second", "second-prev", 8, "second previous", "source-2"),
-        ("second", "second", 9, "second current", "source-2"),
+        ("root", "root-prev", "source-1", 0, "root previous"),
+        ("root", "root", "source-1", 1, "root current"),
+        ("root", "root-next", "source-1", 2, "root next"),
+        ("related", "related", "source-1", 3, "related current"),
+        ("related", "related-next", "source-1", 4, "related next"),
+        ("second", "second-prev", "source-2", 8, "second previous"),
+        ("second", "second", "source-2", 9, "second current"),
     ]
+    counts = {
+        "root current": 50,
+        "root current\n\nroot next": 120,
+        "root previous\n\nroot current\n\nroot next": 220,
+        "related current": 50,
+        "related current\n\nrelated next": 210,
+        "second current": 50,
+        "second previous\n\nsecond current": 210,
+    }
+    monkeypatch.setattr("rag.retrieval._token_count", lambda text: counts[text])
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_EXPANSION_MIN_TOKENS", 200)
     results = [
         {
             "chunk_id": "root",
@@ -447,7 +460,7 @@ def test_expand_neighbor_contexts_expands_roots_and_related_chunks():
 def test_expand_neighbor_contexts_dedupes_chunk_lookups():
     conn = MagicMock()
     conn.execute.return_value.fetchall.return_value = [
-        ("root", "root", 1, "root current", "source-1"),
+        ("root", "root", "source-1", 1, "root current"),
     ]
     results = [
         {
@@ -469,3 +482,87 @@ def test_expand_neighbor_contexts_dedupes_chunk_lookups():
     _expand_neighbor_contexts(conn, results)
 
     conn.execute.assert_called_once()
+
+
+def test_expand_chunk_texts_prefers_forward_then_backfills_until_min_tokens(monkeypatch):
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = [
+        ("root", "root", "source-1", 5, "root"),
+        ("root", "forward-1", "source-1", 6, "forward one"),
+        ("root", "forward-2", "source-1", 7, "forward two"),
+        ("root", "back-1", "source-1", 4, "back one"),
+    ]
+    counts = {
+        "root": 50,
+        "root\n\nforward one": 120,
+        "root\n\nforward one\n\nforward two": 170,
+        "back one\n\nroot\n\nforward one\n\nforward two": 230,
+    }
+    monkeypatch.setattr("rag.retrieval._token_count", lambda text: counts[text])
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_EXPANSION_MIN_TOKENS", 200)
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_EXPANSION_MAX_TOKENS", 600)
+
+    expanded = _expand_chunk_texts(conn, ["root"])
+
+    assert expanded["root"] == "back one\n\nroot\n\nforward one\n\nforward two"
+
+
+def test_expand_chunk_texts_stops_when_max_tokens_would_be_exceeded(monkeypatch):
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = [
+        ("root", "root", "source-1", 5, "root"),
+        ("root", "forward-1", "source-1", 6, "forward one"),
+        ("root", "forward-2", "source-1", 7, "forward two"),
+        ("root", "back-1", "source-1", 4, "back one"),
+    ]
+    counts = {
+        "root": 50,
+        "root\n\nforward one": 120,
+        "root\n\nforward one\n\nforward two": 170,
+        "back one\n\nroot\n\nforward one\n\nforward two": 230,
+    }
+    monkeypatch.setattr("rag.retrieval._token_count", lambda text: counts[text])
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_EXPANSION_MIN_TOKENS", 200)
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_EXPANSION_MAX_TOKENS", 180)
+
+    expanded = _expand_chunk_texts(conn, ["root"])
+
+    assert expanded["root"] == "root\n\nforward one\n\nforward two"
+
+
+def test_apply_expanded_chunk_text_updates_nested_results():
+    expanded = {
+        "root": "expanded root",
+        "related": "expanded related",
+        "second": "expanded second",
+    }
+    results = [
+        {
+            "chunk_id": "root",
+            "chunk": "root current",
+            "score": 0.9,
+            "related": [
+                {
+                    "entity": "entity-1",
+                    "chunks": [
+                        {"chunk_id": "related", "chunk": "related current", "score": 0.6},
+                    ],
+                    "second_level_related": [
+                        {
+                            "entity": "entity-2",
+                            "relationship": {"label": "X", "metadata": {}},
+                            "chunks": [
+                                {"chunk_id": "second", "chunk": "second current", "score": 0.5},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+
+    _apply_expanded_chunk_text(results, expanded)
+
+    assert results[0]["chunk"] == "expanded root"
+    assert results[0]["related"][0]["chunks"][0]["chunk"] == "expanded related"
+    assert results[0]["related"][0]["second_level_related"][0]["chunks"][0]["chunk"] == "expanded second"

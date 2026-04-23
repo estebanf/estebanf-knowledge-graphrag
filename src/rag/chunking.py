@@ -51,6 +51,15 @@ def _recursive_splitter(chunk_size_tokens: int = _CHUNK_SIZE) -> RecursiveCharac
     )
 
 
+def _is_heading_only(text: str) -> bool:
+    lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+    return bool(lines) and all(re.match(r"^#{1,6}\s+", line) for line in lines)
+
+
+def _normalize_markdown_chunk(text: str) -> str:
+    return "\n".join(line.rstrip() for line in text.strip().splitlines())
+
+
 def _split_markdown_header(text: str) -> list[str]:
     splitter = MarkdownHeaderTextSplitter(
         headers_to_split_on=[("#", "h1"), ("##", "h2"), ("###", "h3")],
@@ -64,7 +73,22 @@ def _split_markdown_header(text: str) -> list[str]:
             result.extend(secondary.split_text(doc.page_content))
         else:
             result.append(doc.page_content)
-    return [t for t in result if t.strip()]
+    result = [_normalize_markdown_chunk(t) for t in result if t.strip()]
+
+    merged: list[str] = []
+    pending_prefix: list[str] = []
+    for chunk in result:
+        if _is_heading_only(chunk):
+            pending_prefix.append(chunk)
+            continue
+        if pending_prefix:
+            merged.append("\n\n".join([*pending_prefix, chunk]).strip())
+            pending_prefix = []
+        else:
+            merged.append(chunk)
+    if pending_prefix:
+        merged.append("\n\n".join(pending_prefix).strip())
+    return merged
 
 
 def _split_recursive(text: str, chunk_size_tokens: int = _CHUNK_SIZE) -> list[str]:

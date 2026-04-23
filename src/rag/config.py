@@ -73,6 +73,8 @@ class Settings(BaseSettings):
     RETRIEVAL_MULTI_PATH_BONUS: Annotated[float, Field(ge=0.0)] = 0.05
     RETRIEVAL_SAME_SOURCE_NEIGHBOR_WINDOW: Annotated[int, Field(ge=0)] = 2
     RETRIEVAL_SAME_SOURCE_NEIGHBOR_COUNT: Annotated[int, Field(gt=0)] = 3
+    RETRIEVAL_EXPANSION_MIN_TOKENS: Annotated[int, Field(gt=0)] = 200
+    RETRIEVAL_EXPANSION_MAX_TOKENS: Annotated[int, Field(gt=0)] = 600
     RETRIEVAL_TRACE_MAX_CANDIDATES: Annotated[int, Field(gt=0)] = 5
     RETRIEVAL_TRACE_MAX_ENTITIES: Annotated[int, Field(gt=0)] = 5
 

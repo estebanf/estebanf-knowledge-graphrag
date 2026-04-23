@@ -12,7 +12,7 @@ import requests
 from rag.config import settings
 from rag.db import get_connection
 from rag.graph_db import get_graph_driver
-from rag.retrieval import hybrid_search, retrieve
+from rag.retrieval import _expand_chunk_texts, hybrid_search, retrieve
 
 
 @dataclass
@@ -321,6 +321,11 @@ def _score_and_select_chunks(
             score=score,
             content=chunk_content.get(cid, ""),
         ))
+
+    if scored:
+        expanded_content = _expand_chunk_texts(conn, [chunk.chunk_id for chunk in scored])
+        for chunk in scored:
+            chunk.content = expanded_content.get(chunk.chunk_id, chunk.content)
 
     unique_sources = {c.source_id for c in scored}
     if len(unique_sources) <= 1:

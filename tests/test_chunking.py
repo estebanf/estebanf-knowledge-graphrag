@@ -1,6 +1,6 @@
 from unittest.mock import patch, MagicMock
 from rag.profiling import DocumentProfile
-from rag.chunking import chunk_document, ChunkData, select_strategy
+from rag.chunking import _split_markdown_header, chunk_document, ChunkData, select_strategy
 
 WELL_STRUCTURED_MD = """# Chapter 1
 
@@ -132,3 +132,34 @@ def test_hierarchical_chunking_preserves_base_strategy_metadata():
     assert child_chunks
     assert all(c.chunking_strategy == "markdown-header" for c in parent_chunks)
     assert all(c.metadata.get("base_strategy") == "markdown-header" for c in child_chunks)
+
+
+def test_split_markdown_header_merges_heading_only_chunk_into_next_body():
+    md = "## Title One\n## Company Name\nContent about the company."
+
+    chunks = _split_markdown_header(md)
+
+    assert chunks == ["## Title One\n\n## Company Name\nContent about the company."]
+
+
+def test_split_markdown_header_merges_multiple_heading_only_chunks():
+    md = "## Title One\n### Subtitle\n## Company Name\nContent about the company."
+
+    chunks = _split_markdown_header(md)
+
+    assert len(chunks) == 1
+    assert "## Title One" in chunks[0]
+    assert "### Subtitle" in chunks[0]
+    assert "## Company Name" in chunks[0]
+    assert "Content about the company." in chunks[0]
+
+
+def test_split_markdown_header_preserves_trailing_heading_only_chunk():
+    md = "## Company Name\nContent about the company.\n\n## Trailing Title"
+
+    chunks = _split_markdown_header(md)
+
+    assert chunks == [
+        "## Company Name\nContent about the company.",
+        "## Trailing Title",
+    ]

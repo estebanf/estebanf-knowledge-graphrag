@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 import requests
+import tiktoken
 
 from rag.config import settings
 from rag.db import get_connection
@@ -61,6 +62,7 @@ class RetrievalParams:
 
 _CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
 _RERANK_URL = "https://openrouter.ai/api/v1/rerank"
+_ENC = tiktoken.get_encoding("cl100k_base")
 
 
 def _require_api_key() -> None:
@@ -84,6 +86,10 @@ def _strip_code_fences(content: str) -> str:
 
 def _normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip()).casefold()
+
+
+def _token_count(text: str) -> int:
+    return len(_ENC.encode(text))
 
 
 def normalize_query_variants(raw: dict) -> dict[str, object]:
@@ -350,7 +356,20 @@ def hybrid_search(
         )
 
     results.sort(key=lambda r: r.score, reverse=True)
-    return results[:limit]
+    results = results[:limit]
+    with get_connection() as conn:
+        expanded = _expand_chunk_texts(conn, [result.chunk_id for result in results])
+    return [
+        RetrievalCandidate(
+            chunk_id=result.chunk_id,
+            chunk=expanded.get(result.chunk_id, result.chunk),
+            source_id=result.source_id,
+            source_path=result.source_path,
+            source_metadata=result.source_metadata,
+            score=result.score,
+        )
+        for result in results
+    ]
 
 
 def _trace_candidates(
@@ -1097,6 +1116,110 @@ def finalize_root_results(
     return ordered
 
 
+def _expand_chunk_texts(conn, chunk_ids: list[str]) -> dict[str, str]:
+    unique_chunk_ids = list(dict.fromkeys(chunk_ids))
+    if not unique_chunk_ids:
+        return {}
+    rows = conn.execute(
+        """
+        WITH selected AS (
+            SELECT id, source_id, chunk_index, content
+            FROM chunks
+            WHERE id::text = ANY(%s::text[])
+        )
+        SELECT selected.id::text AS center_id,
+               neighbor.id::text AS chunk_id,
+               neighbor.source_id::text,
+               neighbor.chunk_index,
+               neighbor.content
+        FROM selected
+        JOIN chunks neighbor
+          ON neighbor.source_id = selected.source_id
+         AND neighbor.deleted_at IS NULL
+         AND neighbor.chunk_index BETWEEN selected.chunk_index - %s AND selected.chunk_index + %s
+        ORDER BY selected.id, neighbor.chunk_index
+        """,
+        (
+            unique_chunk_ids,
+            settings.RETRIEVAL_SAME_SOURCE_NEIGHBOR_WINDOW,
+            settings.RETRIEVAL_SAME_SOURCE_NEIGHBOR_WINDOW,
+        ),
+    ).fetchall()
+
+    grouped: dict[str, dict[str, object]] = {}
+    for center_id, chunk_id, source_id, chunk_index, content in rows:
+        payload = grouped.setdefault(
+            str(center_id),
+            {"center": None, "neighbors": []},
+        )
+        item = {
+            "chunk_id": str(chunk_id),
+            "source_id": str(source_id),
+            "chunk_index": int(chunk_index),
+            "content": content or "",
+        }
+        if str(chunk_id) == str(center_id):
+            payload["center"] = item
+        payload["neighbors"].append(item)
+
+    expanded_by_id: dict[str, str] = {}
+    min_tokens = settings.RETRIEVAL_EXPANSION_MIN_TOKENS
+    max_tokens = settings.RETRIEVAL_EXPANSION_MAX_TOKENS
+
+    for center_id, payload in grouped.items():
+        center = payload["center"]
+        if not center:
+            continue
+        neighbors = payload["neighbors"]
+        by_index = {item["chunk_index"]: item for item in neighbors}
+        assembled = center["content"]
+        if _token_count(assembled) >= min_tokens:
+            expanded_by_id[center_id] = assembled
+            continue
+
+        center_index = center["chunk_index"]
+        max_index = max(by_index)
+        min_index = min(by_index)
+
+        for index in range(center_index + 1, max_index + 1):
+            candidate = by_index.get(index)
+            if not candidate:
+                continue
+            maybe = f"{assembled}\n\n{candidate['content']}".strip()
+            if _token_count(maybe) > max_tokens:
+                break
+            assembled = maybe
+            if _token_count(assembled) >= min_tokens:
+                break
+
+        if _token_count(assembled) < min_tokens:
+            for index in range(center_index - 1, min_index - 1, -1):
+                candidate = by_index.get(index)
+                if not candidate:
+                    continue
+                maybe = f"{candidate['content']}\n\n{assembled}".strip()
+                if _token_count(maybe) > max_tokens:
+                    break
+                assembled = maybe
+                if _token_count(assembled) >= min_tokens:
+                    break
+
+        expanded_by_id[center_id] = assembled
+
+    return expanded_by_id
+
+
+def _apply_expanded_chunk_text(retrieval_results: list[dict], expanded_by_id: dict[str, str]) -> None:
+    for root in retrieval_results:
+        root["chunk"] = expanded_by_id.get(root["chunk_id"], root["chunk"])
+        for related in root["related"]:
+            for chunk in related["chunks"]:
+                chunk["chunk"] = expanded_by_id.get(chunk["chunk_id"], chunk["chunk"])
+            for second_level in related["second_level_related"]:
+                for chunk in second_level["chunks"]:
+                    chunk["chunk"] = expanded_by_id.get(chunk["chunk_id"], chunk["chunk"])
+
+
 def _expand_neighbor_contexts(conn, retrieval_results: list[dict]) -> None:
     chunk_ids: set[str] = set()
     for root in retrieval_results:
@@ -1107,47 +1230,8 @@ def _expand_neighbor_contexts(conn, retrieval_results: list[dict]) -> None:
             for second_level in related["second_level_related"]:
                 for chunk in second_level["chunks"]:
                     chunk_ids.add(chunk["chunk_id"])
-
-    if not chunk_ids:
-        return
-
-    rows = conn.execute(
-        """
-        WITH selected AS (
-            SELECT id, source_id, chunk_index
-            FROM chunks
-            WHERE id::text = ANY(%s::text[])
-        )
-        SELECT selected.id::text AS center_id,
-               neighbor.id::text AS chunk_id,
-               neighbor.chunk_index,
-               neighbor.content,
-               neighbor.source_id::text
-        FROM selected
-        JOIN chunks neighbor
-          ON neighbor.source_id = selected.source_id
-         AND neighbor.deleted_at IS NULL
-         AND neighbor.chunk_index BETWEEN selected.chunk_index - 1 AND selected.chunk_index + 1
-        ORDER BY selected.id, neighbor.chunk_index
-        """,
-        (list(chunk_ids),),
-    ).fetchall()
-
-    expanded_by_id: dict[str, str] = {}
-    grouped: dict[str, list[str]] = {}
-    for center_id, _, _, content, _ in rows:
-        grouped.setdefault(str(center_id), []).append(content or "")
-    for center_id, contents in grouped.items():
-        expanded_by_id[center_id] = "\n\n".join(content for content in contents if content)
-
-    for root in retrieval_results:
-        root["chunk"] = expanded_by_id.get(root["chunk_id"], root["chunk"])
-        for related in root["related"]:
-            for chunk in related["chunks"]:
-                chunk["chunk"] = expanded_by_id.get(chunk["chunk_id"], chunk["chunk"])
-            for second_level in related["second_level_related"]:
-                for chunk in second_level["chunks"]:
-                    chunk["chunk"] = expanded_by_id.get(chunk["chunk_id"], chunk["chunk"])
+    expanded_by_id = _expand_chunk_texts(conn, list(chunk_ids))
+    _apply_expanded_chunk_text(retrieval_results, expanded_by_id)
 
 
 def _resolved_params(

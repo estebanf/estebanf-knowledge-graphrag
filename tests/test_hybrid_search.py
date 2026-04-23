@@ -17,11 +17,17 @@ def _candidate(chunk_id: str, score: float = 0.8) -> RetrievalCandidate:
 @patch("rag.retrieval.sparse_retrieve")
 @patch("rag.retrieval.dense_retrieve")
 @patch("rag.retrieval.get_connection")
-def test_hybrid_search_returns_fused_results(mock_conn, mock_dense, mock_sparse):
+@patch("rag.retrieval._expand_chunk_texts")
+def test_hybrid_search_returns_fused_results(mock_expand, mock_conn, mock_dense, mock_sparse):
     conn = MagicMock()
     mock_conn.return_value.__enter__.return_value = conn
     mock_dense.return_value = [_candidate("chunk-1"), _candidate("chunk-2")]
     mock_sparse.return_value = [_candidate("chunk-2"), _candidate("chunk-3")]
+    mock_expand.return_value = {
+        "chunk-1": "expanded chunk-1",
+        "chunk-2": "expanded chunk-2",
+        "chunk-3": "expanded chunk-3",
+    }
 
     results = hybrid_search("test query", limit=10, min_score=0.0)
 
@@ -31,6 +37,7 @@ def test_hybrid_search_returns_fused_results(mock_conn, mock_dense, mock_sparse)
     assert "chunk-1" in chunk_ids
     assert "chunk-2" in chunk_ids
     assert "chunk-3" in chunk_ids
+    assert results[0].chunk.startswith("expanded")
     mock_dense.assert_called_once()
     mock_sparse.assert_called_once()
 
@@ -38,7 +45,8 @@ def test_hybrid_search_returns_fused_results(mock_conn, mock_dense, mock_sparse)
 @patch("rag.retrieval.sparse_retrieve")
 @patch("rag.retrieval.dense_retrieve")
 @patch("rag.retrieval.get_connection")
-def test_hybrid_search_respects_limit(mock_conn, mock_dense, mock_sparse):
+@patch("rag.retrieval._expand_chunk_texts", return_value={})
+def test_hybrid_search_respects_limit(mock_expand, mock_conn, mock_dense, mock_sparse):
     conn = MagicMock()
     mock_conn.return_value.__enter__.return_value = conn
     mock_dense.return_value = [_candidate(f"chunk-{i}") for i in range(10)]
@@ -52,7 +60,8 @@ def test_hybrid_search_respects_limit(mock_conn, mock_dense, mock_sparse):
 @patch("rag.retrieval.sparse_retrieve")
 @patch("rag.retrieval.dense_retrieve")
 @patch("rag.retrieval.get_connection")
-def test_hybrid_search_filters_by_cosine_similarity(mock_conn, mock_dense, mock_sparse):
+@patch("rag.retrieval._expand_chunk_texts", return_value={})
+def test_hybrid_search_filters_by_cosine_similarity(mock_expand, mock_conn, mock_dense, mock_sparse):
     conn = MagicMock()
     mock_conn.return_value.__enter__.return_value = conn
     mock_dense.return_value = [_candidate("chunk-1", score=0.5), _candidate("chunk-2", score=0.9)]
@@ -68,7 +77,8 @@ def test_hybrid_search_filters_by_cosine_similarity(mock_conn, mock_dense, mock_
 @patch("rag.retrieval.sparse_retrieve")
 @patch("rag.retrieval.dense_retrieve")
 @patch("rag.retrieval.get_connection")
-def test_hybrid_search_score_is_cosine_similarity_not_rrf(mock_conn, mock_dense, mock_sparse):
+@patch("rag.retrieval._expand_chunk_texts", return_value={})
+def test_hybrid_search_score_is_cosine_similarity_not_rrf(mock_expand, mock_conn, mock_dense, mock_sparse):
     conn = MagicMock()
     mock_conn.return_value.__enter__.return_value = conn
     mock_dense.return_value = [_candidate("chunk-1", score=0.85)]

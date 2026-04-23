@@ -126,8 +126,9 @@ def test_run_leiden_empty_graph_returns_empty():
 
 # --- _score_and_select_chunks ---
 
+@patch("rag.community._expand_chunk_texts", return_value={})
 @patch("rag.community.get_connection")
-def test_score_chunks_drops_below_cutoff(mock_conn):
+def test_score_chunks_drops_below_cutoff(mock_conn, mock_expand):
     from rag.community import EntityNode, _score_and_select_chunks
     conn = mock_conn.return_value.__enter__.return_value
     conn.execute.return_value.fetchall.return_value = [
@@ -148,8 +149,9 @@ def test_score_chunks_drops_below_cutoff(mock_conn):
     assert len(results) == 1
     assert results[0].chunk_id == "chunk-2"
 
+@patch("rag.community._expand_chunk_texts", return_value={})
 @patch("rag.community.get_connection")
-def test_score_chunks_round_robin_for_cross_source(mock_conn):
+def test_score_chunks_round_robin_for_cross_source(mock_conn, mock_expand):
     from rag.community import EntityNode, _score_and_select_chunks
     conn = mock_conn.return_value.__enter__.return_value
     conn.execute.return_value.fetchall.return_value = [
@@ -165,6 +167,24 @@ def test_score_chunks_round_robin_for_cross_source(mock_conn):
     )
     source_ids = [r.source_id for r in results]
     assert "s2" in source_ids  # round-robin ensures both sources represented
+
+
+@patch("rag.community._expand_chunk_texts")
+@patch("rag.community.get_connection")
+def test_score_chunks_expands_content_with_shared_retrieval_logic(mock_conn, mock_expand):
+    from rag.community import EntityNode, _score_and_select_chunks
+    conn = mock_conn.return_value.__enter__.return_value
+    conn.execute.return_value.fetchall.return_value = [("c1", "short content")]
+    mock_expand.return_value = {"c1": "expanded content"}
+    entities = {
+        "e1": EntityNode("e1", "A", "ORG", source_ids={"s1"}, chunk_ids={"c1"}),
+    }
+
+    results = _score_and_select_chunks(
+        ["e1"], entities, {"c1": "s1"}, {"s1": "S1"}, cutoff=0.0, top_k=5
+    )
+
+    assert results[0].content == "expanded content"
 
 
 # --- _summarize_community ---
