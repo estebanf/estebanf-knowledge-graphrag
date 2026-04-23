@@ -20,7 +20,7 @@ def get_embeddings(texts: list[str]) -> list[list[float]]:
                 "Content-Type": "application/json",
             },
             json={"model": settings.MODEL_EMBEDDING, "input": batch},
-            timeout=120,
+            timeout=(10, 120),
         )
         resp.raise_for_status()
         body = resp.json()

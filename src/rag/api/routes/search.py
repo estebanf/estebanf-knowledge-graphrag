@@ -1,4 +1,5 @@
-from fastapi import APIRouter
+import requests.exceptions
+from fastapi import APIRouter, HTTPException
 
 from rag.api.schemas import SearchRequest, SearchResponse, SearchResult
 from rag.retrieval import hybrid_search
@@ -9,7 +10,10 @@ router = APIRouter(prefix="/api/search", tags=["search"])
 
 @router.post("", response_model=SearchResponse)
 def search(payload: SearchRequest) -> SearchResponse:
-    results = hybrid_search(payload.query, limit=payload.limit, min_score=payload.min_score)
+    try:
+        results = hybrid_search(payload.query, limit=payload.limit, min_score=payload.min_score)
+    except requests.exceptions.RequestException as exc:
+        raise HTTPException(status_code=503, detail="Embedding service unavailable") from exc
     return SearchResponse(
         results=[
             SearchResult(
