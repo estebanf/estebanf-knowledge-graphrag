@@ -304,28 +304,28 @@ def _score_and_select_chunks(
             "SELECT id, content FROM chunks WHERE id = ANY(%s) AND deleted_at IS NULL",
             (chunk_ids_needed,),
         ).fetchall()
-    chunk_content: dict[str, str] = {str(row[0]): row[1] for row in rows}
+        chunk_content: dict[str, str] = {str(row[0]): row[1] for row in rows}
 
-    scored: list[ChunkResult] = []
-    for cid, hit_entities in chunk_entity_hits.items():
-        overlap = len(hit_entities)
-        score = (overlap ** 2) / entity_count
-        if score < cutoff:
-            continue
-        sid = chunk_to_source.get(cid, "")
-        scored.append(ChunkResult(
-            chunk_id=cid,
-            source_id=sid,
-            source_name=source_names.get(sid, ""),
-            entity_overlap_count=overlap,
-            score=score,
-            content=chunk_content.get(cid, ""),
-        ))
+        scored: list[ChunkResult] = []
+        for cid, hit_entities in chunk_entity_hits.items():
+            overlap = len(hit_entities)
+            score = (overlap ** 2) / entity_count
+            if score < cutoff:
+                continue
+            sid = chunk_to_source.get(cid, "")
+            scored.append(ChunkResult(
+                chunk_id=cid,
+                source_id=sid,
+                source_name=source_names.get(sid, ""),
+                entity_overlap_count=overlap,
+                score=score,
+                content=chunk_content.get(cid, ""),
+            ))
 
-    if scored:
-        expanded_content = _expand_chunk_texts(conn, [chunk.chunk_id for chunk in scored])
-        for chunk in scored:
-            chunk.content = expanded_content.get(chunk.chunk_id, chunk.content)
+        if scored:
+            expanded_content = _expand_chunk_texts(conn, [chunk.chunk_id for chunk in scored])
+            for chunk in scored:
+                chunk.content = expanded_content.get(chunk.chunk_id, chunk.content)
 
     unique_sources = {c.source_id for c in scored}
     if len(unique_sources) <= 1:
