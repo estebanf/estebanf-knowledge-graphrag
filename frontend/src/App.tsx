@@ -7,6 +7,7 @@ import type { AnswerModel, CommunityRequestOptions, CommunityResponse, RetrieveR
 import { community, getAnswerModels, getSource, retrieve, search, streamAnswer } from "./lib/api";
 
 type Mode = "search" | "retrieve" | "answer" | "community";
+type BucketEntry = { sourceId: string; title: string };
 
 export default function App() {
   const [mode, setMode] = useState<Mode>("search");
@@ -24,6 +25,23 @@ export default function App() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [resultsCopied, setResultsCopied] = useState(false);
+  const [bucket, setBucket] = useState<BucketEntry[]>([]);
+
+  function handleAddToBucket(sourceId: string, title: string) {
+    setBucket((prev) => {
+      if (prev.some((e) => e.sourceId === sourceId)) return prev;
+      return [...prev, { sourceId, title }];
+    });
+  }
+
+  async function handleCopyBucket() {
+    const text = bucket.map((e) => e.sourceId).join("\n");
+    await navigator.clipboard.writeText(text);
+  }
+
+  function handleClearBucket() {
+    setBucket([]);
+  }
 
   // Community tab state
   const [communityScopeMode, setCommunityScopeMode] = useState<"ids" | "search" | "retrieve">("ids");
