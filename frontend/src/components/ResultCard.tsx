@@ -30,7 +30,8 @@ export default function ResultCard({ result, compact = false, onView, onCopyChun
   }
 
   function handleAddToBucket() {
-    onAddToBucket?.(result.source_id, result.source_metadata.title ?? result.source_id);
+    if (!onAddToBucket) return;
+    onAddToBucket(result.source_id, result.source_metadata.title ?? result.source_id);
     setAdded(true);
     window.setTimeout(() => setAdded(false), 1200);
   }
