@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import MonacoEditor from "@monaco-editor/react";
 
+import BucketPopover from "./components/BucketPopover";
 import ResultCard from "./components/ResultCard";
 import SourcePanel from "./components/SourcePanel";
 import type { AnswerModel, CommunityRequestOptions, CommunityResponse, RetrieveResponse, SearchResponse, SourceDetail } from "./lib/api";
@@ -210,6 +211,11 @@ export default function App() {
               <h1>estebanf&apos;s RAG</h1>
             </div>
           </div>
+          <BucketPopover
+            entries={bucket}
+            onClear={handleClearBucket}
+            onCopy={handleCopyBucket}
+          />
         </header>
 
         <main className="content">

@@ -399,6 +399,52 @@ describe("App", () => {
     expect(entries).toHaveLength(1);
   });
 
+  test("bucket popover lists collected sources and copies IDs one per line", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => searchResponse,
+    }));
+    const writeText = installClipboard();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await userEvent.type(screen.getByLabelText(/semantic query/i), "economics{enter}");
+    await screen.findByRole("heading", { name: /Economics of GenAI/i });
+
+    await userEvent.click(screen.getByRole("button", { name: /add to bucket/i }));
+    await userEvent.click(screen.getByRole("button", { name: /source bucket/i }));
+
+    expect(screen.getByRole("dialog", { name: /collected sources/i })).toBeInTheDocument();
+    expect(screen.getByTestId("bucket-entry")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /^copy$/i }));
+    expect(writeText).toHaveBeenCalledWith("source-1");
+    expect(screen.getByText(/ids copied/i)).toBeInTheDocument();
+  });
+
+  test("bucket clear empties the collected sources", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => searchResponse,
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await userEvent.type(screen.getByLabelText(/semantic query/i), "economics{enter}");
+    await screen.findByRole("heading", { name: /Economics of GenAI/i });
+
+    await userEvent.click(screen.getByRole("button", { name: /add to bucket/i }));
+    await userEvent.click(screen.getByRole("button", { name: /source bucket/i }));
+
+    const dialog = screen.getByRole("dialog", { name: /collected sources/i });
+    await userEvent.click(within(dialog).getByRole("button", { name: /clear/i }));
+
+    // Popover closes after clear; reopen to verify empty state
+    await userEvent.click(screen.getByRole("button", { name: /source bucket/i }));
+    expect(screen.getByText(/no sources collected/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("bucket-entry")).not.toBeInTheDocument();
+  });
+
   test("copies an individual chunk from the result card", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
