@@ -35,3 +35,8 @@ def test_community_settings_have_correct_defaults():
     assert s.COMMUNITY_MIN_COMMUNITY_SIZE == 3
     assert s.COMMUNITY_TOP_K_CHUNKS == 5
     assert s.COMMUNITY_SUMMARIZATION_PROMPT == ""
+
+
+def test_model_image_description_has_default():
+    from rag.config import settings
+    assert settings.MODEL_IMAGE_DESCRIPTION == "google/gemini-2.0-flash-lite"

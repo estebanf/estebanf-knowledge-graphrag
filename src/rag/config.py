@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     MEMGRAPH_URL: str = "bolt://localhost:7687"
     MODEL_ENTITY_EXTRACTION: str = "qwen/qwen-2.5-7b-instruct"
     MODEL_RELATIONSHIP_EXTRACTION: str = "qwen/qwen-2.5-7b-instruct"
+    MODEL_IMAGE_DESCRIPTION: str = "google/gemini-2.0-flash-lite"
     RELATIONSHIP_CONFIDENCE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.75
     ENTITY_DEDUP_COSINE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.92
 
