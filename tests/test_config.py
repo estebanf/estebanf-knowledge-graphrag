@@ -39,4 +39,4 @@ def test_community_settings_have_correct_defaults():
 
 def test_model_image_description_has_default():
     from rag.config import settings
-    assert settings.MODEL_IMAGE_DESCRIPTION == "google/gemini-2.0-flash-lite"
+    assert settings.MODEL_IMAGE_DESCRIPTION == "google/gemini-2.0-flash-lite-001"
