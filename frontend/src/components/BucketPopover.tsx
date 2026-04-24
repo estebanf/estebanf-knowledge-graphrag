@@ -33,6 +33,7 @@ export default function BucketPopover({ entries, onClear, onCopy }: BucketPopove
   return (
     <div className="bucket-anchor" ref={containerRef}>
       <button
+        aria-expanded={open}
         aria-label="Source bucket"
         className="icon-button"
         type="button"
