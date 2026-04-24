@@ -185,3 +185,109 @@ def remediate(dry_run: bool = False, only_source_id: str | None = None, limit: i
             with get_connection() as conn:
                 remediate_source(conn, driver, source.source_id, source.job_id, source.file_name)
     return affected
+
+
+IDENTIFY_IMAGE_PLACEHOLDER_SOURCES_SQL = """
+SELECT
+    s.id AS source_id,
+    j.id AS job_id,
+    s.file_name,
+    COUNT(DISTINCT c.id) AS image_chunk_count
+FROM chunks c
+JOIN sources s ON s.id = c.source_id
+JOIN jobs j ON j.source_id = s.id
+WHERE j.status = 'completed'
+  AND c.deleted_at IS NULL
+  AND c.content LIKE '%<!-- image -->%'
+GROUP BY s.id, j.id, s.file_name
+ORDER BY image_chunk_count DESC, s.file_name ASC
+"""
+
+
+@dataclass(frozen=True)
+class AffectedImageSource:
+    source_id: str
+    job_id: str
+    file_name: str
+    image_chunk_count: int
+
+
+def get_image_placeholder_sources(
+    conn,
+    only_source_id: str | None = None,
+    limit: int | None = None,
+) -> list[AffectedImageSource]:
+    rows = conn.execute(IDENTIFY_IMAGE_PLACEHOLDER_SOURCES_SQL).fetchall()
+    affected = [
+        AffectedImageSource(
+            source_id=str(row[0]),
+            job_id=str(row[1]),
+            file_name=row[2],
+            image_chunk_count=int(row[3]),
+        )
+        for row in rows
+    ]
+    if only_source_id:
+        affected = [s for s in affected if s.source_id == only_source_id]
+    if limit is not None:
+        affected = affected[:limit]
+    return affected
+
+
+def remediate_image_source(conn, driver, source_id: str, job_id: str, file_name: str) -> None:
+    row = conn.execute(
+        "SELECT status FROM jobs WHERE id = %s",
+        (job_id,),
+    ).fetchone()
+    if not row:
+        raise RuntimeError(f"Job not found: {job_id}")
+    if row[0] != "completed":
+        raise RuntimeError(f"Job {job_id} is not completed (status: {row[0]})")
+
+    entity_rows = conn.execute(
+        "SELECT id FROM entities WHERE source_id = %s",
+        (source_id,),
+    ).fetchall()
+    entity_ids = [str(row[0]) for row in entity_rows]
+
+    cleanup_from_stage(conn, driver, job_id, source_id, "parsing")
+    verify_cleanup(conn, driver, source_id)
+    verify_graph_entity_cleanup(driver, entity_ids)
+    conn.execute(
+        """
+        UPDATE jobs
+        SET status = 'pending',
+            current_stage = NULL,
+            retry_from_stage = 'parsing',
+            error_detail = NULL,
+            updated_at = now()
+        WHERE id = %s
+        """,
+        (job_id,),
+    )
+    _write_audit_log(
+        conn,
+        "job_retried",
+        "job",
+        job_id,
+        {"from_stage": "parsing", "reason": "image_placeholder_remediation", "file_name": file_name},
+    )
+    conn.commit()
+
+
+def remediate_image_placeholders(
+    dry_run: bool = False,
+    only_source_id: str | None = None,
+    limit: int | None = None,
+) -> list[AffectedImageSource]:
+    with get_connection() as conn:
+        affected = get_image_placeholder_sources(conn, only_source_id=only_source_id, limit=limit)
+
+    if dry_run or not affected:
+        return affected
+
+    with get_graph_driver() as driver:
+        for source in affected:
+            with get_connection() as conn:
+                remediate_image_source(conn, driver, source.source_id, source.job_id, source.file_name)
+    return affected
