@@ -1,9 +1,12 @@
+import io
 from dataclasses import dataclass
 from pathlib import Path
 
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
+
+from rag.image_description import describe_image
 
 
 class ParseError(Exception):
@@ -23,7 +26,7 @@ _pdf_options = PdfPipelineOptions()
 _pdf_options.do_ocr = True
 _pdf_options.do_table_structure = True
 _pdf_options.generate_page_images = False
-_pdf_options.generate_picture_images = False
+_pdf_options.generate_picture_images = True
 
 _converter = DocumentConverter(
     format_options={
@@ -50,6 +53,18 @@ def _plaintext_to_element_tree(text: str) -> str:
     return "\n".join(tree_lines)
 
 
+def _describe_docling_pictures(result, markdown: str) -> str:
+    for picture in result.document.pictures:
+        img = picture.get_image(result.document)
+        if img is None:
+            continue
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        description = describe_image(buf.getvalue(), "image/png")
+        markdown = markdown.replace("<!-- image -->", description, 1)
+    return markdown
+
+
 def parse_document(file_path: Path) -> ParseResult:
     try:
         suffix = file_path.suffix.lower()
@@ -58,8 +73,10 @@ def parse_document(file_path: Path) -> ParseResult:
             return ParseResult(markdown=text, element_tree=_plaintext_to_element_tree(text))
 
         result = _converter.convert(str(file_path))
+        markdown = result.document.export_to_markdown()
+        markdown = _describe_docling_pictures(result, markdown)
         return ParseResult(
-            markdown=result.document.export_to_markdown(),
+            markdown=markdown,
             element_tree=result.document.export_to_element_tree(),
         )
     except Exception as exc:
