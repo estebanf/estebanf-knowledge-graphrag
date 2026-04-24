@@ -18,7 +18,7 @@ from rag.graph_linking import link_graph
 from rag.metadata_extraction import extract_metadata
 from rag.parser import ParseError, parse_document
 from rag.profiling import profile_document
-from rag.storage import store_file
+from rag.storage import store_file, store_markdown_images
 
 STAGE_ORDER = [
     "parsing", "profiling", "chunking", "validation",
@@ -301,6 +301,8 @@ def submit_ingestion_job(
             raise ValueError(f"Duplicate: file already ingested as source {existing}")
 
         stored_path = store_file(source_id, file_path, version=1)
+        if file_path.suffix.lower() in {".md", ".markdown"}:
+            store_markdown_images(source_id, file_path, version=1)
 
         try:
             conn.execute(
