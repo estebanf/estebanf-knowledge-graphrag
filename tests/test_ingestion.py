@@ -98,6 +98,7 @@ def test_ingest_markdown(mock_profile, mock_chunk, mock_validate, mock_embed, mo
     assert row[1] and len(row[1]) > 0
 
 
+@patch("rag.parser.describe_image", return_value="[image description]")
 @patch("rag.ingestion.link_graph")
 @patch("rag.ingestion.extract_and_store_graph")
 @patch("rag.ingestion.get_graph_driver")
@@ -105,7 +106,7 @@ def test_ingest_markdown(mock_profile, mock_chunk, mock_validate, mock_embed, mo
 @patch("rag.ingestion.validate_chunks")
 @patch("rag.ingestion.chunk_document")
 @patch("rag.ingestion.profile_document")
-def test_ingest_pdf(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, mock_link, ingested):
+def test_ingest_pdf(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, mock_link, mock_describe, ingested):
     mock_profile.return_value = _DEFAULT_PROFILE
     mock_chunk.return_value = []
     mock_validate.return_value = True
@@ -133,6 +134,7 @@ def test_ingest_pdf(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd
     assert row[1] and len(row[1]) > 0
 
 
+@patch("rag.parser.describe_image", return_value="[image description]")
 @patch("rag.ingestion.link_graph")
 @patch("rag.ingestion.extract_and_store_graph")
 @patch("rag.ingestion.get_graph_driver")
@@ -140,7 +142,7 @@ def test_ingest_pdf(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd
 @patch("rag.ingestion.validate_chunks")
 @patch("rag.ingestion.chunk_document")
 @patch("rag.ingestion.profile_document")
-def test_ingest_docx(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, mock_link, ingested):
+def test_ingest_docx(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, mock_link, mock_describe, ingested):
     mock_profile.return_value = _DEFAULT_PROFILE
     mock_chunk.return_value = []
     mock_validate.return_value = True
