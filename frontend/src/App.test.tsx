@@ -379,6 +379,26 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: /add to bucket/i })).toBeInTheDocument();
   });
 
+  test("adding same source twice keeps only one bucket entry", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => searchResponse,
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await userEvent.type(screen.getByLabelText(/semantic query/i), "economics{enter}");
+    await screen.findByRole("heading", { name: /Economics of GenAI/i });
+
+    const addBtn = screen.getByRole("button", { name: /add to bucket/i });
+    await userEvent.click(addBtn);
+    await userEvent.click(addBtn);
+
+    await userEvent.click(screen.getByRole("button", { name: /source bucket/i }));
+    const entries = screen.getAllByTestId("bucket-entry");
+    expect(entries).toHaveLength(1);
+  });
+
   test("copies an individual chunk from the result card", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,

@@ -529,20 +529,20 @@ export default function App() {
               {mode === "search" ? (
                 <div className="results-stack">
                   {searchResults.map((result) => (
-                    <ResultCard key={result.chunk_id} result={result} onCopyChunk={copyChunk} onView={handleView} />
+                    <ResultCard key={result.chunk_id} result={result} onCopyChunk={copyChunk} onView={handleView} onAddToBucket={handleAddToBucket} />
                   ))}
                 </div>
               ) : (
                 <div className="results-stack">
                   {retrieveResults.map((result) => (
                     <section className="retrieve-group" key={result.chunk_id}>
-                      <ResultCard result={result} onCopyChunk={copyChunk} onView={handleView} />
+                      <ResultCard result={result} onCopyChunk={copyChunk} onView={handleView} onAddToBucket={handleAddToBucket} />
                       {result.related.map((related) => (
                         <div className="related-group" key={`${result.chunk_id}-${related.entity}`}>
                           <div className="related-group__label">{related.entity}</div>
                           <div className="related-group__stack">
                             {related.chunks.map((chunk) => (
-                              <ResultCard compact key={chunk.chunk_id} result={chunk} onCopyChunk={copyChunk} onView={handleView} />
+                              <ResultCard compact key={chunk.chunk_id} result={chunk} onCopyChunk={copyChunk} onView={handleView} onAddToBucket={handleAddToBucket} />
                             ))}
                           </div>
                         </div>
