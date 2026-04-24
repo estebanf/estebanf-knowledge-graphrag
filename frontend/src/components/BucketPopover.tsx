@@ -45,7 +45,7 @@ export default function BucketPopover({ entries, onClear, onCopy }: BucketPopove
         ) : null}
       </button>
       {open ? (
-        <div aria-label="Collected sources" className="bucket-popover" role="dialog">
+        <div aria-label="Collected sources" className="bucket-popover" role="region">
           <p className="bucket-popover__label">
             {entries.length === 0
               ? "No sources collected"

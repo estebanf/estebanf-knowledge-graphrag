@@ -414,7 +414,7 @@ describe("App", () => {
     await userEvent.click(screen.getByRole("button", { name: /add to bucket/i }));
     await userEvent.click(screen.getByRole("button", { name: /source bucket/i }));
 
-    expect(screen.getByRole("dialog", { name: /collected sources/i })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: /collected sources/i })).toBeInTheDocument();
     expect(screen.getByTestId("bucket-entry")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: /^copy$/i }));
@@ -436,7 +436,7 @@ describe("App", () => {
     await userEvent.click(screen.getByRole("button", { name: /add to bucket/i }));
     await userEvent.click(screen.getByRole("button", { name: /source bucket/i }));
 
-    const dialog = screen.getByRole("dialog", { name: /collected sources/i });
+    const dialog = screen.getByRole("region", { name: /collected sources/i });
     await userEvent.click(within(dialog).getByRole("button", { name: /clear/i }));
 
     // Popover closes after clear; reopen to verify empty state
