@@ -1,4 +1,5 @@
 import io
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -7,6 +8,16 @@ from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 
 from rag.image_description import describe_image
+
+_IMAGE_REF_RE = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
+_REMOTE_PREFIXES = ("http://", "https://", "data:")
+_MIME_MAP = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 
 
 class ParseError(Exception):
@@ -53,6 +64,20 @@ def _plaintext_to_element_tree(text: str) -> str:
     return "\n".join(tree_lines)
 
 
+def _describe_markdown_images(text: str, base_dir: Path) -> str:
+    def _replace(m: re.Match) -> str:
+        path_str = m.group(2)
+        if path_str.startswith(_REMOTE_PREFIXES):
+            return m.group(0)
+        img_path = base_dir / path_str
+        if not img_path.exists():
+            return m.group(0)
+        mime = _MIME_MAP.get(img_path.suffix.lower(), "image/png")
+        return describe_image(img_path.read_bytes(), mime)
+
+    return _IMAGE_REF_RE.sub(_replace, text)
+
+
 def _describe_docling_pictures(result, markdown: str) -> str:
     for picture in result.document.pictures:
         img = picture.get_image(result.document)
@@ -70,6 +95,8 @@ def parse_document(file_path: Path) -> ParseResult:
         suffix = file_path.suffix.lower()
         if suffix in _TXT_EXTENSIONS | _MARKDOWN_EXTENSIONS:
             text = file_path.read_text(encoding="utf-8", errors="replace")
+            if suffix in _MARKDOWN_EXTENSIONS:
+                text = _describe_markdown_images(text, file_path.parent)
             return ParseResult(markdown=text, element_tree=_plaintext_to_element_tree(text))
 
         result = _converter.convert(str(file_path))

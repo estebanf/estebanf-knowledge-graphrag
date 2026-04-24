@@ -1,5 +1,8 @@
+import io
 from pathlib import Path
 from unittest.mock import patch
+
+from PIL import Image as PILImage
 
 from rag.parser import ParseResult, parse_document
 
@@ -38,3 +41,42 @@ def test_parse_document_replaces_image_placeholders_for_pptx(mock_describe):
     assert "<!-- image -->" not in result.markdown
     if mock_describe.called:
         assert "A diagram showing a workflow." in result.markdown
+
+
+@patch("rag.parser.describe_image", return_value="A red square.")
+def test_parse_document_replaces_local_image_refs_in_markdown(mock_describe, tmp_path):
+    img = PILImage.new("RGB", (10, 10), color="red")
+    img_path = tmp_path / "chart.png"
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    img_path.write_bytes(buf.getvalue())
+
+    md_file = tmp_path / "report.md"
+    md_file.write_text("# Report\n\n![chart](chart.png)\n", encoding="utf-8")
+
+    result = parse_document(md_file)
+
+    assert "![chart](chart.png)" not in result.markdown
+    assert "A red square." in result.markdown
+    mock_describe.assert_called_once()
+
+
+@patch("rag.parser.describe_image")
+def test_parse_document_leaves_remote_image_refs_in_markdown(mock_describe, tmp_path):
+    md_file = tmp_path / "report.md"
+    md_file.write_text("![x](https://example.com/img.png)\n", encoding="utf-8")
+
+    result = parse_document(md_file)
+
+    mock_describe.assert_not_called()
+    assert "https://example.com/img.png" in result.markdown
+
+
+@patch("rag.parser.describe_image")
+def test_parse_document_skips_missing_local_images_in_markdown(mock_describe, tmp_path):
+    md_file = tmp_path / "report.md"
+    md_file.write_text("![x](missing.png)\n", encoding="utf-8")
+
+    result = parse_document(md_file)
+
+    mock_describe.assert_not_called()
