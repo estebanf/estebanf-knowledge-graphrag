@@ -365,6 +365,20 @@ describe("App", () => {
     expect(screen.getByText(/results copied/i)).toBeInTheDocument();
   });
 
+  test("add to bucket button appears on result cards", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => searchResponse,
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await userEvent.type(screen.getByLabelText(/semantic query/i), "economics{enter}");
+    await screen.findByRole("heading", { name: /Economics of GenAI/i });
+
+    expect(screen.getByRole("button", { name: /add to bucket/i })).toBeInTheDocument();
+  });
+
   test("copies an individual chunk from the result card", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,

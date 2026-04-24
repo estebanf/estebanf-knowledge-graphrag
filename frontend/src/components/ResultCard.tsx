@@ -7,6 +7,7 @@ type ResultCardProps = {
   compact?: boolean;
   onView: (sourceId: string) => void;
   onCopyChunk: (chunk: string) => Promise<void>;
+  onAddToBucket?: (sourceId: string, title: string) => void;
 };
 
 function badgeLabel(result: SearchResult): string {
@@ -17,14 +18,21 @@ function sourceLabel(result: SearchResult): string {
   return result.source_metadata.source || result.source_metadata.author || "Unknown source";
 }
 
-export default function ResultCard({ result, compact = false, onView, onCopyChunk }: ResultCardProps) {
+export default function ResultCard({ result, compact = false, onView, onCopyChunk, onAddToBucket }: ResultCardProps) {
   const title = result.source_metadata.title;
   const [copied, setCopied] = useState(false);
+  const [added, setAdded] = useState(false);
 
   async function handleCopyChunk() {
     await onCopyChunk(result.chunk);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1200);
+  }
+
+  function handleAddToBucket() {
+    onAddToBucket?.(result.source_id, result.source_metadata.title ?? result.source_id);
+    setAdded(true);
+    window.setTimeout(() => setAdded(false), 1200);
   }
 
   return (
@@ -58,6 +66,21 @@ export default function ResultCard({ result, compact = false, onView, onCopyChun
         <span className="score-chip">Score: {result.score.toFixed(3)}</span>
       </div>
       <div className="result-card__actions">
+        <div className="feedback-anchor">
+          <button
+            aria-label="Add to bucket"
+            className="ghost-button"
+            type="button"
+            onClick={handleAddToBucket}
+          >
+            + Add
+          </button>
+          {added ? (
+            <span className="copy-popper" role="status">
+              Source added
+            </span>
+          ) : null}
+        </div>
         <button className="ghost-button" type="button" onClick={() => onView(result.source_id)}>
           View
         </button>
