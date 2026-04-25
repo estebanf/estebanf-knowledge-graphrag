@@ -5,28 +5,18 @@ import re
 
 import requests
 
+from rag import prompts
 from rag.chunking import ChunkData
 from rag.config import settings
 
 _FAILURE_THRESHOLD = 0.20
-
-_PROMPT = """\
-Evaluate this document chunk for retrieval quality. Score it on:
-- completeness: does it contain complete thoughts?
-- coherence: is it internally coherent?
-- appropriate_length: is it neither too short nor too long?
-
-Return ONLY: {"pass": true} or {"pass": false, "reason": "brief explanation"}
-
-Chunk:
-"""
 
 
 def _score_chunk(content: str) -> bool:
     """Returns True if chunk passes quality check. Returns True on any error."""
     payload = {
         "model": settings.MODEL_CHUNK_VALIDATION,
-        "messages": [{"role": "user", "content": _PROMPT + content}],
+        "messages": [{"role": "user", "content": prompts.CHUNK_VALIDATION + content}],
         "temperature": 0,
         "max_tokens": 64,
     }
