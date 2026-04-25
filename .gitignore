@@ -13,6 +13,7 @@ venv/
 dist/
 build/
 *.egg-info/
+.pytest_cache
 
 # macOS
 .DS_Store
@@ -24,3 +25,8 @@ build/
 
 # Git worktrees
 .worktrees/
+
+
+test_documents/
+
+.claude
