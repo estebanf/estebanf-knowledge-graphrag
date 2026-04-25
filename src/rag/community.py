@@ -9,6 +9,7 @@ import igraph
 import leidenalg
 import requests
 
+from rag import prompts
 from rag.config import settings
 from rag.db import get_connection
 from rag.graph_db import get_graph_driver
@@ -363,9 +364,7 @@ def _summarize_community(community: Community, model: str) -> str:
     chunk_texts = "\n\n---\n\n".join(
         f"[Source: {c.source_name}]\n{c.content}" for c in community.chunks
     )
-    prompt = settings.COMMUNITY_SUMMARIZATION_PROMPT or (
-        "Craft a compelling narrative summarizing these chunks of related information"
-    )
+    prompt = settings.COMMUNITY_SUMMARIZATION_PROMPT or prompts.COMMUNITY_SUMMARIZATION
     full_prompt = f"{prompt}\n\n<chunks>\n{chunk_texts}\n</chunks>"
 
     response = requests.post(
