@@ -178,16 +178,23 @@ def test_jobs_list_stats_shows_counts():
     assert "42" in result.output
 
 
-def test_jobs_list_stats_uses_aggregate_sql():
+def test_jobs_list_stats_groups_prefixed_statuses():
     with patch("rag.cli.get_connection") as mock_conn:
         conn = MagicMock()
         mock_conn.return_value.__enter__.return_value = conn
-        conn.execute.return_value.fetchall.return_value = []
+        conn.execute.return_value.fetchall.return_value = [
+            ("completed", 10),
+            ("failed", 2),
+            ("processing", 1),
+        ]
         from rag.cli import app
-        runner.invoke(app, ["jobs", "list", "--stats"])
-    sql = conn.execute.call_args[0][0]
-    assert "GROUP BY" in sql
-    assert "COUNT" in sql
+        result = runner.invoke(app, ["jobs", "list", "--stats"])
+    assert result.exit_code == 0
+    assert "completed" in result.output
+    assert "failed" in result.output
+    assert "processing" in result.output
+    assert "10" in result.output
+    assert "2" in result.output
 
 
 def test_jobs_list_stats_empty_db():
