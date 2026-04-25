@@ -1,74 +1,106 @@
 # Agent Notes
 
-Use `docs/prd.md` for product requirements and intended architecture. This file is only for repo-specific continuation notes that are useful in active sessions.
 
-## Current Retrieval State
+# Project Overview
+This is a personal, self-hosted RAG (Retrieval-Augmented Generation) system combining vector embeddings with a knowledge graph. 
 
-- Verified CLI command:
-  - `venv/bin/rag retrieve "<query>"`
-  - `venv/bin/rag retrieve "<query>" --trace`
+Read `README.md` first. It is the canonical operator and API reference for this repository.
 
-- Retrieval is CLI-only right now. There is no REST or MCP retrieval surface yet.
+## Operating Rules
 
-- `--trace` prints activity logs to stdout as retrieval runs, then prints the final response JSON as the last block on stdout.
+- Do not duplicate README content here when updating this file. Keep `AGENTS.md` focused on agent workflow and codebase navigation.
+- Prefer code-backed answers over stale notes. This file can lag the implementation.
+- When you do modifications that affect functionally the application, update `README.md` and `AGENTS.md` accordingly.
 
-- Retrieval depends on OpenRouter for:
-  - query variant generation
-  - query embeddings
-  - reranking
-  - graph-stage entity/query selection
 
-- Retrieval config is env-backed through `src/rag/config.py`. Keep new knobs there and update both `.env.example` and `.env` when changing defaults.
+## Local Stack
 
-## Live Data Notes
+This repo runs its local services in Docker:
 
-- Read-only inspection against the local databases showed:
-  - `55` active sources
-  - `1195` active embedded chunks
-  - `18` completed jobs
-  - `1650` Postgres `entities` rows
-  - `1195` Memgraph `Chunk` nodes
-  - `1704` Memgraph `Entity` nodes
-  - `1704` `MENTIONS` edges
-  - `6591` `MENTIONED_IN` edges
-  - `677` `RELATED_TO` edges
+- `postgres`
+- `memgraph`
+- `backend`
+- `frontend`
 
-- All active sources currently have both `metadata` and `markdown_content`.
+Assume the databases are inside containers, not directly on the host.
 
-- Current chunk population in Postgres is:
-  - `1054` `markdown-header`
-  - `141` `semantic`
-  - `0` child chunks with `parent_chunk_id`
+### Database access
 
-## Retrieval Implementation Notes
+Use container-scoped commands instead:
 
+```bash
+docker compose exec -T postgres psql -U rag -d rag
+docker compose exec -T memgraph mgconsole
+```
+
+For one-off SQL or migrations, keep using `docker compose exec -T postgres ...`.
+
+Examples:
+
+```bash
+docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/004_job_improvements.sql
+docker compose exec -T postgres psql -U rag -d rag -c "SELECT count(*) FROM jobs;"
+printf "MATCH (n) RETURN count(n);\n" | docker compose exec -T memgraph mgconsole
+```
+
+### Service assumptions
+
+- `backend` is the FastAPI app from the root `Dockerfile`
+- `frontend` is the built React app served by nginx from `frontend/`
+- frontend API traffic is proxied to `backend`
+- if you need to validate service state, start with `docker compose ps` and `curl http://localhost:8000/api/health`
+
+## Code Organization
+
+The repo is split into a few main areas:
+
+- `src/rag/cli.py`: Typer CLI entrypoints for ingest, search, retrieve, jobs, sources, and community commands
+- `src/rag/api/`: FastAPI app, routes, and request/response schemas
+- `src/rag/config.py`: env-backed runtime settings; new knobs belong here and usually also in `.env.example`
+- `src/rag/ingestion.py`: ingestion job submission, pipeline orchestration, retry/cancel cleanup, and artifact deletion
+- `src/rag/worker.py`: async job polling and execution loop
+- `src/rag/parser.py`: document-to-markdown parsing and inline image description replacement
+- `src/rag/chunking.py`, `src/rag/chunk_validation.py`, `src/rag/profiling.py`, `src/rag/embedding.py`: chunk pipeline stages
+- `src/rag/graph_extraction.py`, `src/rag/graph_linking.py`: graph creation and linking
+- `src/rag/retrieval.py`: hybrid search, retrieval expansion, reranking, and trace behavior
+- `src/rag/community.py`: entity-community detection and optional summarization
+- `src/rag/answering.py`: answer generation over retrieval output
+- `src/rag/prompts/__init__.py`: shared prompt templates; this is the canonical prompt maintenance location
+- `src/rag/storage.py`, `src/rag/sources.py`: stored-file and source-detail helpers
+- `tests/`: CLI, API, ingestion, retrieval, prompt, and community coverage
+- `scripts/`: local environment startup, backups, migrations, and utility entrypoints
+- `frontend/`: React UI, Vite config, and nginx assets for the containerized frontend
+
+## Current Behavioral Notes
+
+- Search, retrieval, and community APIs are implemented under `src/rag/api/routes/`.
+- `community retrieve` resolves source scope through a lightweight retrieval-stage pass, not full retrieval result expansion.
+- `--trace` on retrieval still prints live activity first and the final JSON block last.
+- Retrieval config remains env-backed through `src/rag/config.py`.
 - Use `MENTIONS` as the authoritative chunk-to-entity edge for retrieval expansion.
-- Do not treat `MENTIONED_IN` as precise mention evidence. In current data it is much broader than true per-mention linkage.
-- The live corpus currently has no hierarchical parent/child chunks, so retrieval should not assume parent surfacing exists for already ingested data.
-- Sparse retrieval uses runtime Postgres full-text search over `chunks.content`; there are no retrieval-specific schema or index changes.
-- Final root scoring reranks the root chunk first, then reranks related chunks and aggregates those scores.
-- Graph expansion now uses a per-seed wall-clock budget instead of one shared wall-clock budget for the entire retrieval call.
-- When `MENTIONS` expansion yields no non-seed chunks, retrieval falls back to same-source neighbor chunks scored against the entity-aware query.
+- Same-source fallback is part of retrieval when graph expansion yields no non-seed chunk evidence.
 
-## Local Environment
+## Data and Schema Notes
 
-- Docker services were verified healthy with `docker compose ps`.
-- If a database predates the current schema, the migrations that matter most are:
-  - `scripts/migrate/001_add_markdown_content.sql`
-  - `scripts/migrate/002_update_vector_dimensions.sql`
-  - `scripts/migrate/004_job_improvements.sql`
+- The live corpus may contain many chunks without hierarchical parent-child structure. Do not assume parent surfacing is available for already ingested data.
+- Sparse retrieval uses Postgres full-text search over `chunks.content`; the default `english` config is expected to have the matching GIN index from `scripts/migrate/006_search_performance_indexes.sql`.
+- Hard delete order matters: remove `entities` and `chunks` before `jobs`, then `sources`, or the `chunks.job_id` foreign key will break deletes.
+- Postgres schema is initialized from `scripts/init/postgres/`.
 
-## Verification Commands
+## Valuable Carryover From `CLAUDE.md`
 
-- Retrieval-focused:
-  - `pytest -q tests/test_retrieval.py tests/test_cli_retrieve.py tests/test_config.py`
-  - `venv/bin/rag retrieve "What topics are covered in the ingested reports?" --result-count 1 --seed-count 1 --trace`
+These points were still useful and belong here:
 
-- Fast suite used during ingestion work:
-  - `pytest -q tests/test_cli_jobs.py tests/test_job_lifecycle.py tests/test_worker.py tests/test_ingestion_submit.py tests/test_parser.py tests/test_storage.py tests/test_cli_ingest.py tests/test_chunking.py tests/test_observability.py tests/test_cli_health.py tests/test_profiling.py tests/test_chunk_validation.py tests/test_embedding.py`
+- `src/rag/prompts/__init__.py` is the single place to maintain shared prompt text.
+- The backend/frontend are containerized and should be treated as first-class local services.
+- Postgres schema initialization happens automatically from `scripts/init/postgres/`.
 
-## Known Gaps Worth Remembering
+## Verification Shortcuts
 
-- Some reranked root chunks currently have no linked `MENTIONS` edges, so valid retrieval results may come back with `related: []`.
-- `related: []` is less common after the same-source fallback, but it still happens for seeds that have neither useful graph links nor useful local neighbor chunks.
-- `src/rag/cli.py` hard delete still must remove `entities` and `chunks` before `jobs`; otherwise the `chunks.job_id` foreign key breaks deletes.
+Pick verification based on the area you changed:
+
+- retrieval/search/community logic: `pytest -q tests/test_retrieval.py tests/test_cli_retrieve.py tests/test_cli_search.py tests/test_cli_community.py tests/test_api.py tests/test_api_community.py tests/test_config.py`
+- ingestion/jobs/parser/storage: `pytest -q tests/test_cli_jobs.py tests/test_job_lifecycle.py tests/test_worker.py tests/test_ingestion_submit.py tests/test_parser.py tests/test_storage.py tests/test_cli_ingest.py`
+- prompts: `pytest -q tests/test_prompts.py`
+
+When unsure, read the README verification section and then narrow to the impacted area.

@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from rag.retrieval import RetrievalCandidate, hybrid_search
+from rag.retrieval import RetrievalCandidate, _expand_chunk_texts, hybrid_search, sparse_retrieve
 
 
 def _candidate(chunk_id: str, score: float = 0.8) -> RetrievalCandidate:
@@ -88,3 +88,28 @@ def test_hybrid_search_score_is_cosine_similarity_not_rrf(mock_expand, mock_conn
 
     assert len(results) == 1
     assert results[0].score == 0.85
+
+
+def test_sparse_retrieve_uses_indexable_english_tsvector_expression():
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = []
+
+    sparse_retrieve(conn, "insurance claim triage", source_ids=[], filters={}, top_n=30)
+
+    sql = conn.execute.call_args.args[0]
+    assert "to_tsvector('english', coalesce(c.content, ''))" in sql
+    assert "websearch_to_tsquery('english', %s)" in sql
+    assert "to_tsvector(%s" not in sql
+
+
+def test_expand_chunk_texts_uses_uuid_ids_without_text_cast():
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = []
+
+    _expand_chunk_texts(conn, ["00000000-0000-0000-0000-000000000001"])
+
+    sql = conn.execute.call_args.args[0]
+    params = conn.execute.call_args.args[1]
+    assert "WHERE id = ANY(%s::uuid[])" in sql
+    assert "WHERE id::text = ANY(%s::text[])" not in sql
+    assert params[0] == ["00000000-0000-0000-0000-000000000001"]

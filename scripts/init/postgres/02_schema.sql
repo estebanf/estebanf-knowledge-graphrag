@@ -82,7 +82,12 @@ CREATE INDEX IF NOT EXISTS entities_embedding_hnsw_idx
 
 -- Supporting indexes for common query patterns
 CREATE INDEX IF NOT EXISTS chunks_source_id_idx ON chunks(source_id) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS chunks_source_chunk_index_idx
+  ON chunks(source_id, chunk_index) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS chunks_job_id_idx ON chunks(job_id);
+CREATE INDEX IF NOT EXISTS chunks_content_fts_idx
+  ON chunks USING gin (to_tsvector('english', coalesce(content, '')))
+  WHERE deleted_at IS NULL AND embedding IS NOT NULL;
 CREATE INDEX IF NOT EXISTS sources_md5_idx ON sources(md5) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS jobs_source_id_idx ON jobs(source_id);
 CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs(status);

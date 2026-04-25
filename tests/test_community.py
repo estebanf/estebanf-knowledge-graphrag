@@ -36,6 +36,25 @@ def test_resolve_scope_search_unions_source_ids(mock_search):
     result = _resolve_scope("search", [], ["q1", "q2"], {}, {"limit": 5, "min_score": 0.0}, {})
     assert set(result) == {"src-A", "src-B"}
 
+
+@patch("rag.community.resolve_retrieval_scope")
+def test_resolve_scope_retrieve_uses_lightweight_retrieval_scope(mock_scope):
+    from rag.community import _resolve_scope
+
+    mock_scope.side_effect = [["src-A", "src-B"], ["src-B", "src-C"]]
+
+    result = _resolve_scope(
+        "retrieve",
+        [],
+        ["q1", "q2"],
+        {"kind": "report"},
+        {},
+        {"seed_count": 3, "trace": False},
+    )
+
+    assert result == ["src-A", "src-B", "src-C"]
+    assert mock_scope.call_count == 2
+
 def test_resolve_scope_unknown_mode_raises():
     from rag.community import _resolve_scope
     with pytest.raises(ValueError, match="Unknown scope_mode"):

@@ -13,7 +13,7 @@ from rag import prompts
 from rag.config import settings
 from rag.db import get_connection
 from rag.graph_db import get_graph_driver
-from rag.retrieval import _expand_chunk_texts, hybrid_search, retrieve
+from rag.retrieval import _expand_chunk_texts, hybrid_search, resolve_retrieval_scope
 
 
 @dataclass
@@ -82,9 +82,10 @@ def _resolve_scope(
         return list(seen)
 
     if scope_mode == "retrieve":
-        seen = set()
+        seen: set[str] = set()
+        ordered: list[str] = []
         for criterion in criteria:
-            result = retrieve(
+            resolved = resolve_retrieval_scope(
                 query=criterion,
                 source_ids=[],
                 filters=filters,
@@ -97,12 +98,12 @@ def _resolve_scope(
                 trace=retrieve_options.get("trace", False),
                 trace_printer=None,
             )
-            for item in result.get("retrieval_results", []):
-                seen.add(item["source_id"])
-                for rel in item.get("related", []):
-                    for chunk in rel.get("chunks", []):
-                        seen.add(chunk["source_id"])
-        return list(seen)
+            for source_id in resolved:
+                if source_id in seen:
+                    continue
+                seen.add(source_id)
+                ordered.append(source_id)
+        return ordered
 
     raise ValueError(f"Unknown scope_mode: {scope_mode!r}")
 

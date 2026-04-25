@@ -289,23 +289,50 @@ def sparse_retrieve(
 ) -> list[RetrievalCandidate]:
     where_sql, params = _build_chunk_filter_sql(source_ids, filters)
     config = settings.RETRIEVAL_TEXT_SEARCH_CONFIG
-    rows = conn.execute(
-        f"""
-        SELECT c.id, c.content, s.id, s.storage_path, s.metadata,
-               ts_rank_cd(
-                   to_tsvector(%s, coalesce(c.content, '')),
-                   websearch_to_tsquery(%s, %s)
-               ) AS score
-        FROM chunks c
-        JOIN sources s ON s.id = c.source_id
-        JOIN jobs j ON j.id = c.job_id
-        WHERE {where_sql}
-          AND to_tsvector(%s, coalesce(c.content, '')) @@ websearch_to_tsquery(%s, %s)
-        ORDER BY score DESC
-        LIMIT %s
-        """,
-        (config, config, query_text, *params, config, config, query_text, top_n),
-    ).fetchall()
+    if config == "english":
+        rows = conn.execute(
+            f"""
+            WITH query AS (
+                SELECT websearch_to_tsquery('english', %s) AS tsq
+            )
+            SELECT c.id, c.content, s.id, s.storage_path, s.metadata,
+                   ts_rank_cd(
+                       to_tsvector('english', coalesce(c.content, '')),
+                       query.tsq
+                   ) AS score
+            FROM chunks c
+            JOIN sources s ON s.id = c.source_id
+            JOIN jobs j ON j.id = c.job_id
+            CROSS JOIN query
+            WHERE {where_sql}
+              AND to_tsvector('english', coalesce(c.content, '')) @@ query.tsq
+            ORDER BY score DESC
+            LIMIT %s
+            """,
+            (query_text, *params, top_n),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"""
+            WITH query AS (
+                SELECT websearch_to_tsquery(%s, %s) AS tsq
+            )
+            SELECT c.id, c.content, s.id, s.storage_path, s.metadata,
+                   ts_rank_cd(
+                       to_tsvector(%s, coalesce(c.content, '')),
+                       query.tsq
+                   ) AS score
+            FROM chunks c
+            JOIN sources s ON s.id = c.source_id
+            JOIN jobs j ON j.id = c.job_id
+            CROSS JOIN query
+            WHERE {where_sql}
+              AND to_tsvector(%s, coalesce(c.content, '')) @@ query.tsq
+            ORDER BY score DESC
+            LIMIT %s
+            """,
+            (config, query_text, config, *params, config, top_n),
+        ).fetchall()
     return [_row_to_candidate(row) for row in rows]
 
 
@@ -635,10 +662,12 @@ def _fetch_chunk_candidates_by_ids(
     source_ids: list[str],
     filters: dict[str, str],
     limit: int,
+    vector: Optional[list[float]] = None,
 ) -> list[RetrievalCandidate]:
     if not chunk_ids:
         return []
-    vector = get_embeddings([query_text])[0]
+    if vector is None:
+        vector = get_embeddings([query_text])[0]
     vector_param = _vector_literal(vector)
     where_sql, params = _build_chunk_filter_sql(source_ids, filters)
     rows = conn.execute(
@@ -680,6 +709,7 @@ def _fetch_same_source_neighbor_candidates(
     source_ids: list[str],
     filters: dict[str, str],
     limit: int,
+    vector: Optional[list[float]] = None,
 ) -> list[RetrievalCandidate]:
     context = _get_seed_chunk_context(conn, seed.chunk_id)
     if not context:
@@ -688,7 +718,8 @@ def _fetch_same_source_neighbor_candidates(
     if source_ids and seed_source_id not in source_ids:
         return []
 
-    vector = get_embeddings([query_text])[0]
+    if vector is None:
+        vector = get_embeddings([query_text])[0]
     vector_param = _vector_literal(vector)
     where_sql, params = _build_chunk_filter_sql(source_ids or [seed_source_id], filters)
     rows = conn.execute(
@@ -869,6 +900,7 @@ def expand_seed_candidate(
             break
 
         first_hop_query = _generate_entity_query(query, seed, entity.name)
+        first_hop_vector = get_embeddings([first_hop_query])[0]
         if trace_logger:
             trace_logger.emit(f"first-hop query for {entity.name}: {first_hop_query}")
         first_hop_candidates = _fetch_chunk_candidates_by_ids(
@@ -878,6 +910,7 @@ def expand_seed_candidate(
             source_ids=source_ids,
             filters=filters,
             limit=settings.RETRIEVAL_FIRST_HOP_CHUNK_COUNT,
+            vector=first_hop_vector,
         )
         first_hop_candidates = [
             candidate
@@ -895,8 +928,9 @@ def expand_seed_candidate(
                     first_hop_query,
                     source_ids=source_ids,
                     filters=filters,
-                    limit=settings.RETRIEVAL_SAME_SOURCE_NEIGHBOR_COUNT,
-                )
+                limit=settings.RETRIEVAL_SAME_SOURCE_NEIGHBOR_COUNT,
+                vector=first_hop_vector,
+            )
                 if candidate.score >= first_hop_similarity_threshold and candidate.chunk_id != seed.chunk_id
             ][: settings.RETRIEVAL_SAME_SOURCE_NEIGHBOR_COUNT]
         root_result["_first_hop_scores"].extend(candidate.score for candidate in first_hop_candidates)
@@ -951,6 +985,7 @@ def expand_seed_candidate(
                     "first_hop_chunk": first_hop_chunk.chunk[:1200],
                 },
             )
+            second_hop_vector = get_embeddings([second_hop_query])[0]
             if trace_logger:
                 trace_logger.emit(
                     f"second-hop query for {entity.name} via {first_hop_chunk.chunk_id} -> "
@@ -963,6 +998,7 @@ def expand_seed_candidate(
                 source_ids=source_ids,
                 filters=filters,
                 limit=settings.RETRIEVAL_SECOND_HOP_CHUNK_COUNT,
+                vector=second_hop_vector,
             )
             second_hop_chunks = [
                 candidate
@@ -1097,7 +1133,7 @@ def _expand_chunk_texts(conn, chunk_ids: list[str]) -> dict[str, str]:
         WITH selected AS (
             SELECT id, source_id, chunk_index, content
             FROM chunks
-            WHERE id::text = ANY(%s::text[])
+            WHERE id = ANY(%s::uuid[])
         )
         SELECT selected.id::text AS center_id,
                neighbor.id::text AS chunk_id,
@@ -1322,3 +1358,55 @@ def retrieve(
         with get_connection() as conn:
             _expand_neighbor_contexts(conn, final_results)
     return {"retrieval_results": final_results}
+
+
+def resolve_retrieval_scope(
+    *,
+    query: str,
+    source_ids: list[str],
+    filters: dict[str, str],
+    seed_count: Optional[int],
+    result_count: Optional[int],
+    rrf_k: Optional[int],
+    entity_confidence_threshold: Optional[float],
+    first_hop_similarity_threshold: Optional[float],
+    second_hop_similarity_threshold: Optional[float],
+    trace: bool,
+    trace_printer: Optional[Callable[[str], None]],
+) -> list[str]:
+    _require_api_key()
+    trace_logger = TraceLogger(enabled=trace, printer=trace_printer)
+    params = _resolved_params(
+        seed_count=seed_count,
+        result_count=result_count,
+        rrf_k=rrf_k,
+        entity_confidence_threshold=entity_confidence_threshold,
+        first_hop_similarity_threshold=first_hop_similarity_threshold,
+        second_hop_similarity_threshold=second_hop_similarity_threshold,
+    )
+
+    variants = generate_query_variants(query, trace_logger=trace_logger)
+    fused_candidates = run_first_stage_retrieval(
+        conn=None,
+        query=query,
+        variants=variants,
+        source_ids=source_ids,
+        filters=filters,
+        rrf_k=params.rrf_k,
+        trace_logger=trace_logger,
+    )
+    seed_candidates = rerank_candidates(
+        query,
+        fused_candidates,
+        top_n=params.seed_count,
+        trace_logger=trace_logger,
+    )[: params.seed_count]
+
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for seed in seed_candidates:
+        if seed.source_id in seen:
+            continue
+        seen.add(seed.source_id)
+        resolved.append(seed.source_id)
+    return resolved

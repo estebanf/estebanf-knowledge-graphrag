@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock
 
+import pytest
+
 from rag.retrieval import (
     EntityCandidate,
     RetrievalCandidate,
@@ -132,6 +134,7 @@ def test_retrieve_emits_trace_and_returns_final_results(monkeypatch):
         "rag.retrieval.finalize_root_results",
         lambda query, root_results, result_count, trace_logger=None: root_results,
     )
+    monkeypatch.setattr("rag.retrieval._expand_neighbor_contexts", lambda conn, results: None)
 
     response = retrieve(
         query="what happened",
@@ -321,6 +324,72 @@ def test_load_chunk_ids_for_entity_matches_name_and_type_via_mentions():
     assert "entity_type" in driver.session_obj.query
     assert driver.session_obj.kwargs["entity_name"] == "Acme"
     assert driver.session_obj.kwargs["entity_type"] == "ORGANIZATION"
+
+
+def test_fetch_chunk_candidates_by_ids_uses_provided_vector_without_reembedding(monkeypatch):
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = []
+    called = False
+
+    def _unexpected(_texts):
+        nonlocal called
+        called = True
+        raise AssertionError("get_embeddings should not be called when vector is provided")
+
+    monkeypatch.setattr("rag.retrieval.get_embeddings", _unexpected)
+
+    from rag.retrieval import _fetch_chunk_candidates_by_ids
+
+    _fetch_chunk_candidates_by_ids(
+        conn,
+        ["00000000-0000-0000-0000-000000000001"],
+        "policy query",
+        source_ids=[],
+        filters={},
+        limit=5,
+        vector=[0.1, 0.2, 0.3],
+    )
+
+    assert called is False
+
+
+def test_fetch_same_source_neighbor_candidates_uses_provided_vector_without_reembedding(monkeypatch):
+    conn = MagicMock()
+    conn.execute.side_effect = [
+        MagicMock(fetchone=MagicMock(return_value=("source-1", 5))),
+        MagicMock(fetchall=MagicMock(return_value=[])),
+    ]
+    called = False
+
+    def _unexpected(_texts):
+        nonlocal called
+        called = True
+        raise AssertionError("get_embeddings should not be called when vector is provided")
+
+    monkeypatch.setattr("rag.retrieval.get_embeddings", _unexpected)
+
+    from rag.retrieval import _fetch_same_source_neighbor_candidates
+
+    seed = RetrievalCandidate(
+        chunk_id="00000000-0000-0000-0000-000000000010",
+        chunk="seed",
+        source_id="source-1",
+        source_path="/tmp/source.md",
+        source_metadata={},
+        score=0.9,
+    )
+
+    _fetch_same_source_neighbor_candidates(
+        conn,
+        seed,
+        "policy query",
+        source_ids=[],
+        filters={},
+        limit=5,
+        vector=[0.1, 0.2, 0.3],
+    )
+
+    assert called is False
 
 
 def test_expand_seed_candidate_uses_chunk_mediated_second_hop(monkeypatch):

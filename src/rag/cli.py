@@ -8,23 +8,10 @@ from rich.panel import Panel
 from rich.table import Table
 
 from rag.config import settings
-from rag.db import get_connection
-from rag.graph_db import get_graph_driver
-from rag.ingestion import (
-    STAGE_ORDER,
-    _write_audit_log,
-    cancel_job,
-    delete_source_artifacts,
-    ingest_file,
-    retry_job,
-    submit_ingestion_job,
-)
-from rag.community import detect_communities
 from rag.retrieval import hybrid_search, retrieve
-from rag.sources import get_source_detail
-from rag.storage import delete_stored_file
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".md", ".txt"}
+STAGE_ORDER = ("parsing", "profiling", "chunking", "validation", "embedding", "graph_extraction", "graph_linking")
 
 app = typer.Typer(help="RAG CLI — document ingestion and management")
 sources_app = typer.Typer(help="Manage ingested sources")
@@ -47,14 +34,32 @@ def _parse_key_value_pairs(items: Optional[list[str]], label: str) -> dict[str, 
     return parsed
 
 
+def _get_connection():
+    from rag.db import get_connection
+
+    return get_connection()
+
+
+def _get_graph_driver():
+    from rag.graph_db import get_graph_driver
+
+    return get_graph_driver()
+
+
+def detect_communities(*args, **kwargs):
+    from rag.community import detect_communities as _detect_communities
+
+    return _detect_communities(*args, **kwargs)
+
+
 @app.command()
 def health() -> None:
     """Check Postgres and Memgraph connectivity."""
     try:
-        with get_connection() as conn:
+        with _get_connection() as conn:
             conn.execute("SELECT 1").fetchone()
 
-        with get_graph_driver() as driver:
+        with _get_graph_driver() as driver:
             with driver.session() as session:
                 session.run("RETURN 1")
     except Exception as e:
@@ -74,6 +79,8 @@ def ingest(
     ] = None,
 ) -> None:
     """Ingest one or more documents, or all supported files in a folder."""
+    from rag.ingestion import submit_ingestion_job
+
     try:
         parsed_metadata = _parse_key_value_pairs(metadata, "metadata")
     except ValueError as e:
@@ -231,7 +238,9 @@ def source_command(
     source_id: Annotated[str, typer.Argument(help="Source UUID")],
 ) -> None:
     """Print the stored markdown for a source."""
-    detail = get_source_detail(source_id, connection_factory=get_connection)
+    from rag.sources import get_source_detail
+
+    detail = get_source_detail(source_id, connection_factory=_get_connection)
     if not detail:
         console.print(f"[red]Source not found: {source_id}[/red]")
         raise typer.Exit(1)
@@ -242,7 +251,7 @@ def source_command(
 @sources_app.command("list")
 def sources_list() -> None:
     """List all active sources."""
-    with get_connection() as conn:
+    with _get_connection() as conn:
         rows = conn.execute(
             """
             SELECT id, name, file_name, file_type, version, created_at
@@ -280,7 +289,7 @@ def sources_get(
     source_id: Annotated[str, typer.Argument(help="Source UUID")],
 ) -> None:
     """Show source details and markdown preview."""
-    with get_connection() as conn:
+    with _get_connection() as conn:
         row = conn.execute(
             """
             SELECT id, name, file_name, file_type, storage_path, md5, version,
@@ -326,7 +335,10 @@ def sources_delete(
     hard: Annotated[bool, typer.Option("--hard", help="Hard-delete: remove file from disk")] = False,
 ) -> None:
     """Delete a source (soft by default, hard with --hard)."""
-    with get_connection() as conn:
+    from rag.ingestion import _write_audit_log, delete_source_artifacts
+    from rag.storage import delete_stored_file
+
+    with _get_connection() as conn:
         row = conn.execute(
             "SELECT storage_path FROM sources WHERE id = %s AND deleted_at IS NULL",
             (source_id,),
@@ -337,7 +349,7 @@ def sources_delete(
             raise typer.Exit(1)
 
         if hard:
-            with get_graph_driver() as driver:
+            with _get_graph_driver() as driver:
                 delete_source_artifacts(conn, driver, source_id)
         else:
             conn.execute(
@@ -367,8 +379,10 @@ def jobs_list(
     retry: Annotated[bool, typer.Option("--retry", help="Retry all failed jobs")] = False,
 ) -> None:
     """List ingestion jobs."""
+    from rag.ingestion import retry_job
+
     if stats:
-        with get_connection() as conn:
+        with _get_connection() as conn:
             rows = conn.execute(
                 """SELECT
                      CASE
@@ -394,7 +408,7 @@ def jobs_list(
         return
 
     if retry:
-        with get_connection() as conn:
+        with _get_connection() as conn:
             failed_rows = conn.execute(
                 "SELECT id FROM jobs WHERE status LIKE 'failed:%'"
             ).fetchall()
@@ -412,7 +426,7 @@ def jobs_list(
         console.print(f"[green]{retried} {label} submitted for retry.[/green]")
         return
 
-    with get_connection() as conn:
+    with _get_connection() as conn:
         if status:
             if status in ("failed", "processing"):
                 rows = conn.execute(
@@ -450,7 +464,7 @@ def jobs_status(
     job_id: Annotated[str, typer.Argument(help="Job UUID")],
 ) -> None:
     """Show job details and stage log."""
-    with get_connection() as conn:
+    with _get_connection() as conn:
         row = conn.execute(
             "SELECT id, source_id, status, current_stage, stage_log, created_at, updated_at, error_detail FROM jobs WHERE id = %s",
             (job_id,),
@@ -492,6 +506,8 @@ def jobs_retry(
     ] = None,
 ) -> None:
     """Retry a failed job."""
+    from rag.ingestion import retry_job
+
     try:
         result = retry_job(job_id, from_stage=from_stage)
     except ValueError as e:
@@ -508,6 +524,8 @@ def jobs_cancel(
     job_id: Annotated[str, typer.Argument(help="Job UUID to cancel")],
 ) -> None:
     """Cancel a pending or processing job."""
+    from rag.ingestion import cancel_job
+
     try:
         result = cancel_job(job_id)
     except ValueError as e:
