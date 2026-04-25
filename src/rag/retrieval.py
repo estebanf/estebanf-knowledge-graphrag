@@ -9,6 +9,7 @@ from typing import Callable, Optional
 import requests
 import tiktoken
 
+from rag import prompts
 from rag.config import settings
 from rag.db import get_connection
 from rag.embedding import get_embeddings
@@ -202,18 +203,10 @@ def _chat_json(model: str, prompt: str, *, timeout: int = 60) -> dict:
 
 
 def generate_query_variants(query: str, trace_logger: Optional[TraceLogger] = None) -> dict[str, object]:
-    prompt = f"""You are generating bounded retrieval query variants.
-Return ONLY a JSON object with keys: original, hyde, expanded, step_back, decomposed.
-- original must be the exact input query
-- hyde must be a short hypothetical answer passage for dense retrieval
-- expanded must add synonyms, aliases, abbreviations, and related terms
-- step_back must be a more general background query
-- decomposed must contain at most {settings.RETRIEVAL_MAX_DECOMPOSED_QUERIES} focused sub-queries
-- avoid near-duplicate variants
-
-Query:
-{query}
-"""
+    prompt = prompts.QUERY_VARIANTS.format(
+        max_decomposed=settings.RETRIEVAL_MAX_DECOMPOSED_QUERIES,
+        query=query,
+    )
     raw = _chat_json(settings.MODEL_RETRIEVAL_QUERY_VARIANTS, prompt, timeout=90)
     raw["original"] = query
     variants = normalize_query_variants(raw)
@@ -524,18 +517,12 @@ def _select_entity_names(
 ) -> list[str]:
     if not entities:
         return []
-    prompt = f"""You are selecting graph entities to expand for retrieval.
-Return ONLY a JSON object with key selected_entities containing up to {settings.RETRIEVAL_ENTITY_SELECTION_COUNT} entity names.
-
-User query:
-{query}
-
-Seed chunk:
-{seed.chunk[:1500]}
-
-Entities:
-{json.dumps([entity.__dict__ for entity in entities], ensure_ascii=True)}
-"""
+    prompt = prompts.ENTITY_SELECTION.format(
+        max_entities=settings.RETRIEVAL_ENTITY_SELECTION_COUNT,
+        query=query,
+        seed_chunk=seed.chunk[:1500],
+        entities=json.dumps([entity.__dict__ for entity in entities], ensure_ascii=True),
+    )
     try:
         response = _chat_json(settings.MODEL_RETRIEVAL_GRAPH, prompt, timeout=60)
         names = [value for value in response.get("selected_entities", []) if isinstance(value, str)]
@@ -553,18 +540,11 @@ def _generate_entity_query(
     *,
     entity_context: Optional[dict] = None,
 ) -> str:
-    prompt = f"""You are generating a retrieval sub-query.
-Return ONLY a JSON object with key query.
-
-Original user query:
-{query}
-
-Seed chunk:
-{seed.chunk[:1200]}
-
-Entity:
-{entity_name}
-"""
+    prompt = prompts.ENTITY_QUERY_GENERATION.format(
+        query=query,
+        seed_chunk=seed.chunk[:1200],
+        entity_name=entity_name,
+    )
     if entity_context:
         prompt += f"\nPath context:\n{json.dumps(entity_context, ensure_ascii=True)}\n"
 
@@ -774,21 +754,13 @@ def _select_second_hop_entities_from_chunks(
     if not deduped_candidates:
         return []
 
-    prompt = f"""You are selecting second-hop graph entities to expand for retrieval.
-Return ONLY a JSON object with key selected_entities containing up to {settings.RETRIEVAL_SECOND_HOP_SELECTION_COUNT} entity names.
-
-User query:
-{query}
-
-Seed chunk:
-{seed.chunk[:1200]}
-
-Current entity:
-{entity_name}
-
-Candidates:
-{json.dumps([candidate.__dict__ for candidate in deduped_candidates], ensure_ascii=True)}
-"""
+    prompt = prompts.SECOND_HOP_ENTITY_SELECTION.format(
+        max_entities=settings.RETRIEVAL_SECOND_HOP_SELECTION_COUNT,
+        query=query,
+        seed_chunk=seed.chunk[:1200],
+        entity_name=entity_name,
+        candidates=json.dumps([candidate.__dict__ for candidate in deduped_candidates], ensure_ascii=True),
+    )
     try:
         response = _chat_json(settings.MODEL_RETRIEVAL_GRAPH, prompt, timeout=60)
         names = [value for value in response.get("selected_entities", []) if isinstance(value, str)]
