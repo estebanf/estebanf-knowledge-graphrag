@@ -2,6 +2,7 @@ import io
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from PIL import Image as PILImage
 
 from rag.parser import ParseResult, parse_document
@@ -80,3 +81,25 @@ def test_parse_document_skips_missing_local_images_in_markdown(mock_describe, tm
     result = parse_document(md_file)
 
     mock_describe.assert_not_called()
+
+
+@patch("rag.parser._get_docling_converter", side_effect=RuntimeError("docling unavailable"))
+def test_parse_document_does_not_require_docling_for_markdown(mock_converter, tmp_path):
+    file_path = tmp_path / "sample.md"
+    file_path.write_text("# Title\n\nParagraph.\n", encoding="utf-8")
+
+    result = parse_document(file_path)
+
+    assert result.markdown.startswith("# Title")
+    mock_converter.assert_not_called()
+
+
+@patch("rag.parser._get_docling_converter", side_effect=RuntimeError("docling unavailable"))
+def test_parse_document_raises_clear_error_for_binary_formats_without_docling(mock_converter, tmp_path):
+    file_path = tmp_path / "sample.pdf"
+    file_path.write_bytes(b"%PDF-1.4")
+
+    with patch("rag.parser.describe_image"):
+        from rag.parser import ParseError
+        with pytest.raises(ParseError, match="docling unavailable"):
+            parse_document(file_path)

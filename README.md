@@ -42,6 +42,12 @@ POSTGRES_PASSWORD=...
 pip install -e .
 ```
 
+If you need local document parsing and ingestion support, install the ingest extra:
+
+```bash
+pip install -e .[ingest]
+```
+
 5. Confirm connectivity:
 
 ```bash

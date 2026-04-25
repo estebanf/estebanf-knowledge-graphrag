@@ -71,6 +71,11 @@ The repo is split into a few main areas:
 - `scripts/`: local environment startup, backups, migrations, and utility entrypoints
 - `frontend/`: React UI, Vite config, and nginx assets for the containerized frontend
 
+## Packaging Note
+
+- Base package installs support API/search/retrieval/community flows.
+- Local parsing and ingestion require the optional `ingest` extra: `pip install -e .[ingest]`.
+
 ## Current Behavioral Notes
 
 - Search, retrieval, and community APIs are implemented under `src/rag/api/routes/`.

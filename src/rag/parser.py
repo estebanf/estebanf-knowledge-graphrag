@@ -3,10 +3,6 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import PdfPipelineOptions
-from docling.document_converter import DocumentConverter, PdfFormatOption
-
 from rag.image_description import describe_image
 
 _IMAGE_REF_RE = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
@@ -33,17 +29,30 @@ class ParseResult:
 _TXT_EXTENSIONS = {".txt", ".text"}
 _MARKDOWN_EXTENSIONS = {".md", ".markdown"}
 
-_pdf_options = PdfPipelineOptions()
-_pdf_options.do_ocr = True
-_pdf_options.do_table_structure = True
-_pdf_options.generate_page_images = False
-_pdf_options.generate_picture_images = True
+_converter = None
 
-_converter = DocumentConverter(
-    format_options={
-        InputFormat.PDF: PdfFormatOption(pipeline_options=_pdf_options),
-    }
-)
+
+def _get_docling_converter():
+    global _converter
+    if _converter is not None:
+        return _converter
+
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+
+    pdf_options = PdfPipelineOptions()
+    pdf_options.do_ocr = True
+    pdf_options.do_table_structure = True
+    pdf_options.generate_page_images = False
+    pdf_options.generate_picture_images = True
+
+    _converter = DocumentConverter(
+        format_options={
+            InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_options),
+        }
+    )
+    return _converter
 
 
 def _plaintext_to_element_tree(text: str) -> str:
@@ -99,7 +108,7 @@ def parse_document(file_path: Path) -> ParseResult:
                 text = _describe_markdown_images(text, file_path.parent)
             return ParseResult(markdown=text, element_tree=_plaintext_to_element_tree(text))
 
-        result = _converter.convert(str(file_path))
+        result = _get_docling_converter().convert(str(file_path))
         markdown = result.document.export_to_markdown()
         markdown = _describe_docling_pictures(result, markdown)
         return ParseResult(
