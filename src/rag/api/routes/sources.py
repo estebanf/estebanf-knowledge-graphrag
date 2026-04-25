@@ -25,6 +25,11 @@ def download_source(source_id: str) -> FileResponse:
         raise HTTPException(status_code=404, detail="Source not found")
 
     stored_path = Path(detail["storage_path"])
+    # Relative paths stored by local ingestion resolve against CWD. Inside a
+    # container CWD is /app but the volume is mounted at /; try the absolute
+    # form as a fallback so both environments work.
+    if not stored_path.is_absolute() and not stored_path.exists():
+        stored_path = Path("/") / stored_path
     if not stored_path.exists():
         raise HTTPException(status_code=404, detail="Stored file not found")
 
