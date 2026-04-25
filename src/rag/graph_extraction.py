@@ -4,28 +4,11 @@ import uuid
 
 import requests
 
+from rag import prompts
 from rag.config import settings
 from rag.embedding import get_embeddings
 
 _ENTITY_TYPES = ["ORGANIZATION", "PERSON", "POLICY", "PRODUCT", "REGULATION", "CONCEPT", "LOCATION"]
-
-_ENTITY_PROMPT = """Extract named entities from the following text. Return ONLY a JSON array.
-Each item must have: "canonical_name" (string), "entity_type" (one of: {types}), "aliases" (list of strings).
-Return [] if no entities found.
-
-Text:
-{text}"""
-
-_REL_PROMPT = """Given these entities: {entity_names}
-
-Extract relationships from the text. Return ONLY a JSON array.
-Each item must have: "source" (canonical_name), "target" (canonical_name), "type" (string), "confidence" (0.0-1.0).
-Use concise relationship types like OWNS, EMPLOYS, GOVERNS, REQUIRES, IS_PART_OF, RELATED_TO.
-Only include relationships grounded in the text.
-Return [] if none found.
-
-Text:
-{text}"""
 
 
 def extract_entities(chunk_content: str) -> list[dict]:
@@ -40,7 +23,7 @@ def extract_entities(chunk_content: str) -> list[dict]:
             },
             json={
                 "model": settings.MODEL_ENTITY_EXTRACTION,
-                "messages": [{"role": "user", "content": _ENTITY_PROMPT.format(
+                "messages": [{"role": "user", "content": prompts.ENTITY_EXTRACTION.format(
                     types=", ".join(_ENTITY_TYPES),
                     text=chunk_content[:4000],
                 )}],
@@ -72,7 +55,7 @@ def extract_relationships(chunk_content: str, entities: list[dict]) -> list[dict
             },
             json={
                 "model": settings.MODEL_RELATIONSHIP_EXTRACTION,
-                "messages": [{"role": "user", "content": _REL_PROMPT.format(
+                "messages": [{"role": "user", "content": prompts.RELATIONSHIP_EXTRACTION.format(
                     entity_names=", ".join(entity_names),
                     text=chunk_content[:4000],
                 )}],
