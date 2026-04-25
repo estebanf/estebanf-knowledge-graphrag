@@ -6,6 +6,7 @@ import requests
 import tiktoken
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
+from rag import prompts
 from rag.config import settings
 from rag.profiling import DocumentProfile
 
@@ -136,11 +137,7 @@ def _split_by_strategy(text: str, strategy: str, chunk_size_tokens: int = _CHUNK
 def _decompose_to_propositions(text: str) -> list[str]:
     if not settings.OPENROUTER_API_KEY:
         return []
-    prompt = (
-        "Break the following text into atomic, self-contained propositions. "
-        "Each must be a single factual statement understandable without context.\n"
-        "Return ONLY a JSON array of strings.\n\nText:\n" + text
-    )
+    prompt = prompts.PROPOSITION_DECOMPOSITION + text
     try:
         resp = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
