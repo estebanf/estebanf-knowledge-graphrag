@@ -393,7 +393,23 @@ def jobs_list(
         console.print(table)
         return
 
-    # retry handled below
+    if retry:
+        with get_connection() as conn:
+            failed_rows = conn.execute(
+                "SELECT id FROM jobs WHERE status LIKE 'failed:%'"
+            ).fetchall()
+        if not failed_rows:
+            console.print("[dim]No failed jobs found.[/dim]")
+            return
+        retried = 0
+        for (job_id,) in failed_rows:
+            try:
+                retry_job(str(job_id))
+                retried += 1
+            except Exception as e:
+                console.print(f"[yellow]Could not retry {job_id}: {e}[/yellow]")
+        console.print(f"[green]{retried} jobs submitted for retry.[/green]")
+        return
 
     with get_connection() as conn:
         if status:

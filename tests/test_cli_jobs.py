@@ -206,3 +206,51 @@ def test_jobs_list_stats_empty_db():
         result = runner.invoke(app, ["jobs", "list", "--stats"])
     assert result.exit_code == 0
     assert "No jobs" in result.output
+
+
+def test_jobs_list_retry_retries_all_failed():
+    with patch("rag.cli.get_connection") as mock_conn, \
+         patch("rag.cli.retry_job") as mock_retry:
+        conn = MagicMock()
+        mock_conn.return_value.__enter__.return_value = conn
+        conn.execute.return_value.fetchall.return_value = [
+            ("job-1",), ("job-2",),
+        ]
+        mock_retry.return_value = {"job_id": "x", "status": "pending", "retry_from_stage": "chunking"}
+        from rag.cli import app
+        result = runner.invoke(app, ["jobs", "list", "--retry"])
+    assert result.exit_code == 0
+    assert "2 jobs submitted for retry" in result.output
+    assert mock_retry.call_count == 2
+
+
+def test_jobs_list_retry_no_failed_jobs():
+    with patch("rag.cli.get_connection") as mock_conn, \
+         patch("rag.cli.retry_job") as mock_retry:
+        conn = MagicMock()
+        mock_conn.return_value.__enter__.return_value = conn
+        conn.execute.return_value.fetchall.return_value = []
+        from rag.cli import app
+        result = runner.invoke(app, ["jobs", "list", "--retry"])
+    assert result.exit_code == 0
+    assert "No failed jobs" in result.output
+    mock_retry.assert_not_called()
+
+
+def test_jobs_list_retry_continues_on_per_job_error():
+    with patch("rag.cli.get_connection") as mock_conn, \
+         patch("rag.cli.retry_job") as mock_retry:
+        conn = MagicMock()
+        mock_conn.return_value.__enter__.return_value = conn
+        conn.execute.return_value.fetchall.return_value = [
+            ("job-1",), ("job-2",),
+        ]
+        mock_retry.side_effect = [
+            Exception("graph error"),
+            {"job_id": "job-2", "status": "pending", "retry_from_stage": "chunking"},
+        ]
+        from rag.cli import app
+        result = runner.invoke(app, ["jobs", "list", "--retry"])
+    assert result.exit_code == 0
+    assert mock_retry.call_count == 2
+    assert "1 jobs submitted for retry" in result.output
