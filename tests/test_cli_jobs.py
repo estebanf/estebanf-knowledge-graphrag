@@ -253,4 +253,4 @@ def test_jobs_list_retry_continues_on_per_job_error():
         result = runner.invoke(app, ["jobs", "list", "--retry"])
     assert result.exit_code == 0
     assert mock_retry.call_count == 2
-    assert "1 jobs submitted for retry" in result.output
+    assert "1 job submitted for retry" in result.output

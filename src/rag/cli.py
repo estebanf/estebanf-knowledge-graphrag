@@ -408,7 +408,8 @@ def jobs_list(
                 retried += 1
             except Exception as e:
                 console.print(f"[yellow]Could not retry {job_id}: {e}[/yellow]")
-        console.print(f"[green]{retried} jobs submitted for retry.[/green]")
+        label = "job" if retried == 1 else "jobs"
+        console.print(f"[green]{retried} {label} submitted for retry.[/green]")
         return
 
     with get_connection() as conn:
