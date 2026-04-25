@@ -4,27 +4,10 @@ from dataclasses import dataclass
 
 import requests
 
+from rag import prompts
 from rag.config import settings
 
 _SAMPLE_CHARS = 3000
-
-_PROMPT = """\
-You are a document analyst. Analyze the document excerpt below and classify it.
-
-Return ONLY a valid JSON object with exactly these fields:
-{
-  "structure_type": "well-structured|loosely-structured|unstructured",
-  "heading_consistency": "consistent|inconsistent|none",
-  "content_density": "uniform|variable",
-  "primary_content_type": "prose|tabular|mixed|qa_pairs|code|transcript",
-  "avg_section_length": "short|medium|long",
-  "has_tables": true|false,
-  "has_code_blocks": true|false,
-  "domain": "legal|financial|technical|general|medical|policy"
-}
-
-Document excerpt:
-"""
 
 
 @dataclass(frozen=True)
@@ -59,7 +42,7 @@ def profile_document(markdown: str) -> DocumentProfile:
     sample = markdown[:_SAMPLE_CHARS]
     payload = {
         "model": settings.MODEL_DOC_PROFILING,
-        "messages": [{"role": "user", "content": _PROMPT + sample}],
+        "messages": [{"role": "user", "content": prompts.DOCUMENT_PROFILING + sample}],
         "temperature": 0,
         "max_tokens": 256,
     }
