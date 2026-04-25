@@ -157,3 +157,45 @@ def test_jobs_status_no_error_detail(mock_conn):
     result = runner.invoke(app, ["jobs", "status", "job-uuid"])
     assert result.exit_code == 0
     assert "Error Detail" not in result.output
+
+
+def test_jobs_list_stats_shows_counts():
+    with patch("rag.cli.get_connection") as mock_conn:
+        conn = MagicMock()
+        mock_conn.return_value.__enter__.return_value = conn
+        conn.execute.return_value.fetchall.return_value = [
+            ("completed", 42),
+            ("failed", 5),
+            ("pending", 3),
+            ("processing", 1),
+        ]
+        from rag.cli import app
+        result = runner.invoke(app, ["jobs", "list", "--stats"])
+    assert result.exit_code == 0
+    assert "pending" in result.output
+    assert "failed" in result.output
+    assert "processing" in result.output
+    assert "42" in result.output
+
+
+def test_jobs_list_stats_uses_aggregate_sql():
+    with patch("rag.cli.get_connection") as mock_conn:
+        conn = MagicMock()
+        mock_conn.return_value.__enter__.return_value = conn
+        conn.execute.return_value.fetchall.return_value = []
+        from rag.cli import app
+        runner.invoke(app, ["jobs", "list", "--stats"])
+    sql = conn.execute.call_args[0][0]
+    assert "GROUP BY" in sql
+    assert "COUNT" in sql
+
+
+def test_jobs_list_stats_empty_db():
+    with patch("rag.cli.get_connection") as mock_conn:
+        conn = MagicMock()
+        mock_conn.return_value.__enter__.return_value = conn
+        conn.execute.return_value.fetchall.return_value = []
+        from rag.cli import app
+        result = runner.invoke(app, ["jobs", "list", "--stats"])
+    assert result.exit_code == 0
+    assert "No jobs" in result.output

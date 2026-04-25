@@ -363,8 +363,38 @@ def sources_delete(
 @jobs_app.command("list")
 def jobs_list(
     status: Annotated[Optional[str], typer.Option("--status", help="Filter by status")] = None,
+    stats: Annotated[bool, typer.Option("--stats", help="Show job counts by status")] = False,
+    retry: Annotated[bool, typer.Option("--retry", help="Retry all failed jobs")] = False,
 ) -> None:
     """List ingestion jobs."""
+    if stats:
+        with get_connection() as conn:
+            rows = conn.execute(
+                """SELECT
+                     CASE
+                       WHEN status LIKE 'failed:%' THEN 'failed'
+                       WHEN status LIKE 'processing:%' THEN 'processing'
+                       ELSE status
+                     END AS status_group,
+                     COUNT(*) AS cnt
+                   FROM jobs
+                   GROUP BY status_group
+                   ORDER BY status_group"""
+            ).fetchall()
+        if not rows:
+            console.print("[dim]No jobs found.[/dim]")
+            return
+        table = Table(title="Job Stats")
+        table.add_column("Status")
+        table.add_column("Count", justify="right")
+        for status_group, cnt in rows:
+            color = "green" if status_group == "completed" else ("red" if status_group == "failed" else "yellow")
+            table.add_row(f"[{color}]{status_group}[/{color}]", str(cnt))
+        console.print(table)
+        return
+
+    # retry handled below
+
     with get_connection() as conn:
         if status:
             if status in ("failed", "processing"):
