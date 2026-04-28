@@ -103,7 +103,8 @@ def test_build_igraph_creates_chunk_co_occurrence_edges():
         "e1": EntityNode("e1", "Alpha", "ORG", source_ids={"s1"}, chunk_ids={"c1"}),
         "e2": EntityNode("e2", "Beta", "PERSON", source_ids={"s1"}, chunk_ids={"c1"}),
     }
-    with patch("rag.community._load_entity_embeddings", return_value={}):
+    with patch("rag.community._load_entity_embeddings", return_value={}), \
+         patch("rag.community._load_cross_source_semantic_edges", return_value={}):
         g = _build_igraph(entities, {"c1": "s1"}, semantic_threshold=0.85, source_cooc_weight=0.1)
     assert g.vcount() == 2
     assert g.ecount() == 1
@@ -115,11 +116,117 @@ def test_build_igraph_adds_semantic_cross_source_edge():
         "e1": EntityNode("e1", "Alpha", "ORG", source_ids={"s1"}, chunk_ids={"c1"}),
         "e2": EntityNode("e2", "Beta", "PERSON", source_ids={"s2"}, chunk_ids={"c2"}),
     }
-    emb = [1.0, 0.0]
-    with patch("rag.community._load_entity_embeddings", return_value={"e1": emb, "e2": emb}):
+    cross_edge = {(0, 1): 0.5}
+    with patch("rag.community._load_entity_embeddings", return_value={}), \
+         patch("rag.community._load_cross_source_semantic_edges", return_value=cross_edge):
         g = _build_igraph(entities, {"c1": "s1", "c2": "s2"}, semantic_threshold=0.5, source_cooc_weight=0.1)
     assert g.ecount() == 1
-    assert g.es[0]["weight"] == pytest.approx(0.5)  # sim=1.0, sem_w=1.0*0.5
+    assert g.es[0]["weight"] == pytest.approx(0.5)
+
+
+# --- _load_cross_source_semantic_edges ---
+
+def test_cross_source_semantic_edges_creates_edge_above_threshold():
+    from rag.community import EntityNode, _load_cross_source_semantic_edges
+    entities = {
+        "e1": EntityNode("e1", "Alpha", "ORG", source_ids={"s1"}, chunk_ids={"c1"}),
+        "e2": EntityNode("e2", "Beta", "PERSON", source_ids={"s2"}, chunk_ids={"c2"}),
+    }
+    idx = {"e1": 0, "e2": 1}
+    embeddings = {"e1": [1.0, 0.0], "e2": [1.0, 0.0]}
+
+    mock_conn = MagicMock()
+    mock_conn.__enter__ = lambda s: mock_conn
+    mock_conn.__exit__ = MagicMock(return_value=False)
+    # ANN query for e1 returns e2 with sim=0.95
+    mock_conn.execute.return_value.fetchall.return_value = [("e2", 0.95)]
+
+    with patch("rag.community.get_connection", return_value=mock_conn):
+        result = _load_cross_source_semantic_edges(
+            entities, idx, embeddings,
+            semantic_threshold=0.85, top_k=5, max_queries=100,
+        )
+
+    assert (0, 1) in result
+    assert result[(0, 1)] == pytest.approx(0.95 * 0.5)
+
+
+def test_cross_source_semantic_edges_threshold_gates_edge():
+    from rag.community import EntityNode, _load_cross_source_semantic_edges
+    entities = {
+        "e1": EntityNode("e1", "Alpha", "ORG", source_ids={"s1"}, chunk_ids={"c1"}),
+        "e2": EntityNode("e2", "Beta", "PERSON", source_ids={"s2"}, chunk_ids={"c2"}),
+    }
+    idx = {"e1": 0, "e2": 1}
+    embeddings = {"e1": [1.0, 0.0], "e2": [0.5, 0.5]}
+
+    mock_conn = MagicMock()
+    mock_conn.__enter__ = lambda s: mock_conn
+    mock_conn.__exit__ = MagicMock(return_value=False)
+    # ANN query returns e2 with sim below threshold
+    mock_conn.execute.return_value.fetchall.return_value = [("e2", 0.70)]
+
+    with patch("rag.community.get_connection", return_value=mock_conn):
+        result = _load_cross_source_semantic_edges(
+            entities, idx, embeddings,
+            semantic_threshold=0.85, top_k=5, max_queries=100,
+        )
+
+    assert result == {}
+
+
+def test_cross_source_semantic_edges_budget_cap_prioritizes_most_mentioned():
+    from rag.community import EntityNode, _load_cross_source_semantic_edges
+
+    # Build 10 entities; set chunk_ids so e0 has the most, e9 the fewest
+    entities = {
+        f"e{i}": EntityNode(f"e{i}", f"E{i}", "ORG", source_ids={f"s{i}"}, chunk_ids=set(f"c{j}" for j in range(10 - i)))
+        for i in range(10)
+    }
+    idx = {eid: i for i, eid in enumerate(entities)}
+    embeddings = {eid: [1.0, 0.0] for eid in entities}
+
+    queried_ids: list[str] = []
+
+    def fake_execute(sql, params):
+        queried_ids.append(params[2])  # third param is the a_id being queried
+        m = MagicMock()
+        m.fetchall.return_value = []
+        return m
+
+    mock_conn = MagicMock()
+    mock_conn.__enter__ = lambda s: mock_conn
+    mock_conn.__exit__ = MagicMock(return_value=False)
+    mock_conn.execute.side_effect = fake_execute
+
+    with patch("rag.community.get_connection", return_value=mock_conn):
+        _load_cross_source_semantic_edges(
+            entities, idx, embeddings,
+            semantic_threshold=0.85, top_k=5, max_queries=3,
+        )
+
+    assert len(queried_ids) == 3
+    # The 3 queried entities must be the ones with the most chunk_ids (e0, e1, e2)
+    assert set(queried_ids) == {"e0", "e1", "e2"}
+
+
+def test_build_igraph_cross_source_does_not_overwrite_chunk_cooc_edge():
+    from rag.community import EntityNode, _build_igraph
+    # e1 and e2 share a chunk AND a cross-source semantic edge should be ignored
+    entities = {
+        "e1": EntityNode("e1", "Alpha", "ORG", source_ids={"s1"}, chunk_ids={"c1"}),
+        "e2": EntityNode("e2", "Beta", "PERSON", source_ids={"s2"}, chunk_ids={"c1"}),
+    }
+    # The chunk-cooc edge produces weight > 0; semantic would produce 0.45
+    semantic_edges = {(0, 1): 0.45}
+    with patch("rag.community._load_entity_embeddings", return_value={}), \
+         patch("rag.community._load_cross_source_semantic_edges", return_value=semantic_edges):
+        g = _build_igraph(entities, {"c1": "s1"}, semantic_threshold=0.85, source_cooc_weight=0.1)
+
+    assert g.ecount() == 1
+    # The weight must be the chunk-cooc weight (base from 1/sqrt(1*1)=1.0 * 1.5 cross factor),
+    # NOT the semantic weight of 0.45
+    assert g.es[0]["weight"] > 0.45
 
 
 # --- _run_leiden ---
@@ -265,3 +372,24 @@ def test_detect_communities_returns_correct_shape(
     assert result["metadata"]["source_count"] == 1
     assert len(result["communities"]) == 1
     assert result["communities"][0]["entity_count"] == 3
+    params = result["metadata"]["parameters"]
+    assert "cross_source_top_k" in params
+    assert "max_cross_source_queries" in params
+
+
+def test_detect_communities_new_params_override_defaults():
+    from rag.community import detect_communities
+    with patch("rag.community._resolve_scope", return_value=[]), \
+         patch("rag.community._load_graph_data", return_value=({}, {}, [])), \
+         patch("rag.community._load_source_names", return_value={}), \
+         patch("rag.community._build_igraph") as mock_build, \
+         patch("rag.community._run_leiden", return_value=[]):
+        mock_build.return_value = MagicMock()
+        result = detect_communities(
+            scope_mode="ids", source_ids=[], criteria=[], filters={},
+            search_options={}, retrieve_options={},
+            cross_source_top_k=3, max_cross_source_queries=99,
+        )
+        params = result["metadata"]["parameters"]
+        assert params["cross_source_top_k"] == 3
+        assert params["max_cross_source_queries"] == 99

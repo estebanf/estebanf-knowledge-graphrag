@@ -59,6 +59,8 @@ class CommunityOptions(BaseModel):
     cutoff: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     min_community_size: Optional[int] = Field(default=None, gt=0)
     top_k_chunks: Optional[int] = Field(default=None, gt=0)
+    cross_source_top_k: Optional[int] = Field(default=None, gt=0)
+    max_cross_source_queries: Optional[int] = Field(default=None, gt=0)
 
 
 class CommunityRequest(BaseModel):

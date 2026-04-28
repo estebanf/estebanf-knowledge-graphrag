@@ -546,6 +546,8 @@ def community_ids(
     min_community_size: Annotated[Optional[int], typer.Option("--min-community-size", help="Minimum entities per community")] = None,
     top_k: Annotated[Optional[int], typer.Option("--top-k", help="Max chunks per community")] = None,
     summarize: Annotated[Optional[str], typer.Option("--summarize", help="Model name to summarize communities")] = None,
+    cross_source_top_k: Annotated[Optional[int], typer.Option("--cross-source-top-k", help="Max cross-source ANN neighbors per entity")] = None,
+    max_cross_source_queries: Annotated[Optional[int], typer.Option("--max-cross-source-queries", help="Hard cap on per-entity ANN queries")] = None,
 ) -> None:
     """Detect communities from explicit source IDs."""
     result = detect_communities(
@@ -554,6 +556,8 @@ def community_ids(
         semantic_threshold=semantic_threshold, cutoff=cutoff,
         min_community_size=min_community_size, top_k_chunks=top_k,
         summarize_model=summarize,
+        cross_source_top_k=cross_source_top_k,
+        max_cross_source_queries=max_cross_source_queries,
     )
     console.print_json(json.dumps(result))
 
@@ -569,6 +573,8 @@ def community_search(
     min_community_size: Annotated[Optional[int], typer.Option("--min-community-size")] = None,
     top_k: Annotated[Optional[int], typer.Option("--top-k")] = None,
     summarize: Annotated[Optional[str], typer.Option("--summarize")] = None,
+    cross_source_top_k: Annotated[Optional[int], typer.Option("--cross-source-top-k", help="Max cross-source ANN neighbors per entity")] = None,
+    max_cross_source_queries: Annotated[Optional[int], typer.Option("--max-cross-source-queries", help="Hard cap on per-entity ANN queries")] = None,
 ) -> None:
     """Detect communities from sources matched by search criteria."""
     try:
@@ -581,6 +587,8 @@ def community_search(
         filters=parsed_filters, search_options={"limit": limit, "min_score": min_score},
         retrieve_options={}, semantic_threshold=semantic_threshold, cutoff=cutoff,
         min_community_size=min_community_size, top_k_chunks=top_k, summarize_model=summarize,
+        cross_source_top_k=cross_source_top_k,
+        max_cross_source_queries=max_cross_source_queries,
     )
     console.print_json(json.dumps(result))
 
@@ -601,6 +609,8 @@ def community_retrieve(
     min_community_size: Annotated[Optional[int], typer.Option("--min-community-size")] = None,
     top_k: Annotated[Optional[int], typer.Option("--top-k")] = None,
     summarize: Annotated[Optional[str], typer.Option("--summarize")] = None,
+    cross_source_top_k: Annotated[Optional[int], typer.Option("--cross-source-top-k", help="Max cross-source ANN neighbors per entity")] = None,
+    max_cross_source_queries: Annotated[Optional[int], typer.Option("--max-cross-source-queries", help="Hard cap on per-entity ANN queries")] = None,
 ) -> None:
     """Detect communities from sources matched by retrieve criteria."""
     try:
@@ -620,5 +630,7 @@ def community_retrieve(
         },
         semantic_threshold=semantic_threshold, cutoff=cutoff,
         min_community_size=min_community_size, top_k_chunks=top_k, summarize_model=summarize,
+        cross_source_top_k=cross_source_top_k,
+        max_cross_source_queries=max_cross_source_queries,
     )
     console.print_json(json.dumps(result))

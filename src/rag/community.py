@@ -13,7 +13,7 @@ from rag import prompts
 from rag.config import settings
 from rag.db import get_connection
 from rag.graph_db import get_graph_driver
-from rag.retrieval import _expand_chunk_texts, hybrid_search, resolve_retrieval_scope
+from rag.retrieval import _expand_chunk_texts, _vector_literal, hybrid_search, resolve_retrieval_scope
 
 
 @dataclass
@@ -175,11 +175,60 @@ def _load_entity_embeddings(entity_ids: list[str]) -> dict[str, list[float]]:
     return result
 
 
+def _load_cross_source_semantic_edges(
+    entities: dict[str, EntityNode],
+    idx: dict[str, int],
+    embeddings: dict[str, list[float]],
+    semantic_threshold: float,
+    top_k: int,
+    max_queries: int,
+) -> dict[tuple[int, int], float]:
+    candidates = [eid for eid in embeddings if eid in idx]
+    if len(candidates) > max_queries:
+        candidates.sort(key=lambda eid: len(entities[eid].chunk_ids), reverse=True)
+        candidates = candidates[:max_queries]
+
+    entity_ids = list(idx.keys())
+    result: dict[tuple[int, int], float] = {}
+
+    with get_connection() as conn:
+        for a_id in candidates:
+            vector_param = _vector_literal(embeddings[a_id])
+            rows = conn.execute(
+                """
+                SELECT id, 1 - (embedding <=> %s::vector) AS sim
+                FROM entities
+                WHERE id = ANY(%s)
+                  AND id <> %s
+                  AND embedding IS NOT NULL
+                ORDER BY embedding <=> %s::vector
+                LIMIT %s
+                """,
+                (vector_param, entity_ids, a_id, vector_param, top_k),
+            ).fetchall()
+            for row in rows:
+                b_id = str(row[0])
+                sim = float(row[1])
+                if sim < semantic_threshold:
+                    continue
+                if b_id not in idx:
+                    continue
+                if entities[a_id].source_ids & entities[b_id].source_ids:
+                    continue
+                key = (min(idx[a_id], idx[b_id]), max(idx[a_id], idx[b_id]))
+                if key not in result:
+                    result[key] = sim * 0.5
+
+    return result
+
+
 def _build_igraph(
     entities: dict[str, EntityNode],
     chunk_to_source: dict[str, str],
     semantic_threshold: float,
     source_cooc_weight: float,
+    cross_source_top_k: int = 10,
+    max_cross_source_queries: int = 5000,
 ) -> igraph.Graph:
     entity_ids = list(entities.keys())
     idx = {eid: i for i, eid in enumerate(entity_ids)}
@@ -226,28 +275,15 @@ def _build_igraph(
                 if key not in edge_weights:
                     edge_weights[key] = source_cooc_weight
 
-    # Semantic cross-source edges: O(N²) — only feasible for small graphs.
-    # With large entity sets, chunk co-occurrence drives clustering adequately.
-    if len(entity_ids) <= 400:
-        embeddings = _load_entity_embeddings(entity_ids)
-        source_entity_lists = [(sid, list(eids)) for sid, eids in source_entities.items()]
-        for si in range(len(source_entity_lists)):
-            for sj in range(si + 1, len(source_entity_lists)):
-                _, eids_a = source_entity_lists[si]
-                _, eids_b = source_entity_lists[sj]
-                for a_id in eids_a:
-                    for b_id in eids_b:
-                        vi, vj = idx[a_id], idx[b_id]
-                        key = (min(vi, vj), max(vi, vj))
-                        if key in edge_weights:
-                            continue
-                        emb_a = embeddings.get(a_id)
-                        emb_b = embeddings.get(b_id)
-                        if emb_a is None or emb_b is None:
-                            continue
-                        sim = _cosine_similarity(emb_a, emb_b)
-                        if sim >= semantic_threshold:
-                            edge_weights[key] = sim * 0.5
+    embeddings = _load_entity_embeddings(entity_ids)
+    semantic_edges = _load_cross_source_semantic_edges(
+        entities, idx, embeddings,
+        semantic_threshold, cross_source_top_k, max_cross_source_queries,
+    )
+    for key, weight in semantic_edges.items():
+        if key in edge_weights:
+            continue
+        edge_weights[key] = weight
 
     if edge_weights:
         edges = list(edge_weights.keys())
@@ -395,17 +431,21 @@ def detect_communities(
     min_community_size: Optional[int] = None,
     top_k_chunks: Optional[int] = None,
     summarize_model: Optional[str] = None,
+    cross_source_top_k: Optional[int] = None,
+    max_cross_source_queries: Optional[int] = None,
 ) -> dict:
     sem_threshold = semantic_threshold if semantic_threshold is not None else settings.COMMUNITY_SEMANTIC_THRESHOLD
     cooc_weight = source_cooc_weight if source_cooc_weight is not None else settings.COMMUNITY_SOURCE_COOC_WEIGHT
     _cutoff = cutoff if cutoff is not None else settings.COMMUNITY_CUTOFF
     min_size = min_community_size if min_community_size is not None else settings.COMMUNITY_MIN_COMMUNITY_SIZE
     top_k = top_k_chunks if top_k_chunks is not None else settings.COMMUNITY_TOP_K_CHUNKS
+    _cross_top_k = cross_source_top_k if cross_source_top_k is not None else settings.COMMUNITY_CROSS_SOURCE_TOP_K
+    _max_queries = max_cross_source_queries if max_cross_source_queries is not None else settings.COMMUNITY_MAX_CROSS_SOURCE_QUERIES
 
     resolved_ids = _resolve_scope(scope_mode, source_ids, criteria, filters, search_options, retrieve_options)
     entities, chunk_to_source, excluded_ids = _load_graph_data(resolved_ids)
     source_names = _load_source_names(resolved_ids)
-    g = _build_igraph(entities, chunk_to_source, sem_threshold, cooc_weight)
+    g = _build_igraph(entities, chunk_to_source, sem_threshold, cooc_weight, _cross_top_k, _max_queries)
     community_lists = _run_leiden(g, min_size)
 
     communities: list[Community] = []
@@ -456,6 +496,8 @@ def detect_communities(
                 "cutoff": _cutoff,
                 "min_community_size": min_size,
                 "top_k_chunks": top_k,
+                "cross_source_top_k": _cross_top_k,
+                "max_cross_source_queries": _max_queries,
             },
         },
         "communities": [

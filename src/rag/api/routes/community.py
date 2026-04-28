@@ -32,4 +32,6 @@ def community_route(payload: CommunityRequest) -> dict:
         min_community_size=payload.community_options.min_community_size,
         top_k_chunks=payload.community_options.top_k_chunks,
         summarize_model=payload.summarize_model,
+        cross_source_top_k=payload.community_options.cross_source_top_k,
+        max_cross_source_queries=payload.community_options.max_cross_source_queries,
     )

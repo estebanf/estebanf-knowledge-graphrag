@@ -164,6 +164,8 @@ All runtime settings are env-backed. The CLI, backend, worker, and Docker servic
 | `COMMUNITY_MIN_COMMUNITY_SIZE` | `3` | Minimum entity count required for a community. |
 | `COMMUNITY_TOP_K_CHUNKS` | `5` | Max representative chunks returned per community. |
 | `COMMUNITY_SUMMARIZATION_PROMPT` | empty | Optional prompt override for community summarization. |
+| `COMMUNITY_CROSS_SOURCE_TOP_K` | `10` | Max cross-source semantic neighbors fetched per entity via pgvector ANN. |
+| `COMMUNITY_MAX_CROSS_SOURCE_QUERIES` | `5000` | Hard cap on per-entity ANN queries; entities are prioritized by chunk-mention count. |
 | `WORKER_POLL_INTERVAL` | `5` | Default idle poll interval for `rag worker`. |
 | `WORKER_STUCK_JOB_MINUTES` | `30` | Default age after which a processing job is considered stuck. |
 
@@ -602,6 +604,8 @@ Community analysis groups connected entities into communities and returns repres
 
 Optional summarization adds an LLM-written summary per community.
 
+Cross-source community detection uses pgvector ANN queries against the `entities_embedding_hnsw_idx` index and is no longer disabled at large entity scopes. Tuning `--semantic-threshold` lower (e.g. 0.75–0.80) helps surface looser cross-source clusters. If the HNSW index is absent on older deployments, pgvector falls back to a sequential scan with correct but slower results; run `CREATE INDEX entities_embedding_hnsw_idx ON entities USING hnsw (embedding vector_cosine_ops)` to restore index performance.
+
 ### CLI
 
 The community surface has three subcommands.
@@ -621,6 +625,8 @@ Options:
 - `--min-community-size INTEGER`: minimum entities per community
 - `--top-k INTEGER`: max representative chunks per community
 - `--summarize TEXT`: model name used to summarize each community
+- `--cross-source-top-k INTEGER`: max cross-source ANN neighbors fetched per entity
+- `--max-cross-source-queries INTEGER`: hard cap on per-entity ANN queries
 
 Example:
 
@@ -650,6 +656,8 @@ Options:
 - `--min-community-size INTEGER`
 - `--top-k INTEGER`
 - `--summarize TEXT`
+- `--cross-source-top-k INTEGER`
+- `--max-cross-source-queries INTEGER`
 
 Example:
 
@@ -688,6 +696,8 @@ Options:
 - `--min-community-size INTEGER`
 - `--top-k INTEGER`
 - `--summarize TEXT`
+- `--cross-source-top-k INTEGER`
+- `--max-cross-source-queries INTEGER`
 
 Example:
 
@@ -713,7 +723,9 @@ Response shape:
       "source_cooc_weight": 0.1,
       "cutoff": 0.5,
       "min_community_size": 3,
-      "top_k_chunks": 5
+      "top_k_chunks": 5,
+      "cross_source_top_k": 10,
+      "max_cross_source_queries": 5000
     }
   },
   "communities": [
@@ -785,7 +797,9 @@ Request body:
     "semantic_threshold": 0.85,
     "cutoff": 0.5,
     "min_community_size": 3,
-    "top_k_chunks": 5
+    "top_k_chunks": 5,
+    "cross_source_top_k": null,
+    "max_cross_source_queries": null
   },
   "summarize_model": null
 }

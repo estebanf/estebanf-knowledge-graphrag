@@ -90,6 +90,8 @@ class Settings(BaseSettings):
     COMMUNITY_MIN_COMMUNITY_SIZE: Annotated[int, Field(gt=0)] = 3
     COMMUNITY_TOP_K_CHUNKS: Annotated[int, Field(gt=0)] = 5
     COMMUNITY_SUMMARIZATION_PROMPT: str = ""
+    COMMUNITY_CROSS_SOURCE_TOP_K: Annotated[int, Field(gt=0)] = 10
+    COMMUNITY_MAX_CROSS_SOURCE_QUERIES: Annotated[int, Field(gt=0)] = 5000
 
     # Worker
     WORKER_POLL_INTERVAL: int = 5       # seconds between polls when queue is empty

@@ -36,6 +36,7 @@ def test_community_ids_basic(mock_detect):
         search_options={}, retrieve_options={},
         semantic_threshold=None, cutoff=None, min_community_size=None,
         top_k_chunks=None, summarize_model=None,
+        cross_source_top_k=None, max_cross_source_queries=None,
     )
 
 
@@ -54,6 +55,7 @@ def test_community_ids_with_overrides(mock_detect):
         search_options={}, retrieve_options={},
         semantic_threshold=0.9, cutoff=0.3, min_community_size=5,
         top_k_chunks=3, summarize_model="google/gemma-3-4b-it",
+        cross_source_top_k=None, max_cross_source_queries=None,
     )
 
 
