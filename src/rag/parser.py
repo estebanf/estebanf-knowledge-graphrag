@@ -81,7 +81,9 @@ def _describe_markdown_images(text: str, base_dir: Path) -> str:
         img_path = base_dir / path_str
         if not img_path.exists():
             return m.group(0)
-        mime = _MIME_MAP.get(img_path.suffix.lower(), "image/png")
+        mime = _MIME_MAP.get(img_path.suffix.lower())
+        if mime is None:
+            return m.group(0)
         return describe_image(img_path.read_bytes(), mime)
 
     return _IMAGE_REF_RE.sub(_replace, text)
