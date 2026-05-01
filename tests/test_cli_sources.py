@@ -1,4 +1,5 @@
 import uuid
+import json
 from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
@@ -61,11 +62,12 @@ def test_sources_delete_hard_removes_chunks_before_jobs(mock_conn, mock_graph_dr
     mock_delete_file.assert_called_once_with("source-1")
 
 
-def test_sources_insights_prints_table():
+def test_sources_insights_prints_json():
     source_id = str(uuid.uuid4())
+    insight_id = uuid.uuid4()
     fake_rows = [
         (
-            uuid.uuid4(),
+            insight_id,
             "AI reduces operational costs by 30%",
             ["AI Adoption", "Business Outcomes"],
             "2026-01-10 12:00:00",
@@ -79,8 +81,14 @@ def test_sources_insights_prints_table():
         result = runner.invoke(app, ["sources", "insights", source_id])
 
     assert result.exit_code == 0
-    assert "AI reduces" in result.output
-    assert "Business Outcomes" in result.output
+    payload = json.loads(result.output)
+    assert payload == [
+        {
+            "id": str(insight_id),
+            "content": "AI reduces operational costs by 30%",
+            "topics": ["AI Adoption", "Business Outcomes"],
+        }
+    ]
 
 
 def test_sources_insights_empty():
@@ -92,7 +100,7 @@ def test_sources_insights_empty():
         result = runner.invoke(app, ["sources", "insights", "some-id"])
 
     assert result.exit_code == 0
-    assert "No insights" in result.output
+    assert json.loads(result.output) == []
 
 
 def test_sources_last_with_integer():

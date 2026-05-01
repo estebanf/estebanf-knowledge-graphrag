@@ -358,24 +358,18 @@ def sources_insights(
             )
             rows = cur.fetchall()
 
-    if not rows:
-        console.print("[dim]No insights found for this source.[/dim]")
-        return
-
-    table = Table(title=f"Insights for {source_id}")
-    table.add_column("ID", style="dim", no_wrap=True)
-    table.add_column("Content", ratio=3)
-    table.add_column("Topics", ratio=2)
-    table.add_column("Created")
-    for insight_id, content, topics, created_at in rows:
-        text = content or ""
-        table.add_row(
-            str(insight_id)[:8],
-            text[:120] + ("..." if len(text) > 120 else ""),
-            ", ".join(topics or []),
-            str(created_at)[:19],
+    console.print_json(
+        json.dumps(
+            [
+                {
+                    "id": str(insight_id),
+                    "content": content or "",
+                    "topics": list(topics or []),
+                }
+                for insight_id, content, topics, _created_at in rows
+            ]
         )
-    console.print(table)
+    )
 
 
 @sources_app.command("last")
