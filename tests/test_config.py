@@ -62,8 +62,10 @@ def test_insight_config_defaults(monkeypatch):
     monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
     monkeypatch.delenv("INSIGHT_DEDUP_COSINE_THRESHOLD", raising=False)
     monkeypatch.delenv("INSIGHT_LINK_TOP_K", raising=False)
+    monkeypatch.delenv("INSIGHT_EXTRACTION_CONCURRENCY", raising=False)
     from rag.config import Settings
     s = Settings(_env_file=None)
     assert s.OPENCODE_API_KEY == ""
     assert s.INSIGHT_DEDUP_COSINE_THRESHOLD == 0.95
     assert s.INSIGHT_LINK_TOP_K == 10
+    assert s.INSIGHT_EXTRACTION_CONCURRENCY == 3

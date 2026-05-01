@@ -116,6 +116,7 @@ All runtime settings are env-backed. The CLI, backend, worker, and Docker servic
 | `OPENCODE_API_KEY` | empty | API key for OpenCode service used in insight extraction. |
 | `INSIGHT_DEDUP_COSINE_THRESHOLD` | `0.95` | Minimum cosine similarity to reuse an existing insight instead of creating a new one. |
 | `INSIGHT_LINK_TOP_K` | `10` | Number of nearest insight neighbors used for mutual top-K `RELATED_TO` edge creation. |
+| `INSIGHT_EXTRACTION_CONCURRENCY` | `3` | Number of concurrent OpenCode chunk extraction calls per ingestion job; storage remains serial. |
 
 ### Search defaults
 

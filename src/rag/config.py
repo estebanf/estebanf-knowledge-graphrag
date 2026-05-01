@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     OPENCODE_API_KEY: str = ""
     INSIGHT_DEDUP_COSINE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.95
     INSIGHT_LINK_TOP_K: Annotated[int, Field(gt=0)] = 10
+    INSIGHT_EXTRACTION_CONCURRENCY: Annotated[int, Field(gt=0)] = 3
 
     # Retrieval
     RETRIEVAL_RRF_K: Annotated[int, Field(gt=0)] = 60

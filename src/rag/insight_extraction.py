@@ -1,6 +1,7 @@
 import json
 import re
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
@@ -188,6 +189,22 @@ def link_related_insights(
                     )
 
 
+def _extract_chunk_insights_parallel(
+    chunk_rows: list[tuple[str, str]],
+) -> list[tuple[str, str, list[dict]]]:
+    if not chunk_rows:
+        return []
+
+    def _extract(row: tuple[str, str]) -> tuple[str, str, list[dict]]:
+        chunk_id, content = row
+        raw_insights = extract_insights_from_chunk(content)
+        return chunk_id, content, _normalized_insights(raw_insights)
+
+    max_workers = min(settings.INSIGHT_EXTRACTION_CONCURRENCY, len(chunk_rows))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        return list(executor.map(_extract, chunk_rows))
+
+
 def extract_and_store_insights(
     conn,
     driver,
@@ -198,8 +215,9 @@ def extract_and_store_insights(
     insights_extracted = 0
     insights_reused = 0
 
-    for chunk_id, content in chunk_rows:
-        raw_insights = _normalized_insights(extract_insights_from_chunk(content))
+    extracted_rows = _extract_chunk_insights_parallel(chunk_rows)
+
+    for chunk_id, _content, raw_insights in extracted_rows:
         if not raw_insights:
             chunks_processed += 1
             conn.commit()

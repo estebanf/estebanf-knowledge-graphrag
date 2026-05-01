@@ -171,6 +171,31 @@ def test_link_related_insights_accepts_database_vector_strings():
     assert session.run.call_count == 1
 
 
+def test_extract_chunk_insights_parallel_preserves_chunk_order(monkeypatch):
+    from rag.insight_extraction import _extract_chunk_insights_parallel
+
+    monkeypatch.setattr("rag.insight_extraction.settings.INSIGHT_EXTRACTION_CONCURRENCY", 3)
+
+    def fake_extract(content):
+        return [{"insight": f"insight {content}", "topics": [content.upper()]}]
+
+    monkeypatch.setattr("rag.insight_extraction.extract_insights_from_chunk", fake_extract)
+
+    result = _extract_chunk_insights_parallel(
+        [
+            ("chunk-1", "alpha"),
+            ("chunk-2", "beta"),
+            ("chunk-3", "gamma"),
+        ]
+    )
+
+    assert result == [
+        ("chunk-1", "alpha", [{"insight": "insight alpha", "topics": ["ALPHA"]}]),
+        ("chunk-2", "beta", [{"insight": "insight beta", "topics": ["BETA"]}]),
+        ("chunk-3", "gamma", [{"insight": "insight gamma", "topics": ["GAMMA"]}]),
+    ]
+
+
 def test_extract_and_store_insights_returns_counts(monkeypatch):
     monkeypatch.setattr("rag.insight_extraction.extract_insights_from_chunk",
                         lambda content: [{"insight": "insight A", "topics": ["AI Adoption"]}])
@@ -190,6 +215,55 @@ def test_extract_and_store_insights_returns_counts(monkeypatch):
     assert result["chunks_processed"] == 1
     assert result["insights_extracted"] == 1
     assert result["insights_reused"] == 0
+
+
+def test_extract_and_store_insights_stores_parallel_results_serially(monkeypatch):
+    events = []
+
+    monkeypatch.setattr(
+        "rag.insight_extraction._extract_chunk_insights_parallel",
+        lambda rows: [
+            ("chunk-1", "content 1", [{"insight": "insight A", "topics": ["AI Adoption"]}]),
+            ("chunk-2", "content 2", [{"insight": "insight B", "topics": ["Business Outcomes"]}]),
+        ],
+    )
+    monkeypatch.setattr("rag.insight_extraction.get_embeddings", lambda texts: [[0.1] * 4096])
+    monkeypatch.setattr(
+        "rag.insight_extraction.upsert_insight",
+        lambda conn, content, emb: (events.append(("upsert", content)) or (f"{content}-id", True)),
+    )
+    monkeypatch.setattr(
+        "rag.insight_extraction.link_chunk_insight",
+        lambda conn, chunk_id, insight_id, topics: events.append(("link_chunk", chunk_id, insight_id)),
+    )
+    monkeypatch.setattr(
+        "rag.insight_extraction.store_insight_in_graph",
+        lambda driver, chunk_id, insight_id, content, topics: events.append(("graph", chunk_id, insight_id)),
+    )
+    monkeypatch.setattr(
+        "rag.insight_extraction.link_related_insights",
+        lambda conn, driver, source_id, insight_id, emb: events.append(("related", source_id, insight_id)),
+    )
+
+    from rag.insight_extraction import extract_and_store_insights
+    conn = MagicMock()
+    driver = MagicMock()
+
+    result = extract_and_store_insights(
+        conn, driver, "source-1", [("chunk-1", "content 1"), ("chunk-2", "content 2")]
+    )
+
+    assert result["chunks_processed"] == 2
+    assert events == [
+        ("upsert", "insight A"),
+        ("link_chunk", "chunk-1", "insight A-id"),
+        ("graph", "chunk-1", "insight A-id"),
+        ("related", "source-1", "insight A-id"),
+        ("upsert", "insight B"),
+        ("link_chunk", "chunk-2", "insight B-id"),
+        ("graph", "chunk-2", "insight B-id"),
+        ("related", "source-1", "insight B-id"),
+    ]
 
 
 def test_extract_and_store_insights_skips_blank_insight(monkeypatch):
