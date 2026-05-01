@@ -390,7 +390,7 @@ venv/bin/rag sources delete <source_id> --hard
 
 ## Remediation
 
-Backfill insight extraction for sources that already have chunks but no `chunk_insights` rows:
+Backfill insight extraction for the newest sources that already have chunks but no `chunk_insights` rows. `--batch-size` is a hard cap for one run; for example, `--batch-size 10` processes the newest 10 eligible sources and exits.
 
 ```bash
 python scripts/remediate_insights.py --batch-size 10

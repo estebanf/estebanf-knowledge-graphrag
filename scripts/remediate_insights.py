@@ -13,13 +13,24 @@ from rag.insight_extraction import extract_and_store_insights
 
 
 _PENDING_SQL = """
-SELECT DISTINCT c.source_id
-FROM chunks c
-WHERE c.deleted_at IS NULL
-  AND NOT EXISTS (
-    SELECT 1 FROM chunk_insights ci WHERE ci.chunk_id = c.id
+SELECT s.id
+FROM sources s
+WHERE s.deleted_at IS NULL
+  AND EXISTS (
+    SELECT 1
+    FROM chunks c
+    WHERE c.source_id = s.id
+      AND c.deleted_at IS NULL
   )
-ORDER BY c.source_id
+  AND NOT EXISTS (
+    SELECT 1
+    FROM chunks c
+    JOIN chunk_insights ci ON ci.chunk_id = c.id
+    WHERE c.source_id = s.id
+      AND c.deleted_at IS NULL
+  )
+ORDER BY s.created_at DESC, s.id DESC
+LIMIT %s
 """
 
 _CHUNK_ROWS_SQL = """
@@ -142,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
         "--batch-size",
         type=int,
         default=10,
-        help="Number of sources to process per batch.",
+        help="Maximum number of newest pending sources to process, then exit.",
     )
     parser.add_argument("--source-id", default=None, help="Backfill a single source UUID.")
     parser.add_argument(
@@ -151,6 +162,8 @@ def main(argv: list[str] | None = None) -> int:
         help="With --source-id, delete existing insight links for that source and rebuild.",
     )
     args = parser.parse_args(argv)
+    if args.batch_size < 1:
+        parser.error("--batch-size must be at least 1")
 
     with get_connection() as conn, get_graph_driver() as driver:
         if args.source_id:
@@ -174,33 +187,28 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         with conn.cursor() as cur:
-            cur.execute(_PENDING_SQL)
-            pending = [str(row[0]) for row in cur.fetchall()]
+            cur.execute(_PENDING_SQL, (args.batch_size,))
+            pending = [str(row[0]) for row in cur.fetchall()[: args.batch_size]]
 
         total = len(pending)
-        print(f"Found {total} sources pending insight extraction.")
         if total == 0:
+            print("Found 0 sources pending insight extraction.")
             print("Nothing to do.")
             return 0
 
+        print(f"Selected {total} newest sources pending insight extraction.")
         processed = 0
         errors = 0
-        for offset in range(0, total, args.batch_size):
-            batch = pending[offset : offset + args.batch_size]
-            batch_number = offset // args.batch_size + 1
-            print(
-                f"\nBatch {batch_number}: sources {offset + 1}-"
-                f"{min(offset + args.batch_size, total)} of {total}"
-            )
+        print(f"\nProcessing sources 1-{total} of {total}")
 
-            for source_id in batch:
-                try:
-                    if _process_source(conn, driver, source_id):
-                        processed += 1
-                except Exception as exc:
-                    print(f"  [ERROR] {source_id} - {exc}")
-                    conn.rollback()
-                    errors += 1
+        for source_id in pending:
+            try:
+                if _process_source(conn, driver, source_id):
+                    processed += 1
+            except Exception as exc:
+                print(f"  [ERROR] {source_id} - {exc}")
+                conn.rollback()
+                errors += 1
 
         print(f"\nDone. Processed: {processed}, Errors: {errors}")
     return 0 if errors == 0 else 1

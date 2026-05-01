@@ -31,6 +31,30 @@ def test_remediate_insights_no_pending_sources(capsys):
     assert "Nothing to do" in captured.out
 
 
+def test_remediate_insights_batch_size_limits_total_sources(capsys):
+    module = _load_script()
+    conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
+    cur.fetchall.return_value = [(f"source-{i}",) for i in range(12)]
+    graph_driver = MagicMock()
+    module.get_connection = MagicMock()
+    module.get_connection.return_value.__enter__.return_value = conn
+    module.get_graph_driver = MagicMock()
+    module.get_graph_driver.return_value.__enter__.return_value = graph_driver
+    module._process_source = MagicMock(return_value=True)
+
+    exit_code = module.main(["--batch-size", "10"])
+
+    assert exit_code == 0
+    assert module._process_source.call_count == 10
+    processed_ids = [call.args[2] for call in module._process_source.call_args_list]
+    assert processed_ids == [f"source-{i}" for i in range(10)]
+    cur.execute.assert_called_once()
+    assert cur.execute.call_args.args[1] == (10,)
+    captured = capsys.readouterr()
+    assert "Selected 10 newest sources pending insight extraction" in captured.out
+
+
 def test_remediate_insights_source_id_skips_existing_without_force(capsys):
     module = _load_script()
     conn = MagicMock()
