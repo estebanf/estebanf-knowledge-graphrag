@@ -14,6 +14,7 @@ def test_all_prompt_constants_are_non_empty_strings():
         prompts.ENTITY_SELECTION,
         prompts.ENTITY_QUERY_GENERATION,
         prompts.SECOND_HOP_ENTITY_SELECTION,
+        prompts.INSIGHT_EXTRACTION,
     ]
     for c in constants:
         assert isinstance(c, str) and c.strip(), f"Expected non-empty string, got {c!r}"
