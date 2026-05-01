@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     RELATIONSHIP_CONFIDENCE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.75
     ENTITY_DEDUP_COSINE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.92
 
+    # Insight extraction
+    OPENCODE_API_KEY: str = ""
+    INSIGHT_DEDUP_COSINE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.95
+    INSIGHT_LINK_TOP_K: Annotated[int, Field(gt=0)] = 10
+
     # Retrieval
     RETRIEVAL_RRF_K: Annotated[int, Field(gt=0)] = 60
     RETRIEVAL_RRF_SCORE_FLOOR: float = 0.0

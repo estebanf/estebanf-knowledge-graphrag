@@ -40,3 +40,11 @@ def test_community_settings_have_correct_defaults():
 def test_model_image_description_has_default():
     from rag.config import settings
     assert settings.MODEL_IMAGE_DESCRIPTION == "google/gemini-2.0-flash-lite-001"
+
+
+def test_insight_config_defaults():
+    from rag.config import Settings
+    s = Settings(_env_file=None)
+    assert s.OPENCODE_API_KEY == ""
+    assert s.INSIGHT_DEDUP_COSINE_THRESHOLD == 0.95
+    assert s.INSIGHT_LINK_TOP_K == 10
