@@ -137,3 +137,19 @@ Current entity:
 Candidates:
 {candidates}
 """
+
+INSIGHT_EXTRACTION = """\
+From the chunk below, extract insights that are specific, meaningful, and useful. Prioritize information that reveals causes, consequences, patterns, tradeoffs, risks, opportunities, decisions, assumptions, changes, tensions, or implications. Exclude generic summaries, obvious statements, repeated points, and details that do not affect understanding or action.
+
+Focus only on insights that are related to one or more of these topics:
+AI Adoption, AI Opportunity Strategy, AI Governance, AI Readiness, AI Use Case Prioritization, Workflow Automation, Workflow Intelligence, Human-in-the-Loop Design, Productized Services, Offer Design, Solution Architecture, Commercial Solutioning, Delivery Governance, Operating Models, B2B Transformation, Vertical Solutions, Cross-Functional Alignment, Technical Leadership, Executive Communication, Business Outcomes, Product Management, Product Strategy, Product Discovery, Product Roadmapping, Product Prioritization, Product Requirements, Product-Market Fit, Product Positioning, Product Packaging, Productized Services, Platform Strategy, Workflow Product Design, AI Product Management, AI Feature Strategy, Customer Research, Voice of Customer, Jobs-to-Be-Done, MVP Definition, Experimentation, Product Analytics, Go-to-Market Alignment, Buyer Enablement, Sales Enablement, Customer Onboarding, Customer Success Strategy, Product Operations, Stakeholder Alignment, Delivery Readiness, Acceptance Criteria, Product Governance, Outcome Management
+
+Return your findings in a JSON document that follows this structure:
+{{"insights": [{{"insight":"","topics":[""]}}]}}
+
+Return {{"insights": []}} if no relevant insights are found.
+
+Chunk
+```
+{chunk}
+```"""
