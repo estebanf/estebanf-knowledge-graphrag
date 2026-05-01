@@ -15,6 +15,7 @@ from rag.embedding import embed_and_store_chunks
 from rag.graph_db import get_graph_driver
 from rag.graph_extraction import extract_and_store_graph
 from rag.graph_linking import link_graph
+from rag.insight_extraction import extract_and_store_insights
 from rag.metadata_extraction import extract_metadata
 from rag.parser import ParseError, parse_document
 from rag.profiling import profile_document
@@ -22,7 +23,7 @@ from rag.storage import store_file, store_markdown_images
 
 STAGE_ORDER = [
     "parsing", "profiling", "chunking", "validation",
-    "embedding", "graph_extraction", "graph_linking",
+    "embedding", "graph_extraction", "graph_linking", "insight_extraction",
 ]
 
 
@@ -214,6 +215,47 @@ def _delete_graph_nodes(driver, source_id: str, entity_ids: list[str]) -> None:
             "MATCH (s:Source {source_id: $source_id}) DETACH DELETE s",
             source_id=source_id,
         )
+        session.run(
+            "MATCH (i:Insight) WHERE NOT (i)<-[:CONTAINS]-() DETACH DELETE i"
+        )
+
+
+def _cleanup_orphan_insights(conn: psycopg.Connection, driver) -> None:
+    conn.execute(
+        "DELETE FROM insights i WHERE NOT EXISTS ("
+        "SELECT 1 FROM chunk_insights ci WHERE ci.insight_id = i.id)"
+    )
+    if driver:
+        with driver.session() as session:
+            session.run(
+                "MATCH (i:Insight) WHERE NOT (i)<-[:CONTAINS]-() DETACH DELETE i"
+            )
+
+
+def _cleanup_insight_artifacts_for_job(
+    conn: psycopg.Connection,
+    driver,
+    job_id: str,
+) -> None:
+    conn.execute(
+        "DELETE FROM chunk_insights "
+        "WHERE chunk_id IN (SELECT id FROM chunks WHERE job_id = %s)",
+        (job_id,),
+    )
+    _cleanup_orphan_insights(conn, driver)
+
+
+def _cleanup_insight_artifacts_for_source(
+    conn: psycopg.Connection,
+    driver,
+    source_id: str,
+) -> None:
+    conn.execute(
+        "DELETE FROM chunk_insights "
+        "WHERE chunk_id IN (SELECT id FROM chunks WHERE source_id = %s)",
+        (source_id,),
+    )
+    _cleanup_orphan_insights(conn, driver)
 
 
 def _cleanup_graph_artifacts(conn: psycopg.Connection, driver, source_id: str) -> None:
@@ -237,6 +279,7 @@ def delete_source_artifacts(
             "SELECT id FROM entities WHERE source_id = %s", (source_id,)
         ).fetchall()
     ]
+    _cleanup_insight_artifacts_for_source(conn, driver, source_id)
     conn.execute("DELETE FROM entities WHERE source_id = %s", (source_id,))
     conn.execute("DELETE FROM chunks WHERE source_id = %s", (source_id,))
     conn.execute("DELETE FROM jobs WHERE source_id = %s", (source_id,))
@@ -256,6 +299,10 @@ def cleanup_from_stage(
     embedding_idx = STAGE_ORDER.index("embedding")
     graph_extraction_idx = STAGE_ORDER.index("graph_extraction")
     graph_linking_idx = STAGE_ORDER.index("graph_linking")
+    insight_extraction_idx = STAGE_ORDER.index("insight_extraction")
+
+    if idx <= insight_extraction_idx:
+        _cleanup_insight_artifacts_for_job(conn, driver, job_id)
 
     if idx <= chunking_idx:
         conn.execute("DELETE FROM chunks WHERE job_id = %s", (job_id,))
@@ -479,16 +526,40 @@ def execute_ingestion_pipeline(job_id: str, source_id: str, start_stage: str = "
                 log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
 
             # --- Graph Linking ---
-            _update_stage(conn, job_id, "graph_linking")
-            structlog.contextvars.bind_contextvars(stage="graph_linking")
-            t0 = time.perf_counter()
-            try:
-                link_graph(conn, driver, source_id, job_id)
-            except Exception as exc:
-                _fail_stage(conn, job_id, "graph_linking", exc)
-                raise
-            _complete_stage(conn, job_id, "graph_linking")
-            log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
+            if start_idx <= STAGE_ORDER.index("graph_linking"):
+                _update_stage(conn, job_id, "graph_linking")
+                structlog.contextvars.bind_contextvars(stage="graph_linking")
+                t0 = time.perf_counter()
+                try:
+                    link_graph(conn, driver, source_id, job_id)
+                except Exception as exc:
+                    _fail_stage(conn, job_id, "graph_linking", exc)
+                    raise
+                _complete_stage(conn, job_id, "graph_linking")
+                log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
+
+            # --- Insight Extraction ---
+            if start_idx <= STAGE_ORDER.index("insight_extraction"):
+                _update_stage(conn, job_id, "insight_extraction")
+                structlog.contextvars.bind_contextvars(stage="insight_extraction")
+                t0 = time.perf_counter()
+                try:
+                    rows = conn.execute(
+                        """
+                        SELECT id, content
+                        FROM chunks
+                        WHERE job_id = %s AND deleted_at IS NULL
+                        ORDER BY chunk_index
+                        """,
+                        (job_id,),
+                    ).fetchall()
+                    insight_chunk_rows = [(str(r[0]), r[1]) for r in rows]
+                    result = extract_and_store_insights(conn, driver, source_id, insight_chunk_rows)
+                except Exception as exc:
+                    _fail_stage(conn, job_id, "insight_extraction", exc)
+                    raise
+                _complete_stage(conn, job_id, "insight_extraction", result)
+                log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
 
         conn.execute(
             "UPDATE jobs SET status = 'completed', current_stage = 'completed', updated_at = now() WHERE id = %s",
