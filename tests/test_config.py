@@ -9,21 +9,37 @@ def test_graph_config_defaults():
     assert settings.ENTITY_DEDUP_COSINE_THRESHOLD == 0.92
 
 
-def test_retrieval_config_defaults():
-    assert settings.MODEL_RETRIEVAL_QUERY_VARIANTS
-    assert settings.MODEL_RETRIEVAL_GRAPH
-    assert settings.MODEL_RETRIEVAL_RERANKER
-    assert settings.RETRIEVAL_RRF_K == 60
-    assert settings.RETRIEVAL_SEED_COUNT == 10
-    assert settings.RETRIEVAL_RESULT_COUNT == 5
-    assert settings.RETRIEVAL_MAX_DECOMPOSED_QUERIES == 5
-    assert settings.RETRIEVAL_FIRST_STAGE_TOP_N == 20
-    assert settings.RETRIEVAL_FUSED_CANDIDATE_COUNT == 50
-    assert settings.RETRIEVAL_ENTITY_SELECTION_COUNT == 5
-    assert settings.RETRIEVAL_SECOND_HOP_SELECTION_COUNT == 5
-    assert settings.RETRIEVAL_MAX_GRAPH_EXPANSION_MS_PER_SEED == 4000
-    assert settings.RETRIEVAL_SAME_SOURCE_NEIGHBOR_WINDOW == 2
-    assert settings.RETRIEVAL_SAME_SOURCE_NEIGHBOR_COUNT == 3
+def test_retrieval_config_defaults(monkeypatch):
+    for key in [
+        "RETRIEVAL_RRF_K",
+        "RETRIEVAL_SEED_COUNT",
+        "RETRIEVAL_RESULT_COUNT",
+        "RETRIEVAL_MAX_DECOMPOSED_QUERIES",
+        "RETRIEVAL_FIRST_STAGE_TOP_N",
+        "RETRIEVAL_FUSED_CANDIDATE_COUNT",
+        "RETRIEVAL_ENTITY_SELECTION_COUNT",
+        "RETRIEVAL_SECOND_HOP_SELECTION_COUNT",
+        "RETRIEVAL_MAX_GRAPH_EXPANSION_MS_PER_SEED",
+        "RETRIEVAL_SAME_SOURCE_NEIGHBOR_WINDOW",
+        "RETRIEVAL_SAME_SOURCE_NEIGHBOR_COUNT",
+    ]:
+        monkeypatch.delenv(key, raising=False)
+    from rag.config import Settings
+    s = Settings(_env_file=None)
+    assert s.MODEL_RETRIEVAL_QUERY_VARIANTS
+    assert s.MODEL_RETRIEVAL_GRAPH
+    assert s.MODEL_RETRIEVAL_RERANKER
+    assert s.RETRIEVAL_RRF_K == 60
+    assert s.RETRIEVAL_SEED_COUNT == 10
+    assert s.RETRIEVAL_RESULT_COUNT == 5
+    assert s.RETRIEVAL_MAX_DECOMPOSED_QUERIES == 5
+    assert s.RETRIEVAL_FIRST_STAGE_TOP_N == 20
+    assert s.RETRIEVAL_FUSED_CANDIDATE_COUNT == 50
+    assert s.RETRIEVAL_ENTITY_SELECTION_COUNT == 5
+    assert s.RETRIEVAL_SECOND_HOP_SELECTION_COUNT == 5
+    assert s.RETRIEVAL_MAX_GRAPH_EXPANSION_MS_PER_SEED == 4000
+    assert s.RETRIEVAL_SAME_SOURCE_NEIGHBOR_WINDOW == 2
+    assert s.RETRIEVAL_SAME_SOURCE_NEIGHBOR_COUNT == 3
 
 
 def test_community_settings_have_correct_defaults():

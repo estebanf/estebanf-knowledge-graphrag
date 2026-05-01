@@ -11,7 +11,16 @@ from rag.config import settings
 from rag.retrieval import hybrid_search, retrieve
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".md", ".txt"}
-STAGE_ORDER = ("parsing", "profiling", "chunking", "validation", "embedding", "graph_extraction", "graph_linking")
+STAGE_ORDER = (
+    "parsing",
+    "profiling",
+    "chunking",
+    "validation",
+    "embedding",
+    "graph_extraction",
+    "graph_linking",
+    "insight_extraction",
+)
 
 app = typer.Typer(help="RAG CLI — document ingestion and management")
 sources_app = typer.Typer(help="Manage ingested sources")
@@ -245,7 +254,7 @@ def source_command(
         console.print(f"[red]Source not found: {source_id}[/red]")
         raise typer.Exit(1)
 
-    console.print(detail["markdown_content"], markup=False)
+    console.print(detail["markdown_content"] or "", markup=False)
 
 
 @sources_app.command("list")
@@ -327,6 +336,89 @@ def sources_get(
         console.print(Panel(preview, title="Markdown preview"))
     else:
         console.print("[dim]No markdown content.[/dim]")
+
+
+@sources_app.command("insights")
+def sources_insights(
+    source_id: Annotated[str, typer.Argument(help="Source UUID")],
+) -> None:
+    """List insights extracted from chunks of a source."""
+    with _get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT i.id, i.content, ci.topics, i.created_at
+                FROM chunks c
+                JOIN chunk_insights ci ON ci.chunk_id = c.id
+                JOIN insights i ON i.id = ci.insight_id
+                WHERE c.source_id = %s AND c.deleted_at IS NULL
+                ORDER BY i.created_at
+                """,
+                (source_id,),
+            )
+            rows = cur.fetchall()
+
+    if not rows:
+        console.print("[dim]No insights found for this source.[/dim]")
+        return
+
+    table = Table(title=f"Insights for {source_id}")
+    table.add_column("ID", style="dim", no_wrap=True)
+    table.add_column("Content", ratio=3)
+    table.add_column("Topics", ratio=2)
+    table.add_column("Created")
+    for insight_id, content, topics, created_at in rows:
+        text = content or ""
+        table.add_row(
+            str(insight_id)[:8],
+            text[:120] + ("..." if len(text) > 120 else ""),
+            ", ".join(topics or []),
+            str(created_at)[:19],
+        )
+    console.print(table)
+
+
+@sources_app.command("last")
+def sources_last(
+    k: Annotated[
+        str,
+        typer.Argument(help="Integer for last N sources, or date string for sources since date"),
+    ],
+) -> None:
+    """Print source IDs for the last N sources or sources since a date."""
+    with _get_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                n = int(k)
+            except ValueError:
+                cur.execute(
+                    """
+                    SELECT id
+                    FROM sources
+                    WHERE deleted_at IS NULL AND created_at >= %s::timestamptz
+                    ORDER BY created_at DESC
+                    """,
+                    (k,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id
+                    FROM sources
+                    WHERE deleted_at IS NULL
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (n,),
+                )
+            rows = cur.fetchall()
+
+    if not rows:
+        console.print("[dim]No sources found.[/dim]")
+        return
+
+    for (source_id,) in rows:
+        console.print(str(source_id))
 
 
 @sources_app.command("delete")
