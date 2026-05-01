@@ -42,7 +42,10 @@ def test_model_image_description_has_default():
     assert settings.MODEL_IMAGE_DESCRIPTION == "google/gemini-2.0-flash-lite-001"
 
 
-def test_insight_config_defaults():
+def test_insight_config_defaults(monkeypatch):
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    monkeypatch.delenv("INSIGHT_DEDUP_COSINE_THRESHOLD", raising=False)
+    monkeypatch.delenv("INSIGHT_LINK_TOP_K", raising=False)
     from rag.config import Settings
     s = Settings(_env_file=None)
     assert s.OPENCODE_API_KEY == ""
