@@ -107,10 +107,29 @@ def test_link_related_insights_creates_mutual_edges():
     ]
     conn.cursor.return_value.__enter__ = lambda s: cursor
     conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
-    link_related_insights(conn, driver, "a-id", [0.1] * 4096)
+    link_related_insights(conn, driver, "source-a", "a-id", [0.1] * 4096)
     assert session.run.call_count == 1
     cypher = session.run.call_args[0][0]
     assert "RELATED_TO" in cypher
+
+
+def test_link_related_insights_excludes_current_source_candidates():
+    from rag.insight_extraction import link_related_insights
+    conn = MagicMock()
+    driver = MagicMock()
+    cursor = MagicMock()
+    cursor.fetchall.return_value = []
+    conn.cursor.return_value.__enter__ = lambda s: cursor
+    conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+    link_related_insights(conn, driver, "source-a", "a-id", [0.1] * 4096)
+
+    sql = cursor.execute.call_args.args[0]
+    params = cursor.execute.call_args.args[1]
+    assert "NOT EXISTS" in sql
+    assert "c.source_id = %s" in sql
+    assert params[1] == "a-id"
+    assert params[2] == "source-a"
 
 
 def test_link_related_insights_skips_non_mutual():
@@ -127,7 +146,7 @@ def test_link_related_insights_skips_non_mutual():
     ]
     conn.cursor.return_value.__enter__ = lambda s: cursor
     conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
-    link_related_insights(conn, driver, "a-id", [0.1] * 4096)
+    link_related_insights(conn, driver, "source-a", "a-id", [0.1] * 4096)
     session.run.assert_not_called()
 
 
@@ -146,9 +165,9 @@ def test_link_related_insights_accepts_database_vector_strings():
     conn.cursor.return_value.__enter__ = lambda s: cursor
     conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-    link_related_insights(conn, driver, "a-id", [0.1] * 2)
+    link_related_insights(conn, driver, "source-a", "a-id", [0.1] * 2)
 
-    assert cursor.execute.call_args_list[1].args[1][1] == "[0.2,0.2]"
+    assert cursor.execute.call_args_list[1].args[1][2] == "[0.2,0.2]"
     assert session.run.call_count == 1
 
 

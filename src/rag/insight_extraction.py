@@ -122,7 +122,7 @@ def store_insight_in_graph(
 
 
 def link_related_insights(
-    conn, driver, insight_id: str, embedding: list[float]
+    conn, driver, source_id: str, insight_id: str, embedding: list[float]
 ) -> None:
     k = settings.INSIGHT_LINK_TOP_K
     emb_str = _embedding_literal(embedding)
@@ -130,13 +130,21 @@ def link_related_insights(
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT id, 1 - (embedding <=> %s::vector) AS sim, embedding
-            FROM insights
-            WHERE id != %s AND embedding IS NOT NULL
-            ORDER BY embedding <=> %s::vector
+            SELECT i.id, 1 - (i.embedding <=> %s::vector) AS sim, i.embedding
+            FROM insights i
+            WHERE i.id != %s
+              AND i.embedding IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1
+                FROM chunk_insights ci
+                JOIN chunks c ON c.id = ci.chunk_id
+                WHERE ci.insight_id = i.id
+                  AND c.source_id = %s
+              )
+            ORDER BY i.embedding <=> %s::vector
             LIMIT %s
             """,
-            (emb_str, insight_id, emb_str, k),
+            (emb_str, insight_id, source_id, emb_str, k),
         )
         a_neighbors = cur.fetchall()
 
@@ -146,12 +154,23 @@ def link_related_insights(
             b_emb_str = _embedding_literal(b_emb_raw)
             cur.execute(
                 """
-                SELECT id FROM insights
-                WHERE id != %s AND embedding IS NOT NULL
-                ORDER BY embedding <=> %s::vector
+                SELECT i.id
+                FROM insights i
+                WHERE i.id != %s
+                  AND i.embedding IS NOT NULL
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM chunk_insights candidate_ci
+                    JOIN chunks candidate_chunk ON candidate_chunk.id = candidate_ci.chunk_id
+                    JOIN chunk_insights other_ci ON other_ci.insight_id = i.id
+                    JOIN chunks other_chunk ON other_chunk.id = other_ci.chunk_id
+                    WHERE candidate_ci.insight_id = %s
+                      AND candidate_chunk.source_id = other_chunk.source_id
+                  )
+                ORDER BY i.embedding <=> %s::vector
                 LIMIT %s
                 """,
-                (b_id, b_emb_str, k),
+                (b_id, b_id, b_emb_str, k),
             )
             b_neighbor_ids = {str(r[0]) for r in cur.fetchall()}
 
@@ -195,7 +214,7 @@ def extract_and_store_insights(
             link_chunk_insight(conn, chunk_id, insight_id, topics)
             store_insight_in_graph(driver, chunk_id, insight_id, raw["insight"], topics)
             if is_new:
-                link_related_insights(conn, driver, insight_id, emb)
+                link_related_insights(conn, driver, source_id, insight_id, emb)
                 insights_extracted += 1
             else:
                 insights_reused += 1

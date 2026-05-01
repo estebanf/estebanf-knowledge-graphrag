@@ -86,7 +86,7 @@ The repo is split into a few main areas:
 - Use `MENTIONS` as the authoritative chunk-to-entity edge for retrieval expansion.
 - Same-source fallback is part of retrieval when graph expansion yields no non-seed chunk evidence.
 - Insight extraction uses the OpenCode API (`deepseek-v4-flash`) per chunk. Dedup uses pgvector `<=>` cosine distance with `INSIGHT_DEDUP_COSINE_THRESHOLD`.
-- Mutual top-K for insight `RELATED_TO` edges is computed in Postgres via pgvector; Memgraph stores the resulting `Insight` nodes and edges.
+- Mutual top-K for insight `RELATED_TO` edges is computed in Postgres via pgvector and excludes same-source candidates; Memgraph stores the resulting `Insight` nodes and edges.
 - `scripts/remediate_insights.py` backfills insights for existing sources and skips sources that already have `chunk_insights` entries.
 
 ## Data and Schema Notes
