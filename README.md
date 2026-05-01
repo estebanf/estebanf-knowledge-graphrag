@@ -109,6 +109,14 @@ All runtime settings are env-backed. The CLI, backend, worker, and Docker servic
 | `RELATIONSHIP_CONFIDENCE_THRESHOLD` | `0.75` | Minimum relationship confidence kept during graph extraction. |
 | `ENTITY_DEDUP_COSINE_THRESHOLD` | `0.92` | Similarity threshold used when deduplicating entities. |
 
+### Insight extraction
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `OPENCODE_API_KEY` | empty | API key for OpenCode service used in insight extraction. |
+| `INSIGHT_DEDUP_COSINE_THRESHOLD` | `0.95` | Minimum cosine similarity to reuse an existing insight instead of creating a new one. |
+| `INSIGHT_LINK_TOP_K` | `10` | Number of nearest insight neighbors used for mutual top-K `RELATED_TO` edge creation. |
+
 ### Search defaults
 
 | Variable | Default | Purpose |
@@ -211,13 +219,14 @@ The CLI submits ingestion jobs. The worker processes them asynchronously through
 5. `embedding`
 6. `graph_extraction`
 7. `graph_linking`
+8. `insight_extraction`
 
 ### What `rag ingest` does
 
 - stores the original file under `STORAGE_BASE_PATH/<source_id>/1/`
 - creates a `sources` row and a queued `jobs` row
 - copies local markdown image assets into the same source storage tree
-- when the worker runs, parses the document into markdown, extracts metadata, chunks it, embeds it, and builds graph artifacts
+- when the worker runs, parses the document into markdown, extracts metadata, chunks it, embeds it, builds graph artifacts, and extracts chunk-level insights
 
 ### Supported file types
 
@@ -327,7 +336,7 @@ venv/bin/rag jobs retry <job_id> --from-stage chunking
 
 Options:
 
-- `--from-stage TEXT`: restart from one of `parsing`, `profiling`, `chunking`, `validation`, `embedding`, `graph_extraction`, or `graph_linking`
+- `--from-stage TEXT`: restart from one of `parsing`, `profiling`, `chunking`, `validation`, `embedding`, `graph_extraction`, `graph_linking`, or `insight_extraction`
 
 Retry cleanup is stage-aware. Earlier stage retries remove downstream artifacts before the job is re-queued.
 
@@ -355,6 +364,19 @@ venv/bin/rag source <source_id>
 - `sources get` prints metadata plus a markdown preview
 - `source` prints the full stored markdown only
 
+List insights for a source:
+
+```bash
+venv/bin/rag sources insights <source_id>
+```
+
+Return source IDs for the last N sources, or for sources since a date:
+
+```bash
+venv/bin/rag sources last 5
+venv/bin/rag sources last 2026-01-01
+```
+
 Delete a source:
 
 ```bash
@@ -363,7 +385,15 @@ venv/bin/rag sources delete <source_id> --hard
 ```
 
 - soft delete marks the source deleted
-- hard delete removes `entities`, `chunks`, `jobs`, `sources`, graph nodes, and the stored file tree
+- hard delete removes insight links, orphan insights, `entities`, `chunks`, `jobs`, `sources`, graph nodes, and the stored file tree
+
+## Remediation
+
+Backfill insight extraction for sources that already have chunks but no `chunk_insights` rows:
+
+```bash
+python scripts/remediate_insights.py --batch-size 10
+```
 
 ## Search
 
@@ -845,12 +875,14 @@ The migrations most likely to matter for current code are:
 - `scripts/migrate/002_update_vector_dimensions.sql`
 - `scripts/migrate/004_job_improvements.sql`
 - `scripts/migrate/006_search_performance_indexes.sql`
+- `scripts/migrate/007_insights.sql`
 
 Example:
 
 ```bash
 docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/004_job_improvements.sql
 docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/006_search_performance_indexes.sql
+docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/007_insights.sql
 ```
 
 ## Verification
@@ -877,6 +909,12 @@ Prompt regression coverage:
 
 ```bash
 pytest -q tests/test_prompts.py
+```
+
+Insight extraction coverage:
+
+```bash
+pytest -q tests/test_insight_extraction.py tests/test_config.py tests/test_prompts.py tests/test_cli_sources.py
 ```
 
 Full suite:

@@ -62,6 +62,7 @@ The repo is split into a few main areas:
 - `src/rag/parser.py`: document-to-markdown parsing and inline image description replacement
 - `src/rag/chunking.py`, `src/rag/chunk_validation.py`, `src/rag/profiling.py`, `src/rag/embedding.py`: chunk pipeline stages
 - `src/rag/graph_extraction.py`, `src/rag/graph_linking.py`: graph creation and linking
+- `src/rag/insight_extraction.py`: OpenCode API call, per-chunk insight extraction, pgvector dedup against `insights`, and Memgraph `Insight` node plus `CONTAINS`/`RELATED_TO` edge management
 - `src/rag/retrieval.py`: hybrid search, retrieval expansion, reranking, and trace behavior
 - `src/rag/community.py`: entity-community detection and optional summarization
 - `src/rag/answering.py`: answer generation over retrieval output
@@ -84,12 +85,16 @@ The repo is split into a few main areas:
 - Retrieval config remains env-backed through `src/rag/config.py`.
 - Use `MENTIONS` as the authoritative chunk-to-entity edge for retrieval expansion.
 - Same-source fallback is part of retrieval when graph expansion yields no non-seed chunk evidence.
+- Insight extraction uses the OpenCode API (`deepseek-v4-flash`) per chunk. Dedup uses pgvector `<=>` cosine distance with `INSIGHT_DEDUP_COSINE_THRESHOLD`.
+- Mutual top-K for insight `RELATED_TO` edges is computed in Postgres via pgvector; Memgraph stores the resulting `Insight` nodes and edges.
+- `scripts/remediate_insights.py` backfills insights for existing sources and skips sources that already have `chunk_insights` entries.
 
 ## Data and Schema Notes
 
 - The live corpus may contain many chunks without hierarchical parent-child structure. Do not assume parent surfacing is available for already ingested data.
 - Sparse retrieval uses Postgres full-text search over `chunks.content`; the default `english` config is expected to have the matching GIN index from `scripts/migrate/006_search_performance_indexes.sql`.
-- Hard delete order matters: remove `entities` and `chunks` before `jobs`, then `sources`, or the `chunks.job_id` foreign key will break deletes.
+- `insights` and `chunk_insights` are added in `scripts/migrate/007_insights.sql`; apply it on any database predating insight extraction.
+- Hard delete order matters: remove insight join rows, orphan insights, `entities`, and `chunks` before `jobs`, then `sources`, or foreign keys will break deletes.
 - Postgres schema is initialized from `scripts/init/postgres/`.
 
 ## Valuable Carryover From `CLAUDE.md`
@@ -106,6 +111,7 @@ Pick verification based on the area you changed:
 
 - retrieval/search/community logic: `pytest -q tests/test_retrieval.py tests/test_cli_retrieve.py tests/test_cli_search.py tests/test_cli_community.py tests/test_api.py tests/test_api_community.py tests/test_config.py`
 - ingestion/jobs/parser/storage: `pytest -q tests/test_cli_jobs.py tests/test_job_lifecycle.py tests/test_worker.py tests/test_ingestion_submit.py tests/test_parser.py tests/test_storage.py tests/test_cli_ingest.py`
+- insight extraction: `pytest -q tests/test_insight_extraction.py tests/test_config.py tests/test_prompts.py tests/test_cli_sources.py`
 - prompts: `pytest -q tests/test_prompts.py`
 
 When unsure, read the README verification section and then narrow to the impacted area.
