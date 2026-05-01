@@ -308,11 +308,21 @@ def sources_get(
             """,
             (source_id,),
         ).fetchone()
+        insight_row = conn.execute(
+            """
+            SELECT COUNT(DISTINCT ci.insight_id)
+            FROM chunks c
+            JOIN chunk_insights ci ON ci.chunk_id = c.id
+            WHERE c.source_id = %s AND c.deleted_at IS NULL
+            """,
+            (source_id,),
+        ).fetchone()
 
     if not row:
         console.print(f"[red]Source not found: {source_id}[/red]")
         raise typer.Exit(1)
 
+    insight_count = int(insight_row[0]) if insight_row else 0
     table = Table(show_header=False, box=None)
     table.add_column("Key", style="bold")
     table.add_column("Value")
@@ -326,6 +336,8 @@ def sources_get(
         ("Version", str(row[6])),
         ("Metadata", str(row[7]) if row[7] else "{}"),
         ("Created", str(row[9])[:19]),
+        ("Insights extracted", "Yes" if insight_count > 0 else "No"),
+        ("Insight count", str(insight_count)),
     ]
     for k, v in fields:
         table.add_row(k, v)

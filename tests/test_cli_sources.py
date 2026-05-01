@@ -62,6 +62,35 @@ def test_sources_delete_hard_removes_chunks_before_jobs(mock_conn, mock_graph_dr
     mock_delete_file.assert_called_once_with("source-1")
 
 
+@patch("rag.cli._get_connection")
+def test_sources_get_shows_insight_status(mock_conn):
+    conn = MagicMock()
+    mock_conn.return_value.__enter__.return_value = conn
+    conn.execute.return_value.fetchone.side_effect = [
+        (
+            "source-1",
+            "Source Name",
+            "file.md",
+            "md",
+            "/tmp/file.md",
+            "abc123",
+            1,
+            {},
+            "# Title",
+            "2026-05-01 12:00:00",
+        ),
+        (7,),
+    ]
+
+    result = runner.invoke(app, ["sources", "get", "source-1"])
+
+    assert result.exit_code == 0
+    assert "Insights extracted" in result.output
+    assert "Yes" in result.output
+    assert "Insight count" in result.output
+    assert "7" in result.output
+
+
 def test_sources_insights_prints_json():
     source_id = str(uuid.uuid4())
     insight_id = uuid.uuid4()
