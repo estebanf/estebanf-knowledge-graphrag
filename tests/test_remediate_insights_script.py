@@ -29,3 +29,73 @@ def test_remediate_insights_no_pending_sources(capsys):
     captured = capsys.readouterr()
     assert "Found 0 sources pending insight extraction" in captured.out
     assert "Nothing to do" in captured.out
+
+
+def test_remediate_insights_source_id_skips_existing_without_force(capsys):
+    module = _load_script()
+    conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
+    cur.fetchone.return_value = (3,)
+    graph_driver = MagicMock()
+    module.get_connection = MagicMock()
+    module.get_connection.return_value.__enter__.return_value = conn
+    module.get_graph_driver = MagicMock()
+    module.get_graph_driver.return_value.__enter__.return_value = graph_driver
+    module.extract_and_store_insights = MagicMock()
+
+    exit_code = module.main(["--source-id", "source-1"])
+
+    assert exit_code == 0
+    module.extract_and_store_insights.assert_not_called()
+    captured = capsys.readouterr()
+    assert "already has insight links" in captured.out
+
+
+def test_remediate_insights_source_id_processes_when_no_existing_links(capsys):
+    module = _load_script()
+    conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
+    cur.fetchone.return_value = (0,)
+    cur.fetchall.return_value = [("chunk-1", "content")]
+    graph_driver = MagicMock()
+    module.get_connection = MagicMock()
+    module.get_connection.return_value.__enter__.return_value = conn
+    module.get_graph_driver = MagicMock()
+    module.get_graph_driver.return_value.__enter__.return_value = graph_driver
+    module.extract_and_store_insights = MagicMock(
+        return_value={"chunks_processed": 1, "insights_extracted": 1, "insights_reused": 0}
+    )
+
+    exit_code = module.main(["--source-id", "source-1"])
+
+    assert exit_code == 0
+    module.extract_and_store_insights.assert_called_once_with(
+        conn, graph_driver, "source-1", [("chunk-1", "content")]
+    )
+    captured = capsys.readouterr()
+    assert "[OK] source-1" in captured.out
+
+
+def test_remediate_insights_source_id_force_cleans_before_rebuild():
+    module = _load_script()
+    conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
+    cur.fetchone.return_value = (3,)
+    cur.fetchall.return_value = [("chunk-1", "content")]
+    graph_driver = MagicMock()
+    module.get_connection = MagicMock()
+    module.get_connection.return_value.__enter__.return_value = conn
+    module.get_graph_driver = MagicMock()
+    module.get_graph_driver.return_value.__enter__.return_value = graph_driver
+    module.extract_and_store_insights = MagicMock(
+        return_value={"chunks_processed": 1, "insights_extracted": 1, "insights_reused": 0}
+    )
+
+    exit_code = module.main(["--source-id", "source-1", "--force"])
+
+    assert exit_code == 0
+    sql_calls = [call.args[0] for call in cur.execute.call_args_list]
+    assert any("DELETE FROM chunk_insights" in sql for sql in sql_calls)
+    assert any("DELETE FROM insights" in sql for sql in sql_calls)
+    assert graph_driver.session.return_value.__enter__.return_value.run.called
+    module.extract_and_store_insights.assert_called_once()

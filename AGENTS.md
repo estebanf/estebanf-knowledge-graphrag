@@ -87,7 +87,7 @@ The repo is split into a few main areas:
 - Same-source fallback is part of retrieval when graph expansion yields no non-seed chunk evidence.
 - Insight extraction uses the OpenCode API (`deepseek-v4-flash`) per chunk. Dedup uses pgvector `<=>` cosine distance with `INSIGHT_DEDUP_COSINE_THRESHOLD`.
 - Mutual top-K for insight `RELATED_TO` edges is computed in Postgres via pgvector and excludes same-source candidates; Memgraph stores the resulting `Insight` nodes and edges.
-- `scripts/remediate_insights.py` backfills insights for existing sources and skips sources that already have `chunk_insights` entries.
+- `scripts/remediate_insights.py` backfills insights directly, without jobs or workers. `--source-id` targets one source; `--force` cleans that source's existing insight links and rebuilds them.
 
 ## Data and Schema Notes
 
