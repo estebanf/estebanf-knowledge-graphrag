@@ -3,7 +3,11 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+import structlog
+
 from rag.image_description import describe_image
+
+log = structlog.get_logger()
 
 _IMAGE_REF_RE = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
 _REMOTE_PREFIXES = ("http://", "https://", "data:")
@@ -84,7 +88,11 @@ def _describe_markdown_images(text: str, base_dir: Path) -> str:
         mime = _MIME_MAP.get(img_path.suffix.lower())
         if mime is None:
             return m.group(0)
-        return describe_image(img_path.read_bytes(), mime)
+        try:
+            return describe_image(img_path.read_bytes(), mime)
+        except Exception as exc:
+            log.warning("image_description_skipped", path=str(img_path), error=str(exc))
+            return m.group(0)
 
     return _IMAGE_REF_RE.sub(_replace, text)
 
@@ -96,7 +104,11 @@ def _describe_docling_pictures(result, markdown: str) -> str:
             continue
         buf = io.BytesIO()
         img.save(buf, format="PNG")
-        description = describe_image(buf.getvalue(), "image/png")
+        try:
+            description = describe_image(buf.getvalue(), "image/png")
+        except Exception as exc:
+            log.warning("image_description_skipped", error=str(exc))
+            continue
         markdown = markdown.replace("<!-- image -->", description, 1)
     return markdown
 

@@ -37,4 +37,10 @@ def describe_image(image_bytes: bytes, mime_type: str) -> str:
         timeout=(10, 60),
     )
     resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+    body = resp.json()
+    if "error" in body:
+        err = body["error"]
+        raise RuntimeError(f"OpenRouter error: {err.get('message', err)}")
+    if not body.get("choices"):
+        raise RuntimeError(f"Unexpected OpenRouter response: {body}")
+    return body["choices"][0]["message"]["content"]
