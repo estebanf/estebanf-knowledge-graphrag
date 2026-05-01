@@ -1,7 +1,8 @@
 import json
 import re
 import logging
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import httpx
 
@@ -10,6 +11,7 @@ from rag.config import settings
 from rag.embedding import get_embeddings
 
 log = logging.getLogger(__name__)
+ProgressCallback = Callable[[str, dict], None]
 
 _OPENCODE_URL = "https://opencode.ai/zen/go/v1/chat/completions"
 _MODEL = "deepseek-v4-flash"
@@ -191,6 +193,7 @@ def link_related_insights(
 
 def _extract_chunk_insights_parallel(
     chunk_rows: list[tuple[str, str]],
+    progress_callback: ProgressCallback | None = None,
 ) -> list[tuple[str, str, list[dict]]]:
     if not chunk_rows:
         return []
@@ -201,8 +204,50 @@ def _extract_chunk_insights_parallel(
         return chunk_id, content, _normalized_insights(raw_insights)
 
     max_workers = min(settings.INSIGHT_EXTRACTION_CONCURRENCY, len(chunk_rows))
+    if progress_callback:
+        progress_callback(
+            "extract_start",
+            {"total": len(chunk_rows), "concurrency": max_workers},
+        )
+
+    results: list[tuple[str, str, list[dict]] | None] = [None] * len(chunk_rows)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        return list(executor.map(_extract, chunk_rows))
+        future_indexes = {
+            executor.submit(_extract, row): index
+            for index, row in enumerate(chunk_rows)
+        }
+        for completed_count, future in enumerate(as_completed(future_indexes), start=1):
+            index = future_indexes[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                if progress_callback:
+                    progress_callback(
+                        "extract_error",
+                        {
+                            "position": completed_count,
+                            "total": len(chunk_rows),
+                            "chunk_id": chunk_rows[index][0],
+                            "error": str(exc),
+                        },
+                    )
+                raise
+
+            results[index] = result
+            if progress_callback:
+                progress_callback(
+                    "extract_chunk",
+                    {
+                        "position": completed_count,
+                        "total": len(chunk_rows),
+                        "chunk_id": result[0],
+                        "insights": len(result[2]),
+                    },
+                )
+
+    if progress_callback:
+        progress_callback("extract_done", {"total": len(chunk_rows)})
+    return [result for result in results if result is not None]
 
 
 def extract_and_store_insights(
@@ -210,17 +255,30 @@ def extract_and_store_insights(
     driver,
     source_id: str,
     chunk_rows: list[tuple[str, str]],
+    progress_callback: ProgressCallback | None = None,
 ) -> dict:
     chunks_processed = 0
     insights_extracted = 0
     insights_reused = 0
 
-    extracted_rows = _extract_chunk_insights_parallel(chunk_rows)
+    extracted_rows = _extract_chunk_insights_parallel(chunk_rows, progress_callback)
+    if progress_callback:
+        progress_callback("store_start", {"total": len(extracted_rows)})
 
-    for chunk_id, _content, raw_insights in extracted_rows:
+    for position, (chunk_id, _content, raw_insights) in enumerate(extracted_rows, start=1):
         if not raw_insights:
             chunks_processed += 1
             conn.commit()
+            if progress_callback:
+                progress_callback(
+                    "store_chunk",
+                    {
+                        "position": position,
+                        "total": len(extracted_rows),
+                        "chunk_id": chunk_id,
+                        "insights": 0,
+                    },
+                )
             continue
 
         texts = [r["insight"] for r in raw_insights]
@@ -239,6 +297,19 @@ def extract_and_store_insights(
 
         chunks_processed += 1
         conn.commit()
+        if progress_callback:
+            progress_callback(
+                "store_chunk",
+                {
+                    "position": position,
+                    "total": len(extracted_rows),
+                    "chunk_id": chunk_id,
+                    "insights": len(raw_insights),
+                },
+            )
+
+    if progress_callback:
+        progress_callback("store_done", {"total": len(extracted_rows)})
 
     return {
         "chunks_processed": chunks_processed,

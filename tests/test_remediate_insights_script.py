@@ -62,17 +62,33 @@ def test_remediate_insights_source_id_processes_when_no_existing_links(capsys):
     module.get_connection.return_value.__enter__.return_value = conn
     module.get_graph_driver = MagicMock()
     module.get_graph_driver.return_value.__enter__.return_value = graph_driver
-    module.extract_and_store_insights = MagicMock(
-        return_value={"chunks_processed": 1, "insights_extracted": 1, "insights_reused": 0}
-    )
+    def fake_extract(conn_arg, driver_arg, source_id, chunk_rows, progress_callback=None):
+        assert progress_callback is not None
+        progress_callback("extract_start", {"total": 1, "concurrency": 3})
+        progress_callback(
+            "extract_chunk",
+            {"position": 1, "total": 1, "chunk_id": "chunk-1", "insights": 1},
+        )
+        progress_callback("store_start", {"total": 1})
+        progress_callback(
+            "store_chunk",
+            {"position": 1, "total": 1, "chunk_id": "chunk-1", "insights": 1},
+        )
+        progress_callback("store_done", {"total": 1})
+        return {"chunks_processed": 1, "insights_extracted": 1, "insights_reused": 0}
+
+    module.extract_and_store_insights = MagicMock(side_effect=fake_extract)
 
     exit_code = module.main(["--source-id", "source-1"])
 
     assert exit_code == 0
-    module.extract_and_store_insights.assert_called_once_with(
-        conn, graph_driver, "source-1", [("chunk-1", "content")]
-    )
     captured = capsys.readouterr()
+    assert "Loading chunks for source source-1" in captured.out
+    assert "Found 1 chunks" in captured.out
+    assert "Extracting insights with concurrency 3" in captured.out
+    assert "Extracted chunk 1/1" in captured.out
+    assert "Storing insights serially" in captured.out
+    assert "Stored chunk 1/1" in captured.out
     assert "[OK] source-1" in captured.out
 
 

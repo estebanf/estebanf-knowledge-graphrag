@@ -55,12 +55,17 @@ WHERE NOT EXISTS (
 
 
 def _cleanup_source_insights(conn, driver, source_id: str) -> None:
+    print(f"  Cleaning existing insight artifacts for source {source_id}.")
     with conn.cursor() as cur:
         cur.execute(_DELETE_SOURCE_LINKS_SQL, (source_id,))
+        print(f"    Deleted {cur.rowcount} chunk_insights rows.")
         cur.execute(_DELETE_ORPHAN_INSIGHTS_SQL)
+        print(f"    Deleted {cur.rowcount} orphan insights rows.")
     with driver.session() as session:
+        print("    Deleting orphan Insight nodes from Memgraph.")
         session.run("MATCH (i:Insight) WHERE NOT (i)<-[:CONTAINS]-() DETACH DELETE i")
     conn.commit()
+    print("    Cleanup committed.")
 
 
 def _load_chunk_rows(conn, source_id: str) -> list[tuple[str, str]]:
@@ -69,13 +74,50 @@ def _load_chunk_rows(conn, source_id: str) -> list[tuple[str, str]]:
         return [(row[0], row[1]) for row in cur.fetchall()]
 
 
+def _print_progress(event: str, payload: dict) -> None:
+    if event == "extract_start":
+        print(
+            "    Extracting insights with concurrency "
+            f"{payload['concurrency']} across {payload['total']} chunks."
+        )
+    elif event == "extract_chunk":
+        print(
+            f"    Extracted chunk {payload['position']}/{payload['total']}: "
+            f"{payload['chunk_id']} ({payload['insights']} insights)"
+        )
+    elif event == "extract_error":
+        print(
+            f"    Extraction error at chunk {payload['position']}/{payload['total']}: "
+            f"{payload['chunk_id']} - {payload['error']}"
+        )
+    elif event == "extract_done":
+        print(f"    Finished extraction for {payload['total']} chunks.")
+    elif event == "store_start":
+        print(f"    Storing insights serially for {payload['total']} chunks.")
+    elif event == "store_chunk":
+        print(
+            f"    Stored chunk {payload['position']}/{payload['total']}: "
+            f"{payload['chunk_id']} ({payload['insights']} insights)"
+        )
+    elif event == "store_done":
+        print(f"    Finished storing insights for {payload['total']} chunks.")
+
+
 def _process_source(conn, driver, source_id: str) -> bool:
+    print(f"  Loading chunks for source {source_id}.")
     chunk_rows = _load_chunk_rows(conn, source_id)
+    print(f"  Found {len(chunk_rows)} chunks for source {source_id}.")
     if not chunk_rows:
         print(f"  [SKIP] {source_id} - no chunks")
         return False
 
-    result = extract_and_store_insights(conn, driver, source_id, chunk_rows)
+    result = extract_and_store_insights(
+        conn,
+        driver,
+        source_id,
+        chunk_rows,
+        progress_callback=_print_progress,
+    )
     print(
         f"  [OK] {source_id} - "
         f"{result['chunks_processed']} chunks, "

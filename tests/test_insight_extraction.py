@@ -196,6 +196,26 @@ def test_extract_chunk_insights_parallel_preserves_chunk_order(monkeypatch):
     ]
 
 
+def test_extract_chunk_insights_parallel_reports_progress(monkeypatch):
+    from rag.insight_extraction import _extract_chunk_insights_parallel
+
+    monkeypatch.setattr("rag.insight_extraction.settings.INSIGHT_EXTRACTION_CONCURRENCY", 2)
+    monkeypatch.setattr(
+        "rag.insight_extraction.extract_insights_from_chunk",
+        lambda content: [{"insight": f"insight {content}", "topics": []}],
+    )
+    events = []
+
+    _extract_chunk_insights_parallel(
+        [("chunk-1", "alpha"), ("chunk-2", "beta")],
+        progress_callback=lambda event, payload: events.append((event, payload)),
+    )
+
+    assert events[0] == ("extract_start", {"total": 2, "concurrency": 2})
+    assert [event for event, _payload in events].count("extract_chunk") == 2
+    assert events[-1] == ("extract_done", {"total": 2})
+
+
 def test_extract_and_store_insights_returns_counts(monkeypatch):
     monkeypatch.setattr("rag.insight_extraction.extract_insights_from_chunk",
                         lambda content: [{"insight": "insight A", "topics": ["AI Adoption"]}])
@@ -222,7 +242,7 @@ def test_extract_and_store_insights_stores_parallel_results_serially(monkeypatch
 
     monkeypatch.setattr(
         "rag.insight_extraction._extract_chunk_insights_parallel",
-        lambda rows: [
+        lambda rows, progress_callback=None: [
             ("chunk-1", "content 1", [{"insight": "insight A", "topics": ["AI Adoption"]}]),
             ("chunk-2", "content 2", [{"insight": "insight B", "topics": ["Business Outcomes"]}]),
         ],
@@ -263,6 +283,39 @@ def test_extract_and_store_insights_stores_parallel_results_serially(monkeypatch
         ("link_chunk", "chunk-2", "insight B-id"),
         ("graph", "chunk-2", "insight B-id"),
         ("related", "source-1", "insight B-id"),
+    ]
+
+
+def test_extract_and_store_insights_reports_storage_progress(monkeypatch):
+    monkeypatch.setattr(
+        "rag.insight_extraction._extract_chunk_insights_parallel",
+        lambda rows, progress_callback=None: [
+            ("chunk-1", "content 1", [{"insight": "insight A", "topics": []}]),
+            ("chunk-2", "content 2", []),
+        ],
+    )
+    monkeypatch.setattr("rag.insight_extraction.get_embeddings", lambda texts: [[0.1] * 4096])
+    monkeypatch.setattr("rag.insight_extraction.upsert_insight", lambda *a, **k: ("insight-1", True))
+    monkeypatch.setattr("rag.insight_extraction.link_chunk_insight", lambda *a, **k: None)
+    monkeypatch.setattr("rag.insight_extraction.store_insight_in_graph", lambda *a, **k: None)
+    monkeypatch.setattr("rag.insight_extraction.link_related_insights", lambda *a, **k: None)
+    events = []
+
+    from rag.insight_extraction import extract_and_store_insights
+    result = extract_and_store_insights(
+        MagicMock(),
+        MagicMock(),
+        "source-1",
+        [("chunk-1", "content 1"), ("chunk-2", "content 2")],
+        progress_callback=lambda event, payload: events.append((event, payload)),
+    )
+
+    assert result["chunks_processed"] == 2
+    assert events == [
+        ("store_start", {"total": 2}),
+        ("store_chunk", {"position": 1, "total": 2, "chunk_id": "chunk-1", "insights": 1}),
+        ("store_chunk", {"position": 2, "total": 2, "chunk_id": "chunk-2", "insights": 0}),
+        ("store_done", {"total": 2}),
     ]
 
 

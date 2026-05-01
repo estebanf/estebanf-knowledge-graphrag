@@ -398,7 +398,7 @@ python scripts/remediate_insights.py --source-id <source_id>
 python scripts/remediate_insights.py --source-id <source_id> --force
 ```
 
-The remediation script runs insight extraction directly in the script process; it does not create or rerun ingestion jobs and does not require `rag worker`. With `--source-id`, the script skips the source if it already has insight links. Add `--force` to delete that source's existing insight links, remove orphan insights, and rebuild insights from its chunks.
+The remediation script runs insight extraction directly in the script process; it does not create or rerun ingestion jobs and does not require `rag worker`. With `--source-id`, the script skips the source if it already has insight links. Add `--force` to delete that source's existing insight links, remove orphan insights, and rebuild insights from its chunks. The script prints source counts, chunk counts, cleanup steps, extraction progress, and serial storage progress as it runs.
 
 ## Search
 

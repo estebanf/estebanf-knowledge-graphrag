@@ -88,7 +88,7 @@ The repo is split into a few main areas:
 - Insight extraction uses the OpenCode API (`deepseek-v4-flash`) per chunk. Dedup uses pgvector `<=>` cosine distance with `INSIGHT_DEDUP_COSINE_THRESHOLD`.
 - Insight extraction parallelizes only OpenCode calls using `INSIGHT_EXTRACTION_CONCURRENCY`; embeddings, dedup, Postgres writes, and Memgraph writes remain serial.
 - Mutual top-K for insight `RELATED_TO` edges is computed in Postgres via pgvector and excludes same-source candidates; Memgraph stores the resulting `Insight` nodes and edges.
-- `scripts/remediate_insights.py` backfills insights directly, without jobs or workers. `--source-id` targets one source; `--force` cleans that source's existing insight links and rebuilds them.
+- `scripts/remediate_insights.py` backfills insights directly, without jobs or workers. It prints source/chunk counts plus extraction and serial storage progress. `--source-id` targets one source; `--force` cleans that source's existing insight links and rebuilds them.
 
 ## Data and Schema Notes
 
