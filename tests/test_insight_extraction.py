@@ -1,4 +1,3 @@
-import json
 from unittest.mock import MagicMock, patch
 
 
@@ -51,6 +50,20 @@ def test_upsert_insight_creates_new_when_below_threshold():
     conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
     insight_id, is_new = upsert_insight(conn, "different insight", [0.9] * 4096)
     assert is_new is True
+
+
+def test_upsert_insight_ignores_null_embeddings():
+    from rag.insight_extraction import upsert_insight
+    conn = MagicMock()
+    cursor = MagicMock()
+    cursor.fetchone.side_effect = [None, ("new-uuid",)]
+    conn.cursor.return_value.__enter__ = lambda s: cursor
+    conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+    upsert_insight(conn, "some insight", [0.1] * 4096)
+
+    similarity_sql = cursor.execute.call_args_list[0].args[0]
+    assert "embedding IS NOT NULL" in similarity_sql
 
 
 def test_link_chunk_insight_executes_upsert_sql():
@@ -118,6 +131,27 @@ def test_link_related_insights_skips_non_mutual():
     session.run.assert_not_called()
 
 
+def test_link_related_insights_accepts_database_vector_strings():
+    from rag.insight_extraction import link_related_insights
+    conn = MagicMock()
+    driver = MagicMock()
+    session = MagicMock()
+    driver.session.return_value.__enter__ = lambda s: session
+    driver.session.return_value.__exit__ = MagicMock(return_value=False)
+    cursor = MagicMock()
+    cursor.fetchall.side_effect = [
+        [("b-id", 0.88, "[0.2,0.2]")],
+        [("a-id",)],
+    ]
+    conn.cursor.return_value.__enter__ = lambda s: cursor
+    conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+    link_related_insights(conn, driver, "a-id", [0.1] * 2)
+
+    assert cursor.execute.call_args_list[1].args[1][1] == "[0.2,0.2]"
+    assert session.run.call_count == 1
+
+
 def test_extract_and_store_insights_returns_counts(monkeypatch):
     monkeypatch.setattr("rag.insight_extraction.extract_insights_from_chunk",
                         lambda content: [{"insight": "insight A", "topics": ["AI Adoption"]}])
@@ -137,3 +171,28 @@ def test_extract_and_store_insights_returns_counts(monkeypatch):
     assert result["chunks_processed"] == 1
     assert result["insights_extracted"] == 1
     assert result["insights_reused"] == 0
+
+
+def test_extract_and_store_insights_skips_blank_insight(monkeypatch):
+    monkeypatch.setattr(
+        "rag.insight_extraction.extract_insights_from_chunk",
+        lambda content: [
+            {"insight": "", "topics": ["AI Adoption"]},
+            {"topics": ["AI Adoption"]},
+        ],
+    )
+    mock_embeddings = MagicMock()
+    monkeypatch.setattr("rag.insight_extraction.get_embeddings", mock_embeddings)
+
+    from rag.insight_extraction import extract_and_store_insights
+    conn = MagicMock()
+    driver = MagicMock()
+
+    result = extract_and_store_insights(
+        conn, driver, "src-id", [("chunk-1", "some content")]
+    )
+
+    assert result["chunks_processed"] == 1
+    assert result["insights_extracted"] == 0
+    assert result["insights_reused"] == 0
+    mock_embeddings.assert_not_called()

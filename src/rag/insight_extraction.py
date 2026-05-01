@@ -4,8 +4,8 @@ import logging
 
 import httpx
 
-from rag.config import settings
 from rag import prompts
+from rag.config import settings
 from rag.embedding import get_embeddings
 
 log = logging.getLogger(__name__)
@@ -17,6 +17,30 @@ _MAX_CHUNK_CHARS = 4000
 
 def _strip_fences(text: str) -> str:
     return re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
+
+
+def _embedding_literal(embedding) -> str:
+    if isinstance(embedding, str):
+        return embedding
+    return "[" + ",".join(str(v) for v in embedding) + "]"
+
+
+def _normalized_insights(raw_insights: list[dict]) -> list[dict]:
+    normalized = []
+    for raw in raw_insights:
+        if not isinstance(raw, dict):
+            continue
+        insight = str(raw.get("insight") or "").strip()
+        if not insight:
+            continue
+        raw_topics = raw.get("topics", [])
+        topics = [
+            str(topic).strip()
+            for topic in raw_topics
+            if str(topic).strip()
+        ] if isinstance(raw_topics, list) else []
+        normalized.append({"insight": insight, "topics": topics})
+    return normalized
 
 
 def extract_insights_from_chunk(content: str) -> list[dict]:
@@ -42,12 +66,13 @@ def extract_insights_from_chunk(content: str) -> list[dict]:
 
 
 def upsert_insight(conn, content: str, embedding: list[float]) -> tuple[str, bool]:
-    emb_str = "[" + ",".join(str(v) for v in embedding) + "]"
+    emb_str = _embedding_literal(embedding)
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT id, 1 - (embedding <=> %s::vector) AS sim
             FROM insights
+            WHERE embedding IS NOT NULL
             ORDER BY embedding <=> %s::vector
             LIMIT 1
             """,
@@ -100,14 +125,14 @@ def link_related_insights(
     conn, driver, insight_id: str, embedding: list[float]
 ) -> None:
     k = settings.INSIGHT_LINK_TOP_K
-    emb_str = "[" + ",".join(str(v) for v in embedding) + "]"
+    emb_str = _embedding_literal(embedding)
 
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT id, 1 - (embedding <=> %s::vector) AS sim, embedding
             FROM insights
-            WHERE id != %s
+            WHERE id != %s AND embedding IS NOT NULL
             ORDER BY embedding <=> %s::vector
             LIMIT %s
             """,
@@ -116,11 +141,13 @@ def link_related_insights(
         a_neighbors = cur.fetchall()
 
         for b_id, sim, b_emb_raw in a_neighbors:
-            b_emb_str = "[" + ",".join(str(v) for v in b_emb_raw) + "]"
+            if b_emb_raw is None:
+                continue
+            b_emb_str = _embedding_literal(b_emb_raw)
             cur.execute(
                 """
                 SELECT id FROM insights
-                WHERE id != %s
+                WHERE id != %s AND embedding IS NOT NULL
                 ORDER BY embedding <=> %s::vector
                 LIMIT %s
                 """,
@@ -153,7 +180,7 @@ def extract_and_store_insights(
     insights_reused = 0
 
     for chunk_id, content in chunk_rows:
-        raw_insights = extract_insights_from_chunk(content)
+        raw_insights = _normalized_insights(extract_insights_from_chunk(content))
         if not raw_insights:
             chunks_processed += 1
             conn.commit()
