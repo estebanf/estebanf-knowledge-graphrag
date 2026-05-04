@@ -27,6 +27,35 @@ class RetrievalCandidate:
 
 
 @dataclass
+class InsightCandidate:
+    insight_id: str
+    insight: str
+    score: float
+
+
+@dataclass
+class InsightSourceRef:
+    source_id: str
+    source_path: str
+    source_metadata: dict
+
+
+@dataclass
+class InsightSearchResult:
+    score: float
+    insight: str
+    insight_id: str
+    topics: list[str]
+    sources: list[InsightSourceRef]
+
+
+@dataclass
+class HybridSearchResults:
+    chunks: list[RetrievalCandidate]
+    insights: list[InsightSearchResult]
+
+
+@dataclass
 class EntityCandidate:
     entity_id: str
     name: str
@@ -341,11 +370,13 @@ def hybrid_search(
     *,
     limit: int,
     min_score: float,
-) -> list[RetrievalCandidate]:
+) -> HybridSearchResults:
+    vector = get_embeddings([query])[0]
     top_n = max(limit * 3, 20)
     with get_connection() as conn:
-        dense = dense_retrieve(conn, query, source_ids=[], filters={}, top_n=top_n)
+        dense = dense_retrieve(conn, query, source_ids=[], filters={}, top_n=top_n, vector=vector)
         sparse = sparse_retrieve(conn, query, source_ids=[], filters={}, top_n=top_n)
+        insights = insight_hybrid_search(query, vector=vector, limit=limit, min_score=min_score, conn=conn)
 
     # RRF for deduplication and ordering; scores are unintuitive (~0.01-0.04)
     # so we replace them with the original cosine similarity (dense preferred over sparse)
@@ -379,7 +410,7 @@ def hybrid_search(
     results = results[:limit]
     with get_connection() as conn:
         expanded = _expand_chunk_texts(conn, [result.chunk_id for result in results])
-    return [
+    chunks = [
         RetrievalCandidate(
             chunk_id=result.chunk_id,
             chunk=expanded.get(result.chunk_id, result.chunk),
@@ -389,6 +420,228 @@ def hybrid_search(
             score=result.score,
         )
         for result in results
+    ]
+
+    return HybridSearchResults(chunks=chunks, insights=insights)
+
+
+def _insight_weighted_reciprocal_rank_fusion(
+    candidate_lists: dict[str, list[InsightCandidate]],
+    *,
+    rrf_k: int,
+    weights: dict[str, float],
+    score_floor: float,
+) -> list[InsightCandidate]:
+    fused_scores: dict[str, float] = {}
+    representatives: dict[str, InsightCandidate] = {}
+
+    for list_name, candidates in candidate_lists.items():
+        weight = weights.get(list_name, 1.0)
+        for rank, candidate in enumerate(candidates, start=1):
+            fused_scores[candidate.insight_id] = fused_scores.get(candidate.insight_id, 0.0) + (
+                weight / (rrf_k + rank)
+            )
+            representatives.setdefault(candidate.insight_id, candidate)
+
+    fused: list[InsightCandidate] = []
+    for insight_id, score in fused_scores.items():
+        if score < score_floor:
+            continue
+        candidate = representatives[insight_id]
+        fused.append(
+            InsightCandidate(
+                insight_id=candidate.insight_id,
+                insight=candidate.insight,
+                score=score,
+            )
+        )
+
+    fused.sort(key=lambda r: r.score, reverse=True)
+    return fused
+
+
+def _insight_rows_to_candidates(rows) -> list[InsightCandidate]:
+    return [
+        InsightCandidate(
+            insight_id=str(row[0]),
+            insight=row[1],
+            score=float(row[2]),
+        )
+        for row in rows
+    ]
+
+
+def insight_dense_retrieve(
+    conn,
+    vector: list[float],
+    top_n: int,
+) -> list[InsightCandidate]:
+    vector_param = _vector_literal(vector)
+    rows = conn.execute(
+        f"""
+        SELECT i.id, i.content,
+               (1 - (i.embedding <=> %s::vector)) AS score
+        FROM insights i
+        WHERE i.embedding IS NOT NULL
+        ORDER BY i.embedding <=> %s::vector
+        LIMIT %s
+        """,
+        (vector_param, vector_param, top_n),
+    ).fetchall()
+    return _insight_rows_to_candidates(rows)
+
+
+def insight_sparse_retrieve(
+    conn,
+    query_text: str,
+    top_n: int,
+) -> list[InsightCandidate]:
+    config = settings.RETRIEVAL_TEXT_SEARCH_CONFIG
+    if config == "english":
+        rows = conn.execute(
+            """
+            WITH query AS (
+                SELECT websearch_to_tsquery('english', %s) AS tsq
+            )
+            SELECT i.id, i.content,
+                   ts_rank_cd(
+                       to_tsvector('english', coalesce(i.content, '')),
+                       query.tsq
+                   ) AS score
+            FROM insights i
+            CROSS JOIN query
+            WHERE to_tsvector('english', coalesce(i.content, '')) @@ query.tsq
+            ORDER BY score DESC
+            LIMIT %s
+            """,
+            (query_text, top_n),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"""
+            WITH query AS (
+                SELECT websearch_to_tsquery(%s, %s) AS tsq
+            )
+            SELECT i.id, i.content,
+                   ts_rank_cd(
+                       to_tsvector(%s, coalesce(i.content, '')),
+                       query.tsq
+                   ) AS score
+            FROM insights i
+            CROSS JOIN query
+            WHERE to_tsvector(%s, coalesce(i.content, '')) @@ query.tsq
+            ORDER BY score DESC
+            LIMIT %s
+            """,
+            (config, query_text, config, config, top_n),
+        ).fetchall()
+    return _insight_rows_to_candidates(rows)
+
+
+def _fetch_insight_sources_and_topics(
+    conn,
+    insight_ids: list[str],
+) -> dict[str, tuple[list[str], list[InsightSourceRef]]]:
+    if not insight_ids:
+        return {}
+    rows = conn.execute(
+        """
+        SELECT ci.insight_id, ci.topics, s.id, s.storage_path, s.metadata
+        FROM chunk_insights ci
+        JOIN chunks c ON c.id = ci.chunk_id
+        JOIN sources s ON s.id = c.source_id
+        JOIN jobs j ON j.id = c.job_id
+        WHERE ci.insight_id = ANY(%s::uuid[])
+          AND c.deleted_at IS NULL
+          AND s.deleted_at IS NULL
+          AND j.status = 'completed'
+        """,
+        (insight_ids,),
+    ).fetchall()
+
+    topics_map: dict[str, set[str]] = {}
+    sources_map: dict[str, dict[str, InsightSourceRef]] = {}
+    for row in rows:
+        iid = str(row[0])
+        row_topics = row[1] or []
+        source_id = str(row[2])
+        source_path = row[3] or ""
+        source_metadata = row[4] or {}
+
+        if iid not in topics_map:
+            topics_map[iid] = set()
+        for t in row_topics:
+            topics_map[iid].add(t)
+
+        if iid not in sources_map:
+            sources_map[iid] = {}
+        key = source_id
+        if key not in sources_map[iid]:
+            sources_map[iid][key] = InsightSourceRef(
+                source_id=source_id,
+                source_path=source_path,
+                source_metadata=source_metadata,
+            )
+
+    result: dict[str, tuple[list[str], list[InsightSourceRef]]] = {}
+    for iid in insight_ids:
+        topics = sorted(topics_map.get(iid, set()))
+        sources = list(sources_map.get(iid, {}).values())
+        result[iid] = (topics, sources)
+    return result
+
+
+def insight_hybrid_search(
+    query_text: str,
+    *,
+    vector: list[float],
+    limit: int,
+    min_score: float,
+    conn,
+) -> list[InsightSearchResult]:
+    top_n = max(limit * 3, 20)
+    dense = insight_dense_retrieve(conn, vector, top_n)
+    sparse = insight_sparse_retrieve(conn, query_text, top_n)
+
+    dense_scores = {c.insight_id: c.score for c in dense}
+    sparse_scores = {c.insight_id: c.score for c in sparse}
+
+    fused = _insight_weighted_reciprocal_rank_fusion(
+        {"dense": dense, "sparse": sparse},
+        rrf_k=settings.RETRIEVAL_RRF_K,
+        weights={"dense": 1.0, "sparse": 1.0},
+        score_floor=0.0,
+    )
+
+    results: list[InsightCandidate] = []
+    for candidate in fused:
+        score = dense_scores.get(candidate.insight_id) or sparse_scores.get(candidate.insight_id, 0.0)
+        if score < min_score:
+            continue
+        results.append(
+            InsightCandidate(
+                insight_id=candidate.insight_id,
+                insight=candidate.insight,
+                score=score,
+            )
+        )
+
+    results.sort(key=lambda r: r.score, reverse=True)
+    results = results[:limit]
+
+    if not results:
+        return []
+
+    detail = _fetch_insight_sources_and_topics(conn, [r.insight_id for r in results])
+    return [
+        InsightSearchResult(
+            score=r.score,
+            insight=r.insight,
+            insight_id=r.insight_id,
+            topics=detail.get(r.insight_id, ([], []))[0],
+            sources=detail.get(r.insight_id, ([], []))[1],
+        )
+        for r in results
     ]
 
 

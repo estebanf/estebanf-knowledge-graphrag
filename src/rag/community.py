@@ -77,7 +77,7 @@ def _resolve_scope(
         min_score = search_options.get("min_score", 0.0)
         seen: set[str] = set()
         for criterion in criteria:
-            for r in hybrid_search(criterion, limit=limit, min_score=min_score):
+            for r in hybrid_search(criterion, limit=limit, min_score=min_score).chunks:
                 seen.add(r.source_id)
         return list(seen)
 

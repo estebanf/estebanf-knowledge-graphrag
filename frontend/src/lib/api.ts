@@ -9,8 +9,25 @@ export type SearchResult = {
   source_metadata: SourceMetadata;
 };
 
+export type InsightSourceInfo = {
+  source_id: string;
+  source_path: string;
+  source_metadata: SourceMetadata;
+};
+
+export type InsightResult = {
+  score: number;
+  insight: string;
+  insight_id: string;
+  topics: string[];
+  sources: InsightSourceInfo[];
+};
+
 export type SearchResponse = {
-  results: SearchResult[];
+  results: {
+    chunks: SearchResult[];
+    insights: InsightResult[];
+  };
 };
 
 export type RetrieveRelated = {

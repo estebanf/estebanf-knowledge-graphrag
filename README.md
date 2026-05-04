@@ -402,9 +402,9 @@ The remediation script runs insight extraction directly in the script process; i
 
 ## Search
 
-Search is the lightweight retrieval surface. It runs hybrid chunk search and returns ranked chunk matches only. It does not perform graph expansion, related-chunk aggregation, or answer synthesis.
+Search is the lightweight retrieval surface. It runs hybrid dense+sparse search over both chunks and insights and returns two ranked result lists. The `limit` parameter applies per type (e.g. `limit=10` returns up to 10 chunks and up to 10 insights). Search does not perform graph expansion, related-chunk aggregation, or answer synthesis.
 
-On the default `english` text-search config, sparse search uses a Postgres GIN full-text index. If you change `RETRIEVAL_TEXT_SEARCH_CONFIG`, recreate the sparse-search index to match the new config or Postgres will fall back to slower scans.
+On the default `english` text-search config, sparse search uses a Postgres GIN full-text index on `chunks.content`. Insight sparse search runs against `insights.content`. If you change `RETRIEVAL_TEXT_SEARCH_CONFIG`, recreate the sparse-search index to match the new config or Postgres will fall back to slower scans.
 
 ### CLI
 
@@ -420,7 +420,7 @@ Arguments:
 
 Options:
 
-- `--limit, -n INTEGER`: maximum number of results to return
+- `--limit, -n INTEGER`: maximum number of results per type (chunks and insights)
 - `--min-score FLOAT`: minimum score threshold applied after ranking
 
 Examples:
@@ -434,18 +434,37 @@ venv/bin/rag search "quarterly roadmap" --limit 20 --min-score 0.8
 Response shape:
 
 ```json
-[
-  {
-    "score": 0.93,
-    "chunk": "Chunk text...",
-    "chunk_id": "chunk-uuid",
-    "source_id": "source-uuid",
-    "source_path": "data/documents/source-uuid/1/original_report.pdf",
-    "source_metadata": {
-      "kind": "report"
+{
+  "chunks": [
+    {
+      "score": 0.93,
+      "chunk": "Chunk text...",
+      "chunk_id": "chunk-uuid",
+      "source_id": "source-uuid",
+      "source_path": "data/documents/source-uuid/1/original_report.pdf",
+      "source_metadata": {
+        "kind": "report"
+      }
     }
-  }
-]
+  ],
+  "insights": [
+    {
+      "score": 0.91,
+      "insight": "Insight text...",
+      "insight_id": "insight-uuid",
+      "topics": ["economics", "strategy"],
+      "sources": [
+        {
+          "source_id": "source-uuid",
+          "source_path": "data/documents/source-uuid/1/original_report.pdf",
+          "source_metadata": {
+            "kind": "report"
+          }
+        }
+      ]
+    }
+  ]
+}
 ```
 
 ### REST API
@@ -473,6 +492,8 @@ curl -X POST http://localhost:8000/api/search \
   -H 'content-type: application/json' \
   -d '{"query":"quarterly roadmap","limit":5,"min_score":0.75}'
 ```
+
+The response contains a `results` object with `chunks` and `insights` arrays matching the CLI shape above.
 
 ## Community
 

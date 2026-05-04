@@ -223,21 +223,40 @@ def search_command(
     limit: Annotated[int, typer.Option("--limit", "-n", help="Maximum number of results")] = settings.SEARCH_DEFAULT_LIMIT,
     min_score: Annotated[float, typer.Option("--min-score", help="Minimum score threshold")] = settings.SEARCH_MIN_SCORE,
 ) -> None:
-    """Hybrid search over chunks and return ranked results as a JSON array."""
+    """Hybrid search over chunks and insights and return ranked results as JSON."""
     results = hybrid_search(query, limit=limit, min_score=min_score)
     console.print_json(
         json.dumps(
-            [
-                {
-                    "score": r.score,
-                    "chunk": r.chunk,
-                    "chunk_id": r.chunk_id,
-                    "source_id": r.source_id,
-                    "source_path": r.source_path,
-                    "source_metadata": r.source_metadata,
-                }
-                for r in results
-            ]
+            {
+                "chunks": [
+                    {
+                        "score": r.score,
+                        "chunk": r.chunk,
+                        "chunk_id": r.chunk_id,
+                        "source_id": r.source_id,
+                        "source_path": r.source_path,
+                        "source_metadata": r.source_metadata,
+                    }
+                    for r in results.chunks
+                ],
+                "insights": [
+                    {
+                        "score": r.score,
+                        "insight": r.insight,
+                        "insight_id": r.insight_id,
+                        "topics": r.topics,
+                        "sources": [
+                            {
+                                "source_id": s.source_id,
+                                "source_path": s.source_path,
+                                "source_metadata": s.source_metadata,
+                            }
+                            for s in r.sources
+                        ],
+                    }
+                    for r in results.insights
+                ],
+            }
         )
     )
 

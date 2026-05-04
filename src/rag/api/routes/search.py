@@ -1,7 +1,7 @@
 import requests.exceptions
 from fastapi import APIRouter, HTTPException
 
-from rag.api.schemas import SearchRequest, SearchResponse, SearchResult
+from rag.api.schemas import InsightResult, InsightSourceInfo, SearchRequest, SearchResponse, SearchResult, SearchResults
 from rag.retrieval import hybrid_search
 
 
@@ -15,15 +15,34 @@ def search(payload: SearchRequest) -> SearchResponse:
     except requests.exceptions.RequestException as exc:
         raise HTTPException(status_code=503, detail="Embedding service unavailable") from exc
     return SearchResponse(
-        results=[
-            SearchResult(
-                score=result.score,
-                chunk=result.chunk,
-                chunk_id=result.chunk_id,
-                source_id=result.source_id,
-                source_path=result.source_path,
-                source_metadata=result.source_metadata,
-            )
-            for result in results
-        ]
+        results=SearchResults(
+            chunks=[
+                SearchResult(
+                    score=r.score,
+                    chunk=r.chunk,
+                    chunk_id=r.chunk_id,
+                    source_id=r.source_id,
+                    source_path=r.source_path,
+                    source_metadata=r.source_metadata,
+                )
+                for r in results.chunks
+            ],
+            insights=[
+                InsightResult(
+                    score=r.score,
+                    insight=r.insight,
+                    insight_id=r.insight_id,
+                    topics=r.topics,
+                    sources=[
+                        InsightSourceInfo(
+                            source_id=s.source_id,
+                            source_path=s.source_path,
+                            source_metadata=s.source_metadata,
+                        )
+                        for s in r.sources
+                    ],
+                )
+                for r in results.insights
+            ],
+        )
     )

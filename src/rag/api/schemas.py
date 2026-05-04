@@ -18,8 +18,27 @@ class SearchResult(BaseModel):
     source_metadata: dict[str, Any]
 
 
+class InsightSourceInfo(BaseModel):
+    source_id: str
+    source_path: str
+    source_metadata: dict[str, Any]
+
+
+class InsightResult(BaseModel):
+    score: float
+    insight: str
+    insight_id: str
+    topics: list[str]
+    sources: list[InsightSourceInfo]
+
+
+class SearchResults(BaseModel):
+    chunks: list[SearchResult]
+    insights: list[InsightResult]
+
+
 class SearchResponse(BaseModel):
-    results: list[SearchResult]
+    results: SearchResults
 
 
 class RetrieveRequest(BaseModel):

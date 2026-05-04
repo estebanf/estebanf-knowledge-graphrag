@@ -4,24 +4,35 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from rag.api.main import create_app
-from rag.retrieval import RetrievalCandidate
+from rag.retrieval import HybridSearchResults, InsightSearchResult, RetrievalCandidate
 
 
 def _client() -> TestClient:
     return TestClient(create_app())
 
 
-def _search_results() -> list[RetrievalCandidate]:
-    return [
-        RetrievalCandidate(
-            chunk_id="chunk-1",
-            chunk="Search result chunk",
-            source_id="source-1",
-            source_path="/tmp/source-1.md",
-            source_metadata={"kind": "report", "source": "Gartner"},
-            score=0.82,
-        )
-    ]
+def _search_results() -> HybridSearchResults:
+    return HybridSearchResults(
+        chunks=[
+            RetrievalCandidate(
+                chunk_id="chunk-1",
+                chunk="Search result chunk",
+                source_id="source-1",
+                source_path="/tmp/source-1.md",
+                source_metadata={"kind": "report", "source": "Gartner"},
+                score=0.82,
+            )
+        ],
+        insights=[
+            InsightSearchResult(
+                score=0.91,
+                insight="Key market insight",
+                insight_id="insight-1",
+                topics=["economics"],
+                sources=[],
+            )
+        ],
+    )
 
 
 def _retrieve_results() -> dict:
@@ -96,8 +107,10 @@ def test_search_endpoint_returns_ranked_results(mock_search):
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["results"][0]["chunk_id"] == "chunk-1"
-    assert payload["results"][0]["score"] == 0.82
+    assert payload["results"]["chunks"][0]["chunk_id"] == "chunk-1"
+    assert payload["results"]["chunks"][0]["score"] == 0.82
+    assert payload["results"]["insights"][0]["insight_id"] == "insight-1"
+    assert payload["results"]["insights"][0]["insight"] == "Key market insight"
     mock_search.assert_called_once_with("economics of agents", limit=10, min_score=0.7)
 
 

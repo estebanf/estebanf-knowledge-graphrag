@@ -32,7 +32,9 @@ def test_resolve_scope_search_unions_source_ids(mock_search):
     from rag.community import _resolve_scope
     c1 = MagicMock(); c1.source_id = "src-A"
     c2 = MagicMock(); c2.source_id = "src-B"
-    mock_search.side_effect = [[c1], [c2]]
+    r1 = MagicMock(); r1.chunks = [c1]
+    r2 = MagicMock(); r2.chunks = [c2]
+    mock_search.side_effect = [r1, r2]
     result = _resolve_scope("search", [], ["q1", "q2"], {}, {"limit": 5, "min_score": 0.0}, {})
     assert set(result) == {"src-A", "src-B"}
 

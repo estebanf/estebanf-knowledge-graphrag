@@ -282,6 +282,21 @@ input {
   gap: 1rem;
 }
 
+.results-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.results-section__heading {
+  margin: 0 0 0.75rem;
+  color: var(--warm);
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
 .related-group {
   margin-left: 1.5rem;
   padding-left: 1.25rem;
@@ -368,6 +383,28 @@ input {
   display: flex;
   gap: 0.75rem;
   margin-top: 1rem;
+}
+
+.result-card__topics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.6rem;
+}
+
+.topic-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.18rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(83, 63, 44, 0.08);
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.result-card__source-count {
+  font-size: 0.82rem;
+  color: var(--accent);
 }
 
 .ghost-button {

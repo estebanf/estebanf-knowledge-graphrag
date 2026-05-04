@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import MonacoEditor from "@monaco-editor/react";
 
 import BucketPopover from "./components/BucketPopover";
+import InsightCard from "./components/InsightCard";
 import ResultCard from "./components/ResultCard";
 import SourcePanel from "./components/SourcePanel";
 import type { AnswerModel, CommunityRequestOptions, CommunityResponse, RetrieveResponse, SearchResponse, SourceDetail } from "./lib/api";
@@ -15,7 +16,7 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [searchMinScore, setSearchMinScore] = useState("0.7");
   const [searchLimit, setSearchLimit] = useState("10");
-  const [searchResults, setSearchResults] = useState<SearchResponse["results"]>([]);
+  const [searchResults, setSearchResults] = useState<SearchResponse["results"]>({ chunks: [], insights: [] });
   const [retrieveResults, setRetrieveResults] = useState<RetrieveResponse["retrieval_results"]>([]);
   const [answerText, setAnswerText] = useState("");
   const [answerModels, setAnswerModels] = useState<AnswerModel[]>([]);
@@ -179,7 +180,7 @@ export default function App() {
 
   function clearQueryAndResults() {
     setQuery("");
-    setSearchResults([]);
+    setSearchResults({ chunks: [], insights: [] });
     setRetrieveResults([]);
     setAnswerText("");
     setCommunityResult(null);
@@ -199,7 +200,7 @@ export default function App() {
     await navigator.clipboard.writeText(chunk);
   }
 
-  const currentResultsCount = mode === "search" ? searchResults.length : retrieveResults.length;
+  const currentResultsCount = mode === "search" ? searchResults.chunks.length + searchResults.insights.length : retrieveResults.length;
 
   return (
     <div className="app-shell">
@@ -533,10 +534,30 @@ export default function App() {
               {error ? <p className="panel-state panel-state--error">{error}</p> : null}
 
               {mode === "search" ? (
-                <div className="results-stack">
-                  {searchResults.map((result) => (
-                    <ResultCard key={result.chunk_id} result={result} onCopyChunk={copyChunk} onView={handleView} onAddToBucket={handleAddToBucket} />
-                  ))}
+                <div className="results-sections">
+                  {searchResults.insights.length > 0 ? (
+                    <section className="results-section">
+                      <h3 className="results-section__heading">Insights</h3>
+                      <div className="results-stack">
+                        {searchResults.insights.map((result) => (
+                          <InsightCard key={result.insight_id} result={result} onCopy={copyChunk} onView={handleView} onAddToBucket={handleAddToBucket} />
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
+                  {searchResults.chunks.length > 0 ? (
+                    <section className="results-section">
+                      <h3 className="results-section__heading">Chunks</h3>
+                      <div className="results-stack">
+                        {searchResults.chunks.map((result) => (
+                          <ResultCard key={result.chunk_id} result={result} onCopyChunk={copyChunk} onView={handleView} onAddToBucket={handleAddToBucket} />
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
+                  {searchResults.insights.length === 0 && searchResults.chunks.length === 0 ? (
+                    <p className="panel-state">No results found.</p>
+                  ) : null}
                 </div>
               ) : (
                 <div className="results-stack">

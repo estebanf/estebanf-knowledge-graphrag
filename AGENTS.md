@@ -63,7 +63,7 @@ The repo is split into a few main areas:
 - `src/rag/chunking.py`, `src/rag/chunk_validation.py`, `src/rag/profiling.py`, `src/rag/embedding.py`: chunk pipeline stages
 - `src/rag/graph_extraction.py`, `src/rag/graph_linking.py`: graph creation and linking
 - `src/rag/insight_extraction.py`: OpenCode API call, per-chunk insight extraction, pgvector dedup against `insights`, and Memgraph `Insight` node plus `CONTAINS`/`RELATED_TO` edge management
-- `src/rag/retrieval.py`: hybrid search, retrieval expansion, reranking, and trace behavior
+- `src/rag/retrieval.py`: hybrid chunk and insight search, retrieval expansion, reranking, and trace behavior
 - `src/rag/community.py`: entity-community detection and optional summarization
 - `src/rag/answering.py`: answer generation over retrieval output
 - `src/rag/prompts/__init__.py`: shared prompt templates; this is the canonical prompt maintenance location
@@ -80,6 +80,8 @@ The repo is split into a few main areas:
 ## Current Behavioral Notes
 
 - Search, retrieval, and community APIs are implemented under `src/rag/api/routes/`.
+- Search now returns both chunks and insights via `hybrid_search()` → `HybridSearchResults`. The `limit` parameter applies per type (e.g. `limit=10` returns up to 10 chunks and up to 10 insights). Insight search uses the same dense+sparse+RRF pattern as chunks, querying `insights.embedding` and `insights.content`, then resolving sources and topics through `chunk_insights`.
+- The frontend renders search results in two sections: "Insights" (via `InsightCard`) and "Chunks" (via `ResultCard`).
 - `community retrieve` resolves source scope through a lightweight retrieval-stage pass, not full retrieval result expansion.
 - `--trace` on retrieval still prints live activity first and the final JSON block last.
 - Retrieval config remains env-backed through `src/rag/config.py`.
