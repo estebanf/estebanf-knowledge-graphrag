@@ -684,3 +684,27 @@ def test_generate_insight_query_variants_returns_clean_dict(monkeypatch):
     assert result["hyde"] == "A policy amendment occurred"
     assert result["expanded"] == "policy modification amendment change"
     assert "decomposed" not in result
+
+
+def test_run_insight_first_stage_retrieval_fuses_per_variant_results(monkeypatch):
+    from rag.retrieval import InsightSearchResult
+
+    def fake_insight_search(query_text, *, vector, limit, min_score, conn):
+        if "policy" in query_text:
+            return [InsightSearchResult(score=0.9, insight="policy changed", insight_id="i1", topics=[], sources=[])]
+        return [InsightSearchResult(score=0.8, insight="roadmap shift", insight_id="i2", topics=[], sources=[])]
+
+    monkeypatch.setattr("rag.retrieval.insight_hybrid_search", fake_insight_search)
+    monkeypatch.setattr("rag.retrieval.get_embeddings", lambda texts: [[0.1]*4096]*len(texts))
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_RRF_K", 60)
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_FUSED_CANDIDATE_COUNT", 20)
+
+    from rag.retrieval import run_insight_first_stage_retrieval
+    variants = {"original": "policy change", "expanded": "roadmap shift"}
+    results = run_insight_first_stage_retrieval(
+        conn=object(), query="policy change", variants=variants,
+        source_ids=[], filters={}, rrf_k=60, trace_logger=None,
+    )
+
+    assert len(results) >= 1
+    assert all(r.score > 0 for r in results)

@@ -680,6 +680,70 @@ def insight_hybrid_search(
     ]
 
 
+def run_insight_first_stage_retrieval(
+    conn,
+    query: str,
+    variants: dict[str, object],
+    source_ids: list[str],
+    filters: dict[str, str],
+    rrf_k: int,
+    trace_logger: Optional[TraceLogger] = None,
+) -> list[InsightSearchResult]:
+    vectors = {}
+    all_candidates: list[list[InsightSearchResult]] = []
+    variant_names: list[str] = []
+    variant_values: list[str] = []
+
+    for key in ("original", "expanded", "hyde", "step_back"):
+        value = variants.get(key)
+        if not value or not isinstance(value, str):
+            continue
+        variant_names.append(key)
+        variant_values.append(value)
+
+    if not variant_values:
+        return []
+
+    embeddings = get_embeddings(variant_values)
+    for i, key in enumerate(variant_names):
+        vectors[key] = embeddings[i]
+
+    for key, value in zip(variant_names, variant_values):
+        vector = vectors.get(key)
+        if vector is None:
+            continue
+        candidates = insight_hybrid_search(
+            value,
+            vector=vector,
+            limit=settings.RETRIEVAL_FUSED_CANDIDATE_COUNT,
+            min_score=0.0,
+            conn=conn,
+        )
+        all_candidates.append(candidates)
+        if trace_logger:
+            trace_logger.emit(f"insight variant '{key}' returned {len(candidates)} candidates")
+
+    if not all_candidates:
+        return []
+
+    rrf_scores: dict[str, float] = {}
+    rrf_map: dict[str, InsightSearchResult] = {}
+    for candidates in all_candidates:
+        for rank, candidate in enumerate(candidates):
+            rrf = 1.0 / (rrf_k + rank + 1)
+            if candidate.insight_id not in rrf_scores or rrf > rrf_scores[candidate.insight_id]:
+                rrf_scores[candidate.insight_id] = rrf
+                rrf_map[candidate.insight_id] = candidate
+
+    fused = sorted(rrf_map.values(), key=lambda c: rrf_scores[c.insight_id], reverse=True)
+    fused = fused[:settings.RETRIEVAL_FUSED_CANDIDATE_COUNT]
+
+    if trace_logger:
+        trace_logger.emit(f"insight first stage fused {len(fused)} candidates")
+
+    return fused
+
+
 def _trace_candidates(
     trace_logger: Optional[TraceLogger],
     label: str,
