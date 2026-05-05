@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     RELATIONSHIP_CONFIDENCE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.75
     ENTITY_DEDUP_COSINE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.92
 
+    # OpenCode Go (answer generation)
+    OPENCODE_GO_API_KEY: str = ""
+
     # Insight extraction
     OPENCODE_API_KEY: str = ""
     INSIGHT_DEDUP_COSINE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.95

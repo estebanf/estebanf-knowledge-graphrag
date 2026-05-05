@@ -80,8 +80,8 @@ def _source_detail() -> dict:
 
 def _answer_models() -> list[dict]:
     return [
-        {"id": "google/gemma-4-31b-it", "label": "google/gemma-4-31b-it", "default": True},
-        {"id": "deepseek/deepseek-v3.2", "label": "deepseek/deepseek-v3.2", "default": False},
+        {"id": "deepseek-v4-flash", "label": "DeepSeek V4 Flash", "default": True},
+        {"id": "deepseek-v4-pro", "label": "DeepSeek V4 Pro", "default": False},
     ]
 
 
@@ -149,7 +149,7 @@ def test_answer_models_endpoint_returns_catalog(mock_get_models):
     response = _client().get("/api/answer/models")
 
     assert response.status_code == 200
-    assert response.json()["models"][0]["id"] == "google/gemma-4-31b-it"
+    assert response.json()["models"][0]["id"] == "deepseek-v4-flash"
     assert response.json()["models"][0]["default"] is True
 
 
