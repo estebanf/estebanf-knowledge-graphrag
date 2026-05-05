@@ -9,6 +9,8 @@ from typing import Callable, Optional
 import requests
 import tiktoken
 
+import httpx
+
 from rag import prompts
 from rag.config import settings
 from rag.db import get_connection
@@ -92,6 +94,7 @@ class RetrievalParams:
 
 _CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
 _RERANK_URL = "https://openrouter.ai/api/v1/rerank"
+_OPENCODE_URL = "https://opencode.ai/zen/go/v1/chat/completions"
 _ENC = tiktoken.get_encoding("cl100k_base")
 
 
@@ -212,6 +215,27 @@ def aggregate_root_score(
 
 def _parse_json_response(content: str) -> dict:
     return json.loads(_strip_code_fences(content))
+
+
+def _chat_json_opencode(model: str, prompt: str, *, timeout: int = 90) -> dict:
+    if not settings.OPENCODE_API_KEY:
+        raise ValueError("OPENCODE_API_KEY is required for OpenCode calls")
+    with httpx.Client(timeout=httpx.Timeout(timeout)) as client:
+        response = client.post(
+            _OPENCODE_URL,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {settings.OPENCODE_API_KEY}",
+            },
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0,
+                "response_format": {"type": "json_object"},
+            },
+        )
+        response.raise_for_status()
+        return _parse_json_response(response.json()["choices"][0]["message"]["content"])
 
 
 def _chat_json(model: str, prompt: str, *, timeout: int = 60) -> dict:

@@ -635,3 +635,17 @@ def test_apply_expanded_chunk_text_updates_nested_results():
     assert results[0]["chunk"] == "expanded root"
     assert results[0]["related"][0]["chunks"][0]["chunk"] == "expanded related"
     assert results[0]["related"][0]["second_level_related"][0]["chunks"][0]["chunk"] == "expanded second"
+
+
+def test_chat_json_opencode_calls_opencode_endpoint(monkeypatch):
+    monkeypatch.setattr("rag.retrieval.settings.OPENCODE_API_KEY", "test-key")
+    mock_client = MagicMock()
+    mock_client.__enter__.return_value.post.return_value.json.return_value = {
+        "choices": [{"message": {"content": '{"foo":"bar"}'}}]
+    }
+    monkeypatch.setattr("rag.retrieval.httpx.Client", lambda **kw: mock_client)
+
+    from rag.retrieval import _chat_json_opencode
+    result = _chat_json_opencode("deepseek-v4-flash", "hello")
+
+    assert result == {"foo": "bar"}
