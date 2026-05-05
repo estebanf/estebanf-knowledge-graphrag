@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     RETRIEVAL_RRF_SCORE_FLOOR: float = 0.0
     RETRIEVAL_SEED_COUNT: Annotated[int, Field(gt=0)] = 10
     RETRIEVAL_INSIGHT_SEED_COUNT: Annotated[int, Field(gt=0)] = 5
+    RETRIEVAL_EXPANSION_MAX_WORKERS: Annotated[int, Field(gt=0)] = 5
     RETRIEVAL_RESULT_COUNT: Annotated[int, Field(gt=0)] = 5
     RETRIEVAL_MAX_DECOMPOSED_QUERIES: Annotated[int, Field(gt=0)] = 5
     RETRIEVAL_FIRST_STAGE_TOP_N: Annotated[int, Field(gt=0)] = 20

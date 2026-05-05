@@ -770,9 +770,13 @@ def test_expand_seed_insight_returns_related_and_second_hop(monkeypatch):
             topics=["strategy"], sources=[]
         )]
 
+    def fake_sources_and_topics(conn, insight_ids):
+        return {}
+
     monkeypatch.setattr("rag.retrieval._load_related_insights", fake_related)
     monkeypatch.setattr("rag.retrieval._generate_insight_sub_query", fake_sub_query)
     monkeypatch.setattr("rag.retrieval.insight_hybrid_search", fake_insight_search)
+    monkeypatch.setattr("rag.retrieval._fetch_insight_sources_and_topics", fake_sources_and_topics)
     monkeypatch.setattr("rag.retrieval.get_embeddings", lambda texts: [[0.1]*4096]*len(texts))
 
     from rag.retrieval import expand_seed_insight
@@ -780,9 +784,11 @@ def test_expand_seed_insight_returns_related_and_second_hop(monkeypatch):
     result = expand_seed_insight(seed, "what changed?", conn=object(), driver=object(), trace_logger=None)
 
     assert result["insight_id"] == "i1"
+    assert result["sources"] == []
     assert len(result["related"]) == 2
     assert result["related"][0]["type"] == "first_hop"
     assert result["related"][0]["insights"][0]["insight_id"] == "i2"
+    assert result["related"][0]["insights"][0]["sources"] == []
     assert result["related"][1]["type"] == "second_hop"
     assert result["related"][1]["sub_query"] == "find similar strategic shifts"
     assert result["related"][1]["insights"][0]["insight_id"] == "i3"
@@ -791,9 +797,9 @@ def test_expand_seed_insight_returns_related_and_second_hop(monkeypatch):
 
 def test_finalize_insight_results_sorts_by_score_and_slices(monkeypatch):
     expanded = [
-        {"insight_id": "i1", "insight": "s1", "score": 0.9, "related": []},
-        {"insight_id": "i2", "insight": "r1", "score": 0.85, "related": []},
-        {"insight_id": "i3", "insight": "r2", "score": 0.7, "related": []},
+        {"insight_id": "i1", "insight": "s1", "score": 0.9, "sources": [], "related": []},
+        {"insight_id": "i2", "insight": "r1", "score": 0.85, "sources": [], "related": []},
+        {"insight_id": "i3", "insight": "r2", "score": 0.7, "sources": [], "related": []},
     ]
     monkeypatch.setattr("rag.retrieval.rerank_candidates", lambda query, candidates, top_n, trace_logger=None: candidates)
 
@@ -829,14 +835,14 @@ def test_retrieve_returns_insights_alongside_chunks(monkeypatch):
         "source_id": "s1", "source_path": "/p", "source_metadata": {},
     })
     monkeypatch.setattr("rag.retrieval.expand_seed_insight", lambda *a, **kw: {
-        "insight_id": "i1", "insight": "insight text", "score": 0.88, "related": [],
+        "insight_id": "i1", "insight": "insight text", "score": 0.88, "sources": [], "related": [],
     })
     monkeypatch.setattr("rag.retrieval.finalize_root_results", lambda *a, **kw: [{
         "chunk_id": "c1", "chunk": "c", "score": 0.9, "source_id": "s1",
         "source_path": "/p", "source_metadata": {}, "related": [],
     }])
     monkeypatch.setattr("rag.retrieval.finalize_insight_results", lambda *a, **kw: [{
-        "insight_id": "i1", "insight": "insight text", "score": 0.88, "related": [],
+        "insight_id": "i1", "insight": "insight text", "score": 0.88, "sources": [], "related": [],
     }])
     monkeypatch.setattr("rag.retrieval._expand_neighbor_contexts", lambda conn, results: None)
 

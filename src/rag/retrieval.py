@@ -3,7 +3,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Callable, Optional
 
 import requests
@@ -1141,6 +1141,7 @@ def expand_seed_insight(
         "insight_id": seed.insight_id,
         "insight": seed.insight,
         "score": seed.score,
+        "sources": [asdict(s) for s in seed.sources],
         "related": [],
     }
 
@@ -1159,6 +1160,13 @@ def expand_seed_insight(
         })
 
     if first_hop_insights:
+        # Resolve sources for first-hop insights (they come from Memgraph without sources)
+        first_hop_ids = [fh["insight_id"] for fh in first_hop_insights]
+        fh_detail = _fetch_insight_sources_and_topics(conn, first_hop_ids)
+        for fh in first_hop_insights:
+            _, sources = fh_detail.get(fh["insight_id"], ([], []))
+            fh["sources"] = [asdict(s) for s in sources]
+
         result["related"].append({"type": "first_hop", "insights": first_hop_insights})
 
     if trace_logger:
@@ -1185,6 +1193,7 @@ def expand_seed_insight(
                 "insight_id": iid,
                 "insight": sr.insight,
                 "score": sr.score,
+                "sources": [asdict(s) for s in sr.sources],
             })
         if group_insights:
             second_hop_groups.append({
@@ -1777,10 +1786,11 @@ def retrieve(
     variants = generate_query_variants(query, trace_logger=trace_logger)
     insight_variants = generate_insight_query_variants(query, trace_logger=trace_logger)
     insight_seed_count = settings.RETRIEVAL_INSIGHT_SEED_COUNT
-    # first-stage retrieval opens its own per-thread connections internally
-    with get_graph_driver() as driver:
+    max_workers = settings.RETRIEVAL_EXPANSION_MAX_WORKERS
+
+    def _run_chunk_retrieval(driver) -> list[dict]:
         fused_candidates = run_first_stage_retrieval(
-            conn=None,  # unused — each thread opens its own connection
+            conn=None,
             query=query,
             variants=variants,
             source_ids=source_ids,
@@ -1796,8 +1806,32 @@ def retrieve(
         )[: params.seed_count]
         trace_logger.emit(f"selected {len(seed_candidates)} seed chunks")
 
-        # ---- Insight pipeline ----
-        insight_final: list[dict] = []
+        budget: dict = {"llm_calls": 0, "started_at": time.monotonic()}
+        budget_lock = threading.Lock()
+
+        def _expand_one(seed: RetrievalCandidate) -> dict:
+            with get_connection() as seed_conn:
+                return expand_seed_candidate(
+                    seed, query, source_ids, filters,
+                    params.entity_confidence_threshold,
+                    params.first_hop_similarity_threshold,
+                    params.second_hop_similarity_threshold,
+                    conn=seed_conn, driver=driver,
+                    trace_logger=trace_logger,
+                    budget=budget, budget_lock=budget_lock,
+                )
+
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(seed_candidates))) as pool:
+            root_results = list(pool.map(_expand_one, seed_candidates))
+
+        final_results = finalize_root_results(
+            query, root_results, params.result_count, trace_logger=trace_logger,
+        )
+        with get_connection() as conn:
+            _expand_neighbor_contexts(conn, final_results)
+        return final_results
+
+    def _run_insight_retrieval(driver) -> list[dict]:
         with get_connection() as insight_conn:
             insight_fused = run_insight_first_stage_retrieval(
                 conn=insight_conn,
@@ -1809,70 +1843,49 @@ def retrieve(
                 trace_logger=trace_logger,
             )
 
-            if insight_fused:
-                insight_candidates_for_rerank = [
-                    RetrievalCandidate(
-                        chunk_id=r.insight_id,
-                        chunk=r.insight,
-                        source_id=r.sources[0].source_id if r.sources else "",
-                        source_path=r.sources[0].source_path if r.sources else "",
-                        source_metadata={},
-                        score=r.score,
-                    )
-                    for r in insight_fused
-                ]
-                insight_seeds = rerank_candidates(
-                    query, insight_candidates_for_rerank,
-                    top_n=insight_seed_count, trace_logger=trace_logger,
-                )[:insight_seed_count]
+            if not insight_fused:
+                return []
 
-                insight_seed_ids = {s.chunk_id for s in insight_seeds}
-                insight_seed_results = [r for r in insight_fused if r.insight_id in insight_seed_ids]
-
-                trace_logger.emit(f"selected {len(insight_seed_results)} seed insights")
-
-                def _expand_one_insight(seed: InsightSearchResult) -> dict:
-                    with get_connection() as conn:
-                        return expand_seed_insight(seed, query, conn=conn, driver=driver, trace_logger=trace_logger)
-
-                with ThreadPoolExecutor(max_workers=len(insight_seed_results)) as insight_pool:
-                    insight_expanded = list(insight_pool.map(_expand_one_insight, insight_seed_results))
-
-                insight_final = finalize_insight_results(
-                    query, insight_expanded, params.result_count, trace_logger=trace_logger,
+            insight_candidates_for_rerank = [
+                RetrievalCandidate(
+                    chunk_id=r.insight_id,
+                    chunk=r.insight,
+                    source_id=r.sources[0].source_id if r.sources else "",
+                    source_path=r.sources[0].source_path if r.sources else "",
+                    source_metadata={},
+                    score=r.score,
                 )
+                for r in insight_fused
+            ]
+            insight_seeds = rerank_candidates(
+                query, insight_candidates_for_rerank,
+                top_n=insight_seed_count, trace_logger=trace_logger,
+            )[:insight_seed_count]
 
-        budget: dict = {"llm_calls": 0, "started_at": time.monotonic()}
-        budget_lock = threading.Lock()
+            insight_seed_ids = {s.chunk_id for s in insight_seeds}
+            insight_seed_results = [r for r in insight_fused if r.insight_id in insight_seed_ids]
 
-        def _expand_one(seed: RetrievalCandidate) -> dict:
-            with get_connection() as seed_conn:
-                return expand_seed_candidate(
-                    seed,
-                    query,
-                    source_ids,
-                    filters,
-                    params.entity_confidence_threshold,
-                    params.first_hop_similarity_threshold,
-                    params.second_hop_similarity_threshold,
-                    conn=seed_conn,
-                    driver=driver,
-                    trace_logger=trace_logger,
-                    budget=budget,
-                    budget_lock=budget_lock,
-                )
+            trace_logger.emit(f"selected {len(insight_seed_results)} seed insights")
 
-        with ThreadPoolExecutor(max_workers=len(seed_candidates)) as pool:
-            root_results = list(pool.map(_expand_one, seed_candidates))
+            def _expand_one_insight(seed: InsightSearchResult) -> dict:
+                with get_connection() as conn:
+                    return expand_seed_insight(seed, query, conn=conn, driver=driver, trace_logger=trace_logger)
 
-        final_results = finalize_root_results(
-            query,
-            root_results,
-            params.result_count,
-            trace_logger=trace_logger,
-        )
-        with get_connection() as conn:
-            _expand_neighbor_contexts(conn, final_results)
+            with ThreadPoolExecutor(max_workers=min(max_workers, max(1, len(insight_seed_results)))) as insight_pool:
+                insight_expanded = list(insight_pool.map(_expand_one_insight, insight_seed_results))
+
+            return finalize_insight_results(
+                query, insight_expanded, params.result_count, trace_logger=trace_logger,
+            )
+
+    # first-stage retrieval opens its own per-thread connections internally
+    with get_graph_driver() as driver:
+        with ThreadPoolExecutor(max_workers=2) as pipeline_pool:
+            chunk_future = pipeline_pool.submit(_run_chunk_retrieval, driver)
+            insight_future = pipeline_pool.submit(_run_insight_retrieval, driver)
+            final_results = chunk_future.result()
+            insight_final = insight_future.result()
+
     return {"retrieval_results": final_results, "insights": insight_final}
 
 

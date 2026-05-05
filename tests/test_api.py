@@ -131,7 +131,7 @@ def test_retrieve_endpoint_returns_nested_results(mock_retrieve):
 def test_retrieve_endpoint_returns_insights(mock_retrieve):
     mock_retrieve.return_value = {
         "retrieval_results": _retrieve_results()["retrieval_results"],
-        "insights": [{"insight_id": "i1", "insight": "insight text", "score": 0.88, "topics": ["strategy"]}],
+        "insights": [{"insight_id": "i1", "insight": "insight text", "score": 0.88, "sources": [], "related": []}],
     }
 
     response = _client().post("/api/retrieve", json={"query": "economics of agents"})
