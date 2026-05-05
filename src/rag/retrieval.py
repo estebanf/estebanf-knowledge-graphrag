@@ -260,7 +260,7 @@ def generate_query_variants(query: str, trace_logger: Optional[TraceLogger] = No
         max_decomposed=settings.RETRIEVAL_MAX_DECOMPOSED_QUERIES,
         query=query,
     )
-    raw = _chat_json(settings.MODEL_RETRIEVAL_QUERY_VARIANTS, prompt, timeout=90)
+    raw = _chat_json_opencode(settings.MODEL_RETRIEVAL_QUERY_VARIANTS, prompt, timeout=90)
     raw["original"] = query
     variants = normalize_query_variants(raw)
     if trace_logger:

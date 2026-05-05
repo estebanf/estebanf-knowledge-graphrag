@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     MODEL_CHUNK_VALIDATION: str = "qwen/qwen2.5-7b-instruct"
     MODEL_PROPOSITION_CHUNKING: str = "qwen/qwen2.5-14b-instruct"
     MODEL_EMBEDDING: str = "qwen/qwen3-embedding-8b"
-    MODEL_RETRIEVAL_QUERY_VARIANTS: str = "google/gemini-2.5-flash-lite"
+    MODEL_RETRIEVAL_QUERY_VARIANTS: str = "deepseek-v4-flash"
     MODEL_RETRIEVAL_GRAPH: str = "google/gemini-2.5-flash-lite"
     MODEL_RETRIEVAL_RERANKER: str = "cohere/rerank-v3.5"
 
