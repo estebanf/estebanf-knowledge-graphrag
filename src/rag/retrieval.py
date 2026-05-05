@@ -1130,6 +1130,107 @@ def _generate_insight_sub_query(
     return str(raw.get("query", "")).strip()
 
 
+def expand_seed_insight(
+    seed: InsightSearchResult,
+    query: str,
+    conn,
+    driver,
+    trace_logger: Optional[TraceLogger] = None,
+) -> dict:
+    result: dict[str, object] = {
+        "seed": {
+            "insight_id": seed.insight_id,
+            "insight": seed.insight,
+            "score": seed.score,
+            "topics": seed.topics,
+        },
+        "related": [],
+        "second_level_related": [],
+    }
+
+    first_hop = _load_related_insights(driver, seed.insight_id)
+    seen_ids = {seed.insight_id}
+    for related in first_hop:
+        iid = related["insight_id"]
+        if iid in seen_ids:
+            continue
+        seen_ids.add(iid)
+        result["related"].append({
+            "insight_id": iid,
+            "insight": related["content"],
+            "score": float(related.get("similarity", 0.0)),
+            "topics": related.get("topics", []),
+        })
+
+    if trace_logger:
+        trace_logger.emit(f"insight expansion: {len(first_hop)} first-hop related")
+
+    for related_insight in first_hop[:3]:
+        sub_query = _generate_insight_sub_query(query, related_insight["content"], trace_logger=trace_logger)
+        if not sub_query:
+            continue
+        vector = get_embeddings([sub_query])[0]
+        sub_results = insight_hybrid_search(
+            sub_query, vector=vector,
+            limit=5, min_score=0.0, conn=conn,
+        )
+        for sr in sub_results:
+            iid = sr.insight_id
+            if iid in seen_ids:
+                continue
+            seen_ids.add(iid)
+            result["second_level_related"].append({
+                "insight_id": iid,
+                "insight": sr.insight,
+                "score": sr.score,
+                "topics": sr.topics,
+                "relationship": {
+                    "label": "SEMANTIC_RELATED",
+                    "metadata": {
+                        "first_hop_insight_id": related_insight["insight_id"],
+                        "sub_query": sub_query,
+                    },
+                },
+            })
+
+    if trace_logger:
+        trace_logger.emit(
+            f"insight expansion complete: {len(result['related'])} related, {len(result['second_level_related'])} second-level"
+        )
+
+    return result
+
+
+def finalize_insight_results(
+    query: str,
+    expanded_results: list[dict],
+    result_count: int,
+    trace_logger: Optional[TraceLogger] = None,
+) -> list[dict]:
+    seen: dict[str, dict] = {}
+    for expanded in expanded_results:
+        seed = expanded["seed"]
+        iid = seed["insight_id"]
+        if iid not in seen or seed["score"] > seen[iid].get("score", 0):
+            seen[iid] = seed
+        for related in expanded["related"]:
+            iid = related["insight_id"]
+            if iid not in seen or related["score"] > seen[iid].get("score", 0):
+                seen[iid] = related
+        for sl in expanded.get("second_level_related", []):
+            iid = sl["insight_id"]
+            if iid not in seen or sl["score"] > seen[iid].get("score", 0):
+                seen[iid] = sl
+
+    results = sorted(seen.values(), key=lambda r: r.get("score", 0), reverse=True)
+    results = results[:result_count]
+
+    if trace_logger:
+        trace_logger.emit(f"finalized {len(results)} insight results")
+
+    return results
+
+
 def _select_second_hop_entities_from_chunks(
     query: str,
     seed: RetrievalCandidate,

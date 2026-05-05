@@ -745,3 +745,69 @@ def test_generate_insight_sub_query_returns_query(monkeypatch):
     from rag.retrieval import _generate_insight_sub_query
     result = _generate_insight_sub_query("what changed?", "The roadmap shifted focus from growth to efficiency")
     assert result == "find similar strategic shifts"
+
+
+def test_expand_seed_insight_returns_related_and_second_hop(monkeypatch):
+    from rag.retrieval import InsightSearchResult
+
+    monkeypatch.setattr("rag.retrieval.settings.OPENCODE_API_KEY", "test-key")
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_RRF_K", 60)
+    monkeypatch.setattr("rag.retrieval.settings.MODEL_RETRIEVAL_QUERY_VARIANTS", "deepseek-v4-flash")
+
+    def fake_related(driver, insight_id, top_k=10):
+        return [{"insight_id": "i2", "content": "related insight", "similarity": 0.92}]
+
+    def fake_sub_query(original_query, insight, trace_logger=None):
+        return "find similar strategic shifts"
+
+    def fake_insight_search(query_text, *, vector, limit, min_score, conn):
+        return [InsightSearchResult(
+            score=0.85, insight="found insight", insight_id="i3",
+            topics=["strategy"], sources=[]
+        )]
+
+    monkeypatch.setattr("rag.retrieval._load_related_insights", fake_related)
+    monkeypatch.setattr("rag.retrieval._generate_insight_sub_query", fake_sub_query)
+    monkeypatch.setattr("rag.retrieval.insight_hybrid_search", fake_insight_search)
+    monkeypatch.setattr("rag.retrieval.get_embeddings", lambda texts: [[0.1]*4096]*len(texts))
+
+    from rag.retrieval import expand_seed_insight
+    seed = InsightSearchResult(score=0.95, insight="seed insight", insight_id="i1", topics=[], sources=[])
+    result = expand_seed_insight(seed, "what changed?", conn=object(), driver=object(), trace_logger=None)
+
+    assert "seed" in result
+    assert result["seed"]["insight_id"] == "i1"
+    assert len(result["related"]) > 0
+    assert result["related"][0]["insight_id"] == "i2"
+    assert len(result["second_level_related"]) > 0
+    assert result["second_level_related"][0]["insight_id"] == "i3"
+
+
+def test_finalize_insight_results_dedups_and_sorts(monkeypatch):
+    expanded = [
+        {
+            "seed": {"insight_id": "i1", "insight": "s1", "score": 0.9, "topics": []},
+            "related": [
+                {"insight_id": "i2", "insight": "r1", "score": 0.8, "topics": []},
+                {"insight_id": "i3", "insight": "r2", "score": 0.7, "topics": []},
+            ],
+            "second_level_related": [
+                {"insight_id": "i4", "insight": "s2", "score": 0.6, "topics": [], "relationship": {"label": "X", "metadata": {}}},
+            ],
+        },
+        {
+            "seed": {"insight_id": "i2", "insight": "r1", "score": 0.85, "topics": []},
+            "related": [],
+            "second_level_related": [],
+        },
+    ]
+    monkeypatch.setattr("rag.retrieval.rerank_candidates", lambda query, candidates, top_n, trace_logger=None: candidates)
+
+    from rag.retrieval import finalize_insight_results
+    results = finalize_insight_results("what changed?", expanded, result_count=5, trace_logger=None)
+
+    assert len(results) <= 5
+    ids = [r["insight_id"] for r in results]
+    assert "i1" in ids
+    assert ids.count("i2") == 1
+    assert results[0]["insight_id"] == "i1"
