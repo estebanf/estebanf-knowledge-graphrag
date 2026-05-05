@@ -87,6 +87,10 @@ def test_retrieve_emits_trace_and_returns_final_results(monkeypatch):
         ),
     )
     monkeypatch.setattr(
+        "rag.retrieval.generate_insight_query_variants",
+        lambda query, trace_logger=None: {},
+    )
+    monkeypatch.setattr(
         "rag.retrieval.run_first_stage_retrieval",
         lambda **kwargs: [
             RetrievalCandidate(
@@ -811,3 +815,52 @@ def test_finalize_insight_results_dedups_and_sorts(monkeypatch):
     assert "i1" in ids
     assert ids.count("i2") == 1
     assert results[0]["insight_id"] == "i1"
+
+
+def test_retrieve_returns_insights_alongside_chunks(monkeypatch):
+    from rag.retrieval import InsightSearchResult, RetrievalCandidate
+
+    monkeypatch.setattr("rag.retrieval.settings.OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr("rag.retrieval.settings.OPENCODE_API_KEY", "test-key")
+    monkeypatch.setattr("rag.retrieval.settings.OPENCODE_API_KEY", "test-key")
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_RRF_K", 60)
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_SEED_COUNT", 2)
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_RESULT_COUNT", 3)
+    monkeypatch.setattr("rag.retrieval.settings.MODEL_RETRIEVAL_QUERY_VARIANTS", "deepseek-v4-flash")
+
+    variants = {"original": "what changed", "hyde": "hypothetical"}
+    monkeypatch.setattr("rag.retrieval.generate_query_variants", lambda q, **kw: variants)
+    monkeypatch.setattr("rag.retrieval.generate_insight_query_variants", lambda q, **kw: variants)
+
+    chunk = RetrievalCandidate("c1", "chunk text", "s1", "/p", {}, 0.9)
+    insight = InsightSearchResult(0.88, "insight text", "i1", ["strategy"], [])
+    monkeypatch.setattr("rag.retrieval.run_first_stage_retrieval", lambda **kw: [chunk])
+    monkeypatch.setattr("rag.retrieval.run_insight_first_stage_retrieval", lambda **kw: [insight])
+    monkeypatch.setattr("rag.retrieval.rerank_candidates", lambda q, c, **kw: c[:kw["top_n"]])
+    monkeypatch.setattr("rag.retrieval.expand_seed_candidate", lambda *a, **kw: {
+        "root": chunk, "related": [], "final_score": 0.9, "chunk_id": "c1", "chunk": "c",
+        "source_id": "s1", "source_path": "/p", "source_metadata": {},
+    })
+    monkeypatch.setattr("rag.retrieval.expand_seed_insight", lambda *a, **kw: {
+        "seed": {"insight_id": "i1", "insight": "insight text", "score": 0.88, "topics": []},
+        "related": [], "second_level_related": [],
+    })
+    monkeypatch.setattr("rag.retrieval.finalize_root_results", lambda *a, **kw: [{
+        "chunk_id": "c1", "chunk": "c", "score": 0.9, "source_id": "s1",
+        "source_path": "/p", "source_metadata": {}, "related": [],
+    }])
+    monkeypatch.setattr("rag.retrieval.finalize_insight_results", lambda *a, **kw: [{
+        "insight_id": "i1", "insight": "insight text", "score": 0.88, "topics": [],
+    }])
+    monkeypatch.setattr("rag.retrieval._expand_neighbor_contexts", lambda conn, results: None)
+
+    response = retrieve(
+        query="what changed?", source_ids=[], filters={}, seed_count=2, result_count=3,
+        rrf_k=60, entity_confidence_threshold=None, first_hop_similarity_threshold=None,
+        second_hop_similarity_threshold=None, trace=False, trace_printer=None,
+    )
+
+    assert "retrieval_results" in response
+    assert "insights" in response
+    assert len(response["insights"]) > 0
+    assert response["insights"][0]["insight_id"] == "i1"
