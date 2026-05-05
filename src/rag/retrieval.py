@@ -1102,6 +1102,34 @@ def _fetch_same_source_neighbor_candidates(
     return [_row_to_candidate(row) for row in rows]
 
 
+def _load_related_insights(driver, insight_id: str, top_k: int = 10) -> list[dict]:
+    with driver.session() as session:
+        result = session.run(
+            """
+            MATCH (i:Insight {insight_id: $insight_id})-[r:RELATED_TO]->(related:Insight)
+            RETURN related.insight_id AS insight_id, related.content AS content, r.similarity AS similarity
+            ORDER BY r.similarity DESC
+            LIMIT $top_k
+            """,
+            insight_id=insight_id,
+            top_k=top_k,
+        )
+        return list(result)
+
+
+def _generate_insight_sub_query(
+    original_query: str,
+    insight: str,
+    trace_logger: Optional[TraceLogger] = None,
+) -> str:
+    prompt = prompts.INSIGHT_SUB_QUERY.format(
+        original_query=original_query,
+        insight=insight,
+    )
+    raw = _chat_json_opencode(settings.MODEL_RETRIEVAL_QUERY_VARIANTS, prompt, timeout=60)
+    return str(raw.get("query", "")).strip()
+
+
 def _select_second_hop_entities_from_chunks(
     query: str,
     seed: RetrievalCandidate,

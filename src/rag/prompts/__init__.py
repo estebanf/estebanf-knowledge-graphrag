@@ -134,6 +134,18 @@ Entity:
 {entity_name}
 """
 
+INSIGHT_SUB_QUERY = """You are generating a sub-query to find insights related to a seed insight.
+Return ONLY a JSON object with key "query".
+
+Original user query:
+{original_query}
+
+Seed insight:
+{insight}
+
+Generate a focused search query that would find semantically similar insights.
+"""
+
 SECOND_HOP_ENTITY_SELECTION = """You are selecting second-hop graph entities to expand for retrieval.
 Return ONLY a JSON object with key selected_entities containing up to {max_entities} entity names.
 

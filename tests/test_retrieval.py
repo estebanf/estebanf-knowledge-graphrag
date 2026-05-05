@@ -708,3 +708,40 @@ def test_run_insight_first_stage_retrieval_fuses_per_variant_results(monkeypatch
 
     assert len(results) >= 1
     assert all(r.score > 0 for r in results)
+
+
+class FakeInsightSession:
+    def __init__(self):
+        self.query = None
+    def run(self, query, **kwargs):
+        self.query = query
+        self.kwargs = kwargs
+        return iter([{"insight_id": "i2", "content": "related insight", "similarity": 0.92}])
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+class FakeInsightDriver:
+    def __init__(self):
+        self.session_obj = FakeInsightSession()
+    def session(self): return self.session_obj
+
+def test_load_related_insights_uses_related_to():
+    driver = FakeInsightDriver()
+    from rag.retrieval import _load_related_insights
+    related = _load_related_insights(driver, "i1")
+    assert len(related) == 1
+    assert related[0]["insight_id"] == "i2"
+    assert "RELATED_TO" in driver.session_obj.query
+    assert driver.session_obj.kwargs["insight_id"] == "i1"
+
+
+def test_generate_insight_sub_query_returns_query(monkeypatch):
+    monkeypatch.setattr("rag.retrieval.settings.OPENCODE_API_KEY", "test-key")
+    def fake_opencode(model, prompt, timeout=90):
+        return {"query": "find similar strategic shifts"}
+    monkeypatch.setattr("rag.retrieval._chat_json_opencode", fake_opencode)
+    monkeypatch.setattr("rag.retrieval.settings.MODEL_RETRIEVAL_QUERY_VARIANTS", "deepseek-v4-flash")
+
+    from rag.retrieval import _generate_insight_sub_query
+    result = _generate_insight_sub_query("what changed?", "The roadmap shifted focus from growth to efficiency")
+    assert result == "find similar strategic shifts"
