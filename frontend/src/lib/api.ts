@@ -49,6 +49,7 @@ export type RetrieveResult = SearchResult & {
 
 export type RetrieveResponse = {
   retrieval_results: RetrieveResult[];
+  insights: InsightResult[];
 };
 
 export type AnswerModel = {

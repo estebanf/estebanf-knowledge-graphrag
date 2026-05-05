@@ -18,6 +18,7 @@ export default function App() {
   const [searchLimit, setSearchLimit] = useState("10");
   const [searchResults, setSearchResults] = useState<SearchResponse["results"]>({ chunks: [], insights: [] });
   const [retrieveResults, setRetrieveResults] = useState<RetrieveResponse["retrieval_results"]>([]);
+  const [retrieveInsights, setRetrieveInsights] = useState<RetrieveResponse["insights"]>([]);
   const [answerText, setAnswerText] = useState("");
   const [answerModels, setAnswerModels] = useState<AnswerModel[]>([]);
   const [selectedAnswerModel, setSelectedAnswerModel] = useState("");
@@ -106,6 +107,7 @@ export default function App() {
       } else if (mode === "retrieve") {
         const response = await retrieve(query.trim());
         setRetrieveResults(response.retrieval_results);
+        setRetrieveInsights(response.insights || []);
       } else if (mode === "community") {
         const lines = communityInput.split("\n").map((s) => s.trim()).filter(Boolean);
         const body: CommunityRequestOptions = { scope_mode: communityScopeMode };
@@ -561,6 +563,16 @@ export default function App() {
                 </div>
               ) : (
                 <div className="results-stack">
+                  {retrieveInsights.length > 0 ? (
+                    <section className="results-section">
+                      <h3 className="results-section__heading">Insights</h3>
+                      <div className="results-stack">
+                        {retrieveInsights.map((result) => (
+                          <InsightCard key={result.insight_id} result={result} onCopy={copyChunk} onView={handleView} onAddToBucket={handleAddToBucket} />
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
                   {retrieveResults.map((result) => (
                     <section className="retrieve-group" key={result.chunk_id}>
                       <ResultCard result={result} onCopyChunk={copyChunk} onView={handleView} onAddToBucket={handleAddToBucket} />
