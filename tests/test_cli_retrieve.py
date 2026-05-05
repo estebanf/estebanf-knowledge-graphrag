@@ -113,3 +113,18 @@ def test_retrieve_command_rejects_invalid_filter_format(mock_retrieve):
     assert result.exit_code == 1
     assert "Invalid filter format" in result.output
     mock_retrieve.assert_not_called()
+
+
+@patch("rag.cli.retrieve")
+def test_retrieve_command_prints_insights_section(mock_retrieve):
+    mock_retrieve.return_value = {
+        "retrieval_results": [{"chunk_id": "c1", "chunk": "text", "score": 0.9, "source_id": "s1", "source_path": "/p", "source_metadata": {}, "related": []}],
+        "insights": [{"insight_id": "i1", "insight": "insight text", "score": 0.88, "topics": ["strategy"]}],
+    }
+
+    result = runner.invoke(app, ["retrieve", "what changed?"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert "insights" in payload
+    assert payload["insights"][0]["insight_id"] == "i1"

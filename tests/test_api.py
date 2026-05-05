@@ -127,6 +127,21 @@ def test_retrieve_endpoint_returns_nested_results(mock_retrieve):
     mock_retrieve.assert_called_once()
 
 
+@patch("rag.api.routes.retrieve.retrieve")
+def test_retrieve_endpoint_returns_insights(mock_retrieve):
+    mock_retrieve.return_value = {
+        "retrieval_results": _retrieve_results()["retrieval_results"],
+        "insights": [{"insight_id": "i1", "insight": "insight text", "score": 0.88, "topics": ["strategy"]}],
+    }
+
+    response = _client().post("/api/retrieve", json={"query": "economics of agents"})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "insights" in data
+    assert data["insights"][0]["insight_id"] == "i1"
+
+
 @patch("rag.api.routes.answer.get_supported_answer_models")
 def test_answer_models_endpoint_returns_catalog(mock_get_models):
     mock_get_models.return_value = _answer_models()
