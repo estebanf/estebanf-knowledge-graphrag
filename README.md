@@ -522,12 +522,12 @@ Response body:
 
 Retrieval is the graph-aware query pipeline. It:
 
-1. generates query variants
-2. runs first-stage hybrid search
+1. generates query variants (chunk and insight)
+2. runs first-stage hybrid search for chunks and insights
 3. fuses and reranks candidates
-4. expands selected seeds through graph evidence
-5. falls back to same-source neighbors when graph expansion has no non-seed chunk evidence
-6. reranks and returns root results plus related supporting chunks
+4. expands selected chunk seeds through graph evidence (entity MENTIONS), and insight seeds through RELATED_TO + LLM-generated sub-queries
+5. falls back to same-source neighbors when chunk graph expansion has no non-seed evidence
+6. reranks and returns root chunk results plus related supporting chunks, and a parallel list of ranked insights
 
 ### CLI
 
@@ -590,16 +590,36 @@ Response shape:
       },
       "related": [
         {
-          "score": 0.0,
-          "chunk": "Supporting chunk text...",
-          "chunk_id": "related-chunk-uuid",
+          "entity": "Entity Name",
+          "chunks": [
+            {
+              "score": 0.0,
+              "chunk": "Supporting chunk text...",
+              "chunk_id": "related-chunk-uuid",
+              "source_id": "source-uuid",
+              "source_path": "data/documents/source-uuid/1/original_report.pdf",
+              "source_metadata": {
+                "kind": "report"
+              }
+            }
+          ],
+          "second_level_related": []
+        }
+      ]
+    }
+  ],
+  "insights": [
+    {
+      "score": 0.88,
+      "insight": "Insight text...",
+      "insight_id": "insight-uuid",
+      "topics": ["strategy", "economics"],
+      "sources": [
+        {
           "source_id": "source-uuid",
           "source_path": "data/documents/source-uuid/1/original_report.pdf",
           "source_metadata": {
             "kind": "report"
-          },
-          "metadata": {
-            "path": "graph:first_hop"
           }
         }
       ]

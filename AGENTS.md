@@ -63,7 +63,7 @@ The repo is split into a few main areas:
 - `src/rag/chunking.py`, `src/rag/chunk_validation.py`, `src/rag/profiling.py`, `src/rag/embedding.py`: chunk pipeline stages
 - `src/rag/graph_extraction.py`, `src/rag/graph_linking.py`: graph creation and linking
 - `src/rag/insight_extraction.py`: OpenCode API call, per-chunk insight extraction, pgvector dedup against `insights`, and Memgraph `Insight` node plus `CONTAINS`/`RELATED_TO` edge management
-- `src/rag/retrieval.py`: hybrid chunk and insight search, retrieval expansion, reranking, and trace behavior
+- `src/rag/retrieval.py`: hybrid chunk and insight search, retrieval expansion for both chunks and insights (entity MENTIONS for chunks, RELATED_TO + LLM sub-queries for insights), reranking, and trace behavior
 - `src/rag/community.py`: entity-community detection and optional summarization
 - `src/rag/answering.py`: answer generation over retrieval output
 - `src/rag/prompts/__init__.py`: shared prompt templates; this is the canonical prompt maintenance location
