@@ -779,49 +779,36 @@ def test_expand_seed_insight_returns_related_and_second_hop(monkeypatch):
     seed = InsightSearchResult(score=0.95, insight="seed insight", insight_id="i1", topics=[], sources=[])
     result = expand_seed_insight(seed, "what changed?", conn=object(), driver=object(), trace_logger=None)
 
-    assert "seed" in result
-    assert result["seed"]["insight_id"] == "i1"
-    assert len(result["related"]) > 0
-    assert result["related"][0]["insight_id"] == "i2"
-    assert len(result["second_level_related"]) > 0
-    assert result["second_level_related"][0]["insight_id"] == "i3"
+    assert result["insight_id"] == "i1"
+    assert len(result["related"]) == 2
+    assert result["related"][0]["type"] == "first_hop"
+    assert result["related"][0]["insights"][0]["insight_id"] == "i2"
+    assert result["related"][1]["type"] == "second_hop"
+    assert result["related"][1]["sub_query"] == "find similar strategic shifts"
+    assert result["related"][1]["insights"][0]["insight_id"] == "i3"
+    assert "topics" not in result
 
 
-def test_finalize_insight_results_dedups_and_sorts(monkeypatch):
+def test_finalize_insight_results_sorts_by_score_and_slices(monkeypatch):
     expanded = [
-        {
-            "seed": {"insight_id": "i1", "insight": "s1", "score": 0.9, "topics": []},
-            "related": [
-                {"insight_id": "i2", "insight": "r1", "score": 0.8, "topics": []},
-                {"insight_id": "i3", "insight": "r2", "score": 0.7, "topics": []},
-            ],
-            "second_level_related": [
-                {"insight_id": "i4", "insight": "s2", "score": 0.6, "topics": [], "relationship": {"label": "X", "metadata": {}}},
-            ],
-        },
-        {
-            "seed": {"insight_id": "i2", "insight": "r1", "score": 0.85, "topics": []},
-            "related": [],
-            "second_level_related": [],
-        },
+        {"insight_id": "i1", "insight": "s1", "score": 0.9, "related": []},
+        {"insight_id": "i2", "insight": "r1", "score": 0.85, "related": []},
+        {"insight_id": "i3", "insight": "r2", "score": 0.7, "related": []},
     ]
     monkeypatch.setattr("rag.retrieval.rerank_candidates", lambda query, candidates, top_n, trace_logger=None: candidates)
 
     from rag.retrieval import finalize_insight_results
-    results = finalize_insight_results("what changed?", expanded, result_count=5, trace_logger=None)
+    results = finalize_insight_results("what changed?", expanded, result_count=2, trace_logger=None)
 
-    assert len(results) <= 5
-    ids = [r["insight_id"] for r in results]
-    assert "i1" in ids
-    assert ids.count("i2") == 1
+    assert len(results) == 2
     assert results[0]["insight_id"] == "i1"
+    assert results[1]["insight_id"] == "i2"
 
 
 def test_retrieve_returns_insights_alongside_chunks(monkeypatch):
     from rag.retrieval import InsightSearchResult, RetrievalCandidate
 
     monkeypatch.setattr("rag.retrieval.settings.OPENROUTER_API_KEY", "test-key")
-    monkeypatch.setattr("rag.retrieval.settings.OPENCODE_API_KEY", "test-key")
     monkeypatch.setattr("rag.retrieval.settings.OPENCODE_API_KEY", "test-key")
     monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_RRF_K", 60)
     monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_SEED_COUNT", 2)
@@ -842,15 +829,14 @@ def test_retrieve_returns_insights_alongside_chunks(monkeypatch):
         "source_id": "s1", "source_path": "/p", "source_metadata": {},
     })
     monkeypatch.setattr("rag.retrieval.expand_seed_insight", lambda *a, **kw: {
-        "seed": {"insight_id": "i1", "insight": "insight text", "score": 0.88, "topics": []},
-        "related": [], "second_level_related": [],
+        "insight_id": "i1", "insight": "insight text", "score": 0.88, "related": [],
     })
     monkeypatch.setattr("rag.retrieval.finalize_root_results", lambda *a, **kw: [{
         "chunk_id": "c1", "chunk": "c", "score": 0.9, "source_id": "s1",
         "source_path": "/p", "source_metadata": {}, "related": [],
     }])
     monkeypatch.setattr("rag.retrieval.finalize_insight_results", lambda *a, **kw: [{
-        "insight_id": "i1", "insight": "insight text", "score": 0.88, "topics": [],
+        "insight_id": "i1", "insight": "insight text", "score": 0.88, "related": [],
     }])
     monkeypatch.setattr("rag.retrieval._expand_neighbor_contexts", lambda conn, results: None)
 

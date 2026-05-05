@@ -10,7 +10,7 @@ type InsightCardProps = {
 };
 
 function primarySource(result: InsightResult) {
-  return result.sources[0];
+  return result.sources?.[0];
 }
 
 function sourceLabel(result: InsightResult): string {
@@ -48,14 +48,14 @@ export default function InsightCard({ result, onView, onCopy, onAddToBucket }: I
               {kind ? `insight · ${kind}` : "insight"}
             </span>
             <span>{sourceLabel(result)}</span>
-            {result.sources.length > 1 ? (
+            {result.sources && result.sources.length > 1 ? (
               <span className="result-card__source-count">
                 +{result.sources.length - 1} more source{result.sources.length > 2 ? "s" : ""}
               </span>
             ) : null}
           </div>
           {title ? <h4 className="result-card__title">{title}</h4> : null}
-          {result.topics.length > 0 ? (
+          {result.topics && result.topics.length > 0 ? (
             <div className="result-card__topics">
               {result.topics.map((t) => (
                 <span key={t} className="topic-tag">

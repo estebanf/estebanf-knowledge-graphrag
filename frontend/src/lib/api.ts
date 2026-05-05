@@ -19,8 +19,21 @@ export type InsightResult = {
   score: number;
   insight: string;
   insight_id: string;
-  topics: string[];
-  sources: InsightSourceInfo[];
+  topics?: string[];
+  sources?: InsightSourceInfo[];
+};
+
+export type InsightRelatedGroup = {
+  type: "first_hop" | "second_hop";
+  sub_query?: string;
+  insights: InsightResult[];
+};
+
+export type RetrieveInsightResult = {
+  insight_id: string;
+  insight: string;
+  score: number;
+  related: InsightRelatedGroup[];
 };
 
 export type SearchResponse = {
@@ -49,7 +62,7 @@ export type RetrieveResult = SearchResult & {
 
 export type RetrieveResponse = {
   retrieval_results: RetrieveResult[];
-  insights: InsightResult[];
+  insights: RetrieveInsightResult[];
 };
 
 export type AnswerModel = {

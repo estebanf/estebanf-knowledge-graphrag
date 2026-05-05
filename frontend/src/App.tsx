@@ -567,8 +567,22 @@ export default function App() {
                     <section className="results-section">
                       <h3 className="results-section__heading">Insights</h3>
                       <div className="results-stack">
-                        {retrieveInsights.map((result) => (
-                          <InsightCard key={result.insight_id} result={result} onCopy={copyChunk} onView={handleView} onAddToBucket={handleAddToBucket} />
+                        {retrieveInsights.map((seed) => (
+                          <section className="retrieve-group" key={seed.insight_id}>
+                            <InsightCard result={{...seed, topics: seed.topics || [], sources: seed.sources || []}} onCopy={copyChunk} onView={handleView} onAddToBucket={handleAddToBucket} />
+                            {seed.related.map((group) => (
+                              <div className="related-group" key={`${seed.insight_id}-${group.type}-${group.sub_query || "first"}`}>
+                                <div className="related-group__label">
+                                  {group.type === "first_hop" ? "Related" : `Related · ${group.sub_query}`}
+                                </div>
+                                <div className="related-group__stack">
+                                  {group.insights.map((insight) => (
+                                    <InsightCard key={insight.insight_id} result={{...insight, topics: insight.topics || [], sources: insight.sources || []}} onCopy={copyChunk} onView={handleView} onAddToBucket={handleAddToBucket} />
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
+                          </section>
                         ))}
                       </div>
                     </section>

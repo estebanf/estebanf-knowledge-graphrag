@@ -611,16 +611,29 @@ Response shape:
   "insights": [
     {
       "score": 0.88,
-      "insight": "Insight text...",
+      "insight": "Seed insight text...",
       "insight_id": "insight-uuid",
-      "topics": ["strategy", "economics"],
-      "sources": [
+      "related": [
         {
-          "source_id": "source-uuid",
-          "source_path": "data/documents/source-uuid/1/original_report.pdf",
-          "source_metadata": {
-            "kind": "report"
-          }
+          "type": "first_hop",
+          "insights": [
+            {
+              "score": 0.92,
+              "insight": "Related insight text...",
+              "insight_id": "related-insight-uuid"
+            }
+          ]
+        },
+        {
+          "type": "second_hop",
+          "sub_query": "LLM-generated sub-query text...",
+          "insights": [
+            {
+              "score": 0.85,
+              "insight": "Semantically related insight...",
+              "insight_id": "found-insight-uuid"
+            }
+          ]
         }
       ]
     }
