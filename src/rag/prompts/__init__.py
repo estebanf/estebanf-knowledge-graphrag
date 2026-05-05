@@ -96,6 +96,18 @@ Query:
 {query}
 """
 
+INSIGHT_QUERY_VARIANTS = """You are generating retrieval query variants for insight search.
+Return ONLY a JSON object with keys: original, hyde, expanded, step_back.
+- original must be the exact input query
+- hyde must be a short hypothetical insight passage
+- expanded must add synonyms, aliases, and related concepts
+- step_back must be a more general background query
+- avoid near-duplicate variants
+
+Query:
+{query}
+"""
+
 ENTITY_SELECTION = """You are selecting graph entities to expand for retrieval.
 Return ONLY a JSON object with key selected_entities containing up to {max_entities} entity names.
 

@@ -268,6 +268,17 @@ def generate_query_variants(query: str, trace_logger: Optional[TraceLogger] = No
     return variants
 
 
+def generate_insight_query_variants(query: str, trace_logger: Optional[TraceLogger] = None) -> dict[str, object]:
+    prompt = prompts.INSIGHT_QUERY_VARIANTS.format(query=query)
+    raw = _chat_json_opencode(settings.MODEL_RETRIEVAL_QUERY_VARIANTS, prompt, timeout=90)
+    raw["original"] = query
+    variants = normalize_query_variants(raw)
+    variants.pop("decomposed", None)
+    if trace_logger:
+        trace_logger.emit(f"generated insight query variants: {json.dumps(variants, ensure_ascii=True)}")
+    return variants
+
+
 def _build_chunk_filter_sql(
     source_ids: list[str],
     filters: dict[str, str],

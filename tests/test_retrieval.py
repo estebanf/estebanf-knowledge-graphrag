@@ -649,3 +649,38 @@ def test_chat_json_opencode_calls_opencode_endpoint(monkeypatch):
     result = _chat_json_opencode("deepseek-v4-flash", "hello")
 
     assert result == {"foo": "bar"}
+
+
+def test_generate_query_variants_uses_opencode(monkeypatch):
+    monkeypatch.setattr("rag.retrieval.settings.OPENCODE_API_KEY", "test-key")
+    monkeypatch.setattr("rag.retrieval.settings.MODEL_RETRIEVAL_QUERY_VARIANTS", "deepseek-v4-flash")
+
+    def fake_opencode(model, prompt, timeout=90):
+        return {"original": "what changed", "hyde": "answer", "expanded": "alt"}
+    monkeypatch.setattr("rag.retrieval._chat_json_opencode", fake_opencode)
+
+    from rag.retrieval import generate_query_variants
+    result = generate_query_variants("what changed in the policy?")
+
+    assert result["original"] == "what changed in the policy?"
+    assert result["hyde"] == "answer"
+
+
+def test_generate_insight_query_variants_returns_clean_dict(monkeypatch):
+    monkeypatch.setattr("rag.retrieval.settings.OPENCODE_API_KEY", "test-key")
+    def fake_opencode(model, prompt, timeout=90):
+        return {
+            "original": "what changed",
+            "hyde": "A policy amendment occurred",
+            "expanded": "policy modification amendment change",
+            "step_back": "organizational policy changes",
+        }
+    monkeypatch.setattr("rag.retrieval._chat_json_opencode", fake_opencode)
+
+    from rag.retrieval import generate_insight_query_variants
+    result = generate_insight_query_variants("what changed in the policy?")
+
+    assert result["original"] == "what changed in the policy?"
+    assert result["hyde"] == "A policy amendment occurred"
+    assert result["expanded"] == "policy modification amendment change"
+    assert "decomposed" not in result
