@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
@@ -101,3 +102,33 @@ class SourceDetail(BaseModel):
     storage_path: str
     metadata: dict[str, Any]
     markdown_content: str
+
+
+class SourceSummary(BaseModel):
+    source_id: str
+    name: Optional[str] = None
+    file_name: Optional[str] = None
+    file_type: Optional[str] = None
+    metadata: dict[str, Any]
+    created_at: datetime
+    insight_count: int = 0
+
+
+class SourceListResponse(BaseModel):
+    sources: list[SourceSummary]
+    total: int
+    limit: int
+    offset: int
+
+
+class SourceInsight(BaseModel):
+    insight_id: str
+    insight: str
+    topics: list[str]
+    chunk_id: str
+    chunk_index: Optional[int] = None
+    chunk_preview: str
+
+
+class SourceInsightsResponse(BaseModel):
+    insights: list[SourceInsight]

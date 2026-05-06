@@ -371,6 +371,30 @@ List insights for a source:
 venv/bin/rag sources insights <source_id>
 ```
 
+The frontend includes a Sources tab for browsing the latest ingested sources. It loads the newest 20 active sources, renders the selected source markdown, lists linked insights with their `chunk_insights.topics` values as connection labels, and supports copying either the selected source's insight JSON or one insight's text.
+
+### REST API
+
+List recent sources:
+
+```text
+GET /api/sources?limit=20&offset=0
+```
+
+The response includes `sources`, `total`, `limit`, and `offset` for frontend pagination. Add repeated `metadata=key:value` query parameters to filter by metadata attributes; multiple metadata filters are treated as OR.
+
+Fetch one source's markdown:
+
+```text
+GET /api/sources/{source_id}
+```
+
+Fetch insights linked to one source's chunks:
+
+```text
+GET /api/sources/{source_id}/insights
+```
+
 Return source IDs for the last N sources, or for sources since a date:
 
 ```bash

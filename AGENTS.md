@@ -82,6 +82,7 @@ The repo is split into a few main areas:
 - Search, retrieval, and community APIs are implemented under `src/rag/api/routes/`.
 - Search now returns both chunks and insights via `hybrid_search()` → `HybridSearchResults`. The `limit` parameter applies per type (e.g. `limit=10` returns up to 10 chunks and up to 10 insights). Insight search uses the same dense+sparse+RRF pattern as chunks, querying `insights.embedding` and `insights.content`, then resolving sources and topics through `chunk_insights`.
 - The frontend renders search results in two sections: "Insights" (via `InsightCard`) and "Chunks" (via `ResultCard`).
+- The frontend has a Sources tab that calls `/api/sources`, `/api/sources/{source_id}`, and `/api/sources/{source_id}/insights` to browse recent sources, filter by source metadata, copy source insight JSON, copy individual insight text, and switch the selected source detail between rendered markdown and insight topic connections.
 - `community retrieve` resolves source scope through a lightweight retrieval-stage pass, not full retrieval result expansion.
 - `--trace` on retrieval still prints live activity first and the final JSON block last.
 - Retrieval config remains env-backed through `src/rag/config.py`.

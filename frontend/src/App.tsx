@@ -5,11 +5,13 @@ import BucketPopover from "./components/BucketPopover";
 import InsightCard from "./components/InsightCard";
 import ResultCard from "./components/ResultCard";
 import SourcePanel from "./components/SourcePanel";
-import type { AnswerModel, CommunityRequestOptions, CommunityResponse, RetrieveResponse, SearchResponse, SourceDetail } from "./lib/api";
-import { community, getAnswerModels, getSource, retrieve, search, streamAnswer } from "./lib/api";
+import SourcesExplorer from "./components/SourcesExplorer";
+import type { AnswerModel, CommunityRequestOptions, CommunityResponse, MetadataFilter, RetrieveResponse, SearchResponse, SourceDetail, SourceInsight, SourceSummary } from "./lib/api";
+import { community, getAnswerModels, getSource, getSourceInsights, listSources, retrieve, search, streamAnswer } from "./lib/api";
 
-type Mode = "search" | "retrieve" | "answer" | "community";
+type Mode = "search" | "retrieve" | "answer" | "community" | "sources";
 type BucketEntry = { sourceId: string; title: string };
+const SOURCES_PAGE_SIZE = 20;
 
 export default function App() {
   const [mode, setMode] = useState<Mode>("search");
@@ -29,6 +31,19 @@ export default function App() {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [resultsCopied, setResultsCopied] = useState(false);
   const [bucket, setBucket] = useState<BucketEntry[]>([]);
+  const [sources, setSources] = useState<SourceSummary[]>([]);
+  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
+  const [sourcesOffset, setSourcesOffset] = useState(0);
+  const [sourcesTotal, setSourcesTotal] = useState(0);
+  const [sourceMetadataFilters, setSourceMetadataFilters] = useState<MetadataFilter[]>([]);
+  const [selectedSource, setSelectedSource] = useState<SourceDetail | null>(null);
+  const [sourceInsights, setSourceInsights] = useState<SourceInsight[]>([]);
+  const [sourcesLoading, setSourcesLoading] = useState(false);
+  const [selectedSourceLoading, setSelectedSourceLoading] = useState(false);
+  const [sourceInsightsLoading, setSourceInsightsLoading] = useState(false);
+  const [sourcesError, setSourcesError] = useState<string | null>(null);
+  const [selectedSourceError, setSelectedSourceError] = useState<string | null>(null);
+  const [sourceInsightsError, setSourceInsightsError] = useState<string | null>(null);
 
   function handleAddToBucket(sourceId: string, title: string) {
     setBucket((prev) => {
@@ -89,7 +104,94 @@ export default function App() {
     };
   }, [mode, answerModels.length]);
 
+  useEffect(() => {
+    if (mode !== "sources") {
+      return;
+    }
+
+    let active = true;
+    setSourcesLoading(true);
+    setSourcesError(null);
+    listSources(SOURCES_PAGE_SIZE, sourcesOffset, sourceMetadataFilters)
+      .then((response) => {
+        if (!active) {
+          return;
+        }
+        setSources(response.sources);
+        setSourcesTotal(response.total);
+        setSelectedSourceId(response.sources[0]?.source_id || null);
+      })
+      .catch((sourceListError) => {
+        if (active) {
+          setSourcesError(sourceListError instanceof Error ? sourceListError.message : "Unable to load sources");
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setSourcesLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [mode, sourcesOffset, sourceMetadataFilters]);
+
+  useEffect(() => {
+    if (mode !== "sources" || !selectedSourceId) {
+      return;
+    }
+
+    let active = true;
+    setSelectedSourceLoading(true);
+    setSourceInsightsLoading(true);
+    setSelectedSourceError(null);
+    setSourceInsightsError(null);
+    getSource(selectedSourceId)
+      .then((response) => {
+        if (active) {
+          setSelectedSource(response);
+        }
+      })
+      .catch((sourceError) => {
+        if (active) {
+          setSelectedSource(null);
+          setSelectedSourceError(sourceError instanceof Error ? sourceError.message : "Unable to load source");
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setSelectedSourceLoading(false);
+        }
+      });
+
+    getSourceInsights(selectedSourceId)
+      .then((response) => {
+        if (active) {
+          setSourceInsights(response.insights);
+        }
+      })
+      .catch((insightsError) => {
+        if (active) {
+          setSourceInsights([]);
+          setSourceInsightsError(insightsError instanceof Error ? insightsError.message : "Unable to load insights");
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setSourceInsightsLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [mode, selectedSourceId]);
+
   async function handleSubmit() {
+    if (mode === "sources") {
+      return;
+    }
     if (mode !== "community" && !query.trim()) {
       return;
     }
@@ -202,7 +304,32 @@ export default function App() {
     await navigator.clipboard.writeText(chunk);
   }
 
+  function handleNextSourcesPage() {
+    setSourcesOffset((current) => current + SOURCES_PAGE_SIZE);
+  }
+
+  function handlePreviousSourcesPage() {
+    setSourcesOffset((current) => Math.max(0, current - SOURCES_PAGE_SIZE));
+  }
+
+  function handleToggleSourceMetadataFilter(filter: MetadataFilter) {
+    setSourcesOffset(0);
+    setSourceMetadataFilters((current) => {
+      if (current.some((item) => item.key === filter.key && item.value === filter.value)) {
+        return current;
+      }
+      return [...current, filter];
+    });
+  }
+
+  function handleRemoveSourceMetadataFilter(filter: MetadataFilter) {
+    setSourcesOffset(0);
+    setSourceMetadataFilters((current) => current.filter((item) => item.key !== filter.key || item.value !== filter.value));
+  }
+
   const currentResultsCount = mode === "search" ? searchResults.chunks.length + searchResults.insights.length : retrieveResults.length;
+  const sourcesPage = Math.floor(sourcesOffset / SOURCES_PAGE_SIZE) + 1;
+  const sourcesPageCount = Math.max(1, Math.ceil(sourcesTotal / SOURCES_PAGE_SIZE));
 
   return (
     <div className="app-shell">
@@ -260,9 +387,18 @@ export default function App() {
               >
                 Community
               </button>
+              <button
+                aria-selected={mode === "sources"}
+                className={`tab${mode === "sources" ? " tab--active" : ""}`}
+                role="tab"
+                type="button"
+                onClick={() => setMode("sources")}
+              >
+                Sources
+              </button>
             </div>
 
-            {mode !== "community" ? (
+            {mode !== "community" && mode !== "sources" ? (
               <label className="query-panel__label" htmlFor="semantic-query">
                 Semantic Query
               </label>
@@ -315,7 +451,7 @@ export default function App() {
                 </label>
               </div>
             ) : null}
-            {mode === "community" ? (
+            {mode === "sources" ? null : mode === "community" ? (
               <div className="community-form">
                 <label className="search-controls__field community-scope-row" htmlFor="community-scope">
                   <span>Scope Mode</span>
@@ -442,7 +578,28 @@ export default function App() {
             )}
           </form>
 
-          {mode === "answer" ? (
+          {mode === "sources" ? (
+            <SourcesExplorer
+              insights={sourceInsights}
+              insightsError={sourceInsightsError}
+              loadingInsights={sourceInsightsLoading}
+              loadingSource={selectedSourceLoading}
+              loadingSources={sourcesLoading}
+              page={sourcesPage}
+              pageCount={sourcesPageCount}
+              selectedSourceId={selectedSourceId}
+              selectedFilters={sourceMetadataFilters}
+              source={selectedSource}
+              sourceError={selectedSourceError}
+              sources={sources}
+              sourcesError={sourcesError}
+              onNextPage={handleNextSourcesPage}
+              onPreviousPage={handlePreviousSourcesPage}
+              onRemoveMetadataFilter={handleRemoveSourceMetadataFilter}
+              onSelectSource={setSelectedSourceId}
+              onToggleMetadataFilter={handleToggleSourceMetadataFilter}
+            />
+          ) : mode === "answer" ? (
             <section className="answer-panel">
               <div className="answer-panel__header">
                 <h3>Answer</h3>
@@ -453,7 +610,7 @@ export default function App() {
             </section>
           ) : null}
 
-          {mode === "community" ? (
+          {mode === "sources" ? null : mode === "community" ? (
             <section className="community-panel">
               <div className="results-panel__header">
                 <div className="results-panel__title-row">

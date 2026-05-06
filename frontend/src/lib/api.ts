@@ -1,5 +1,10 @@
 export type SourceMetadata = Record<string, string>;
 
+export type MetadataFilter = {
+  key: string;
+  value: string;
+};
+
 export type SearchResult = {
   score: number;
   chunk: string;
@@ -79,6 +84,36 @@ export type SourceDetail = {
   storage_path: string;
   metadata: SourceMetadata;
   markdown_content: string;
+};
+
+export type SourceSummary = {
+  source_id: string;
+  name?: string | null;
+  file_name?: string | null;
+  file_type?: string | null;
+  metadata: SourceMetadata;
+  created_at: string;
+  insight_count: number;
+};
+
+export type SourceInsight = {
+  insight_id: string;
+  insight: string;
+  topics: string[];
+  chunk_id: string;
+  chunk_index?: number | null;
+  chunk_preview: string;
+};
+
+export type SourceListResponse = {
+  sources: SourceSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type SourceInsightsResponse = {
+  insights: SourceInsight[];
 };
 
 export type StreamAnswerOptions = {
@@ -185,6 +220,27 @@ export async function getSource(sourceId: string): Promise<SourceDetail> {
     throw new Error(`Request failed: ${response.status}`);
   }
   return response.json() as Promise<SourceDetail>;
+}
+
+export async function listSources(limit = 20, offset = 0, metadataFilters: MetadataFilter[] = []): Promise<SourceListResponse> {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+  });
+  metadataFilters.forEach((filter) => params.append("metadata", `${filter.key}:${filter.value}`));
+  const response = await fetch(`/api/sources?${params.toString()}`);
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status}`);
+  }
+  return response.json() as Promise<SourceListResponse>;
+}
+
+export async function getSourceInsights(sourceId: string): Promise<SourceInsightsResponse> {
+  const response = await fetch(`/api/sources/${sourceId}/insights`);
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status}`);
+  }
+  return response.json() as Promise<SourceInsightsResponse>;
 }
 
 export type CommunityEntity = {

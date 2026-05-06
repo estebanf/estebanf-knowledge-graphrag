@@ -185,6 +185,70 @@ def test_source_detail_endpoint_returns_markdown(mock_get_source_detail):
     mock_get_source_detail.assert_called_once_with("source-1")
 
 
+@patch("rag.api.routes.sources.list_recent_sources")
+def test_sources_list_endpoint_returns_recent_sources(mock_list_recent_sources):
+    mock_list_recent_sources.return_value = {
+        "sources": [
+            {
+                "source_id": "source-1",
+                "name": "Economics of GenAI",
+                "file_name": "economics.md",
+                "file_type": "text/markdown",
+                "metadata": {"kind": "report", "source": "Gartner"},
+                "created_at": "2026-05-01T12:30:00Z",
+                "insight_count": 3,
+            }
+        ],
+        "total": 32,
+    }
+
+    response = _client().get("/api/sources?limit=20&offset=20")
+
+    assert response.status_code == 200
+    assert response.json()["sources"][0]["source_id"] == "source-1"
+    assert response.json()["sources"][0]["created_at"] == "2026-05-01T12:30:00Z"
+    assert response.json()["sources"][0]["insight_count"] == 3
+    assert response.json()["total"] == 32
+    assert response.json()["limit"] == 20
+    assert response.json()["offset"] == 20
+    mock_list_recent_sources.assert_called_once_with(limit=20, offset=20, metadata_filters=[])
+
+
+@patch("rag.api.routes.sources.list_recent_sources")
+def test_sources_list_endpoint_accepts_metadata_filters(mock_list_recent_sources):
+    mock_list_recent_sources.return_value = {"sources": [], "total": 0}
+
+    response = _client().get("/api/sources?metadata=kind%3Areport&metadata=source%3AGartner")
+
+    assert response.status_code == 200
+    mock_list_recent_sources.assert_called_once_with(
+        limit=20,
+        offset=0,
+        metadata_filters=[("kind", "report"), ("source", "Gartner")],
+    )
+
+
+@patch("rag.api.routes.sources.list_source_insights")
+def test_source_insights_endpoint_returns_topic_connections(mock_list_source_insights):
+    mock_list_source_insights.return_value = [
+        {
+            "insight_id": "insight-1",
+            "insight": "Agentic workflows lower marginal analysis cost.",
+            "topics": ["economics", "automation"],
+            "chunk_id": "chunk-1",
+            "chunk_index": 2,
+            "chunk_preview": "The shift towards agentic workflows...",
+        }
+    ]
+
+    response = _client().get("/api/sources/source-1/insights")
+
+    assert response.status_code == 200
+    assert response.json()["insights"][0]["topics"] == ["economics", "automation"]
+    assert response.json()["insights"][0]["chunk_id"] == "chunk-1"
+    mock_list_source_insights.assert_called_once_with("source-1")
+
+
 @patch("rag.api.routes.sources.get_source_detail")
 def test_source_detail_endpoint_returns_404_when_missing(mock_get_source_detail):
     mock_get_source_detail.return_value = None
