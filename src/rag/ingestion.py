@@ -216,7 +216,8 @@ def _delete_graph_nodes(driver, source_id: str, entity_ids: list[str]) -> None:
             source_id=source_id,
         )
         session.run(
-            "MATCH (i:Insight) WHERE NOT (i)<-[:CONTAINS]-() DETACH DELETE i"
+            "MATCH (i:Insight) OPTIONAL MATCH (c)-[:CONTAINS]->(i) "
+            "WITH i WHERE c IS NULL DETACH DELETE i"
         )
 
 
@@ -228,7 +229,8 @@ def _cleanup_orphan_insights(conn: psycopg.Connection, driver) -> None:
     if driver:
         with driver.session() as session:
             session.run(
-                "MATCH (i:Insight) WHERE NOT (i)<-[:CONTAINS]-() DETACH DELETE i"
+                "MATCH (i:Insight) OPTIONAL MATCH (c)-[:CONTAINS]->(i) "
+                "WITH i WHERE c IS NULL DETACH DELETE i"
             )
 
 
