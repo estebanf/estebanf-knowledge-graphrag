@@ -36,6 +36,7 @@ export default function App() {
   const [sourcesOffset, setSourcesOffset] = useState(0);
   const [sourcesTotal, setSourcesTotal] = useState(0);
   const [sourceMetadataFilters, setSourceMetadataFilters] = useState<MetadataFilter[]>([]);
+  const [sourcesQuery, setSourcesQuery] = useState("");
   const [selectedSource, setSelectedSource] = useState<SourceDetail | null>(null);
   const [sourceInsights, setSourceInsights] = useState<SourceInsight[]>([]);
   const [sourcesLoading, setSourcesLoading] = useState(false);
@@ -112,7 +113,7 @@ export default function App() {
     let active = true;
     setSourcesLoading(true);
     setSourcesError(null);
-    listSources(SOURCES_PAGE_SIZE, sourcesOffset, sourceMetadataFilters)
+    listSources(SOURCES_PAGE_SIZE, sourcesOffset, sourceMetadataFilters, sourcesQuery)
       .then((response) => {
         if (!active) {
           return;
@@ -135,7 +136,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [mode, sourcesOffset, sourceMetadataFilters]);
+  }, [mode, sourcesOffset, sourceMetadataFilters, sourcesQuery]);
 
   useEffect(() => {
     if (mode !== "sources" || !selectedSourceId) {
@@ -310,6 +311,11 @@ export default function App() {
 
   function handlePreviousSourcesPage() {
     setSourcesOffset((current) => Math.max(0, current - SOURCES_PAGE_SIZE));
+  }
+
+  function handleSourcesQueryChange(q: string) {
+    setSourcesQuery(q);
+    setSourcesOffset(0);
   }
 
   function handleToggleSourceMetadataFilter(filter: MetadataFilter) {
@@ -598,6 +604,8 @@ export default function App() {
               onRemoveMetadataFilter={handleRemoveSourceMetadataFilter}
               onSelectSource={setSelectedSourceId}
               onToggleMetadataFilter={handleToggleSourceMetadataFilter}
+              query={sourcesQuery}
+              onQueryChange={handleSourcesQueryChange}
             />
           ) : mode === "answer" ? (
             <section className="answer-panel">

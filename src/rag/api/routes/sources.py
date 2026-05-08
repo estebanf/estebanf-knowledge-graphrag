@@ -15,12 +15,14 @@ def get_sources(
     limit: int = Query(default=20, gt=0, le=100),
     offset: int = Query(default=0, ge=0),
     metadata: list[str] = Query(default_factory=list),
+    q: str | None = Query(default=None),
 ) -> SourceListResponse:
     metadata_filters = [_parse_metadata_filter(item) for item in metadata]
     result = list_recent_sources(
         limit=limit,
         offset=offset,
         metadata_filters=[item for item in metadata_filters if item is not None],
+        q=q,
     )
     return SourceListResponse(
         sources=result["sources"],

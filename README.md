@@ -371,7 +371,19 @@ List insights for a source:
 venv/bin/rag sources insights <source_id>
 ```
 
-The frontend includes a Sources tab for browsing the latest ingested sources. It loads the newest 20 active sources, renders the selected source markdown, lists linked insights with their `chunk_insights.topics` values as connection labels, and supports copying either the selected source's insight JSON or one insight's text.
+Search sources by metadata value (fuzzy substring match, no embeddings):
+
+```bash
+venv/bin/rag sources search "climate"
+venv/bin/rag sources search "title:quarterly"
+venv/bin/rag sources search "report" --limit 5
+```
+
+- a bare value matches any metadata value, the source `name`, or `file_name`
+- `key:value` restricts the match to that specific metadata key
+- `--limit N` caps the result count (default 20)
+
+The frontend includes a Sources tab for browsing the latest ingested sources. The left column has a search bar that triggers a live fuzzy search as you type; when empty it shows the newest 20 sources. The search combines with metadata filter chips (which remain exact-match OR filters). It renders the selected source markdown, lists linked insights with their `chunk_insights.topics` values as connection labels, and supports copying either the selected source's insight JSON or one insight's text.
 
 ### REST API
 
@@ -382,6 +394,17 @@ GET /api/sources?limit=20&offset=0
 ```
 
 The response includes `sources`, `total`, `limit`, and `offset` for frontend pagination. Add repeated `metadata=key:value` query parameters to filter by metadata attributes; multiple metadata filters are treated as OR.
+
+Add `q` for fuzzy metadata search:
+
+```text
+GET /api/sources?q=climate
+GET /api/sources?q=title:quarterly&limit=5
+```
+
+- `q=value` matches any metadata value, `name`, or `file_name` using `ILIKE '%value%'`
+- `q=key:value` restricts the search to the given metadata key
+- `q` is AND-ed with any `metadata=` exact filters
 
 Fetch one source's markdown:
 

@@ -157,3 +157,52 @@ def test_sources_last_with_date_string():
     assert result.exit_code == 0
     assert "created_at >=" in cur.execute.call_args.args[0]
     assert "No sources" in result.output
+
+
+@patch("rag.sources.list_recent_sources")
+def test_sources_search_prints_table(mock_list_recent_sources):
+    import datetime
+    mock_list_recent_sources.return_value = {
+        "sources": [
+            {
+                "source_id": "source-1",
+                "name": "Climate Report",
+                "file_name": "climate.pdf",
+                "file_type": "application/pdf",
+                "metadata": {"title": "climate report"},
+                "created_at": datetime.datetime(2026, 5, 1, 12, 0, 0),
+                "insight_count": 5,
+            }
+        ],
+        "total": 1,
+    }
+
+    result = runner.invoke(app, ["sources", "search", "climate"])
+
+    assert result.exit_code == 0
+    assert "climate" in result.output.lower()
+    assert "source-1" in result.output
+    call_kwargs = mock_list_recent_sources.call_args.kwargs
+    assert call_kwargs["q"] == "climate"
+    assert call_kwargs["limit"] == 20
+
+
+@patch("rag.sources.list_recent_sources")
+def test_sources_search_key_value_forwards_q(mock_list_recent_sources):
+    mock_list_recent_sources.return_value = {"sources": [], "total": 0}
+
+    result = runner.invoke(app, ["sources", "search", "title:quarterly"])
+
+    assert result.exit_code == 0
+    assert "No sources matched" in result.output
+    assert mock_list_recent_sources.call_args.kwargs["q"] == "title:quarterly"
+
+
+@patch("rag.sources.list_recent_sources")
+def test_sources_search_respects_limit(mock_list_recent_sources):
+    mock_list_recent_sources.return_value = {"sources": [], "total": 0}
+
+    result = runner.invoke(app, ["sources", "search", "report", "--limit", "5"])
+
+    assert result.exit_code == 0
+    assert mock_list_recent_sources.call_args.kwargs["limit"] == 5

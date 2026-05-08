@@ -751,6 +751,27 @@ input {
   opacity: 0.45;
 }
 
+.source-search-bar {
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.source-search-input {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.85rem;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.source-search-input:focus {
+  border-color: var(--warm);
+}
+
 .source-filter-bar {
   display: flex;
   flex-wrap: wrap;

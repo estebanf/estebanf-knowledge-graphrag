@@ -211,7 +211,7 @@ def test_sources_list_endpoint_returns_recent_sources(mock_list_recent_sources):
     assert response.json()["total"] == 32
     assert response.json()["limit"] == 20
     assert response.json()["offset"] == 20
-    mock_list_recent_sources.assert_called_once_with(limit=20, offset=20, metadata_filters=[])
+    mock_list_recent_sources.assert_called_once_with(limit=20, offset=20, metadata_filters=[], q=None)
 
 
 @patch("rag.api.routes.sources.list_recent_sources")
@@ -225,6 +225,37 @@ def test_sources_list_endpoint_accepts_metadata_filters(mock_list_recent_sources
         limit=20,
         offset=0,
         metadata_filters=[("kind", "report"), ("source", "Gartner")],
+        q=None,
+    )
+
+
+@patch("rag.api.routes.sources.list_recent_sources")
+def test_sources_list_endpoint_passes_q_to_list_recent_sources(mock_list_recent_sources):
+    mock_list_recent_sources.return_value = {"sources": [], "total": 0}
+
+    response = _client().get("/api/sources?q=climate")
+
+    assert response.status_code == 200
+    mock_list_recent_sources.assert_called_once_with(
+        limit=20,
+        offset=0,
+        metadata_filters=[],
+        q="climate",
+    )
+
+
+@patch("rag.api.routes.sources.list_recent_sources")
+def test_sources_list_endpoint_passes_key_value_q(mock_list_recent_sources):
+    mock_list_recent_sources.return_value = {"sources": [], "total": 0}
+
+    response = _client().get("/api/sources?q=title%3Aquarterly")
+
+    assert response.status_code == 200
+    mock_list_recent_sources.assert_called_once_with(
+        limit=20,
+        offset=0,
+        metadata_filters=[],
+        q="title:quarterly",
     )
 
 

@@ -22,6 +22,8 @@ type SourcesExplorerProps = {
   onRemoveMetadataFilter: (filter: MetadataFilter) => void;
   onNextPage: () => void;
   onPreviousPage: () => void;
+  query: string;
+  onQueryChange: (q: string) => void;
 };
 
 type DetailTab = "insights" | "content";
@@ -80,6 +82,8 @@ export default function SourcesExplorer({
   onRemoveMetadataFilter,
   onNextPage,
   onPreviousPage,
+  query,
+  onQueryChange,
 }: SourcesExplorerProps) {
   const [activeTab, setActiveTab] = useState<DetailTab>("content");
   const [copiedSourceInsights, setCopiedSourceInsights] = useState(false);
@@ -110,9 +114,19 @@ export default function SourcesExplorer({
         <div className="sources-pane__header">
           <div>
             <p className="eyebrow">Sources</p>
-            <h2>Latest 20</h2>
+            <h2>{query.trim() ? "Results" : "Latest 20"}</h2>
           </div>
           <span>{sources.length}</span>
+        </div>
+        <div className="source-search-bar">
+          <input
+            aria-label="Search sources"
+            className="source-search-input"
+            placeholder="Search sources…"
+            type="search"
+            value={query}
+            onChange={(e) => onQueryChange(e.target.value)}
+          />
         </div>
 
         {selectedFilters.length > 0 ? (

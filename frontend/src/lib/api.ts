@@ -222,12 +222,13 @@ export async function getSource(sourceId: string): Promise<SourceDetail> {
   return response.json() as Promise<SourceDetail>;
 }
 
-export async function listSources(limit = 20, offset = 0, metadataFilters: MetadataFilter[] = []): Promise<SourceListResponse> {
+export async function listSources(limit = 20, offset = 0, metadataFilters: MetadataFilter[] = [], q = ""): Promise<SourceListResponse> {
   const params = new URLSearchParams({
     limit: String(limit),
     offset: String(offset),
   });
   metadataFilters.forEach((filter) => params.append("metadata", `${filter.key}:${filter.value}`));
+  if (q.trim()) params.set("q", q.trim());
   const response = await fetch(`/api/sources?${params.toString()}`);
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status}`);

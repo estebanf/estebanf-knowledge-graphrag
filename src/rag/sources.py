@@ -50,6 +50,7 @@ def list_recent_sources(
     limit: int = 20,
     offset: int = 0,
     metadata_filters: list[tuple[str, str]] | None = None,
+    q: str | None = None,
     connection_factory: Callable = get_connection,
 ) -> dict:
     metadata_filters = metadata_filters or []
@@ -61,6 +62,20 @@ def list_recent_sources(
             clauses.append("s.metadata @> %s::jsonb")
             params.append(json.dumps({key: value}))
         where_sql += f" AND ({' OR '.join(clauses)})"
+    if q:
+        if ":" in q:
+            meta_key, _, raw_value = q.partition(":")
+            meta_key = meta_key.strip()
+            term = f"%{raw_value.strip()}%"
+            where_sql += " AND s.metadata->>%s ILIKE %s"
+            params.extend([meta_key, term])
+        else:
+            term = f"%{q.strip()}%"
+            where_sql += (
+                " AND (s.name ILIKE %s OR s.file_name ILIKE %s"
+                " OR EXISTS (SELECT 1 FROM jsonb_each_text(s.metadata) jt WHERE jt.value ILIKE %s))"
+            )
+            params.extend([term, term, term])
 
     with connection_factory() as conn:
         total_row = conn.execute(

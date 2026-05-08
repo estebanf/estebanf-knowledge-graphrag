@@ -446,6 +446,49 @@ def sources_last(
         console.print(str(source_id))
 
 
+@sources_app.command("search")
+def sources_search(
+    query: Annotated[
+        str,
+        typer.Argument(
+            help="Search term. Use 'key:value' to match a specific metadata key, or a bare value to match any key, name, or file name."
+        ),
+    ],
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Maximum number of results")] = 20,
+) -> None:
+    """Search sources by metadata value (fuzzy substring match, no embeddings)."""
+    from rag.sources import list_recent_sources
+
+    result = list_recent_sources(limit=limit, q=query, connection_factory=_get_connection)
+    rows = result["sources"]
+
+    if not rows:
+        console.print("[dim]No sources matched.[/dim]")
+        return
+
+    table = Table(title=f"Sources matching {query!r}")
+    table.add_column("ID", style="dim", no_wrap=True)
+    table.add_column("Name")
+    table.add_column("File")
+    table.add_column("Type")
+    table.add_column("Metadata")
+    table.add_column("Created")
+    table.add_column("Insights", justify="right")
+    for r in rows:
+        table.add_row(
+            r["source_id"],
+            r["name"] or "",
+            r["file_name"] or "",
+            r["file_type"] or "",
+            str(r["metadata"]) if r["metadata"] else "{}",
+            str(r["created_at"])[:19],
+            str(r["insight_count"]),
+        )
+    console.print(table)
+    if result["total"] > limit:
+        console.print(f"[dim]Showing {limit} of {result['total']} matches.[/dim]")
+
+
 @sources_app.command("delete")
 def sources_delete(
     source_id: Annotated[str, typer.Argument(help="Source UUID")],
