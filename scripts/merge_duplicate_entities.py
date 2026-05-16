@@ -11,6 +11,14 @@ from rag.db import get_connection
 from rag.graph_db import get_graph_driver
 
 
+def pick_survivor(members: list[dict]) -> dict:
+    """Pick the entity to keep.
+
+    Prefer: has_embedding=True first, then oldest created_at.
+    """
+    return sorted(members, key=lambda m: (not m["has_embedding"], m["created_at"]))[0]
+
+
 def fetch_duplicate_groups(conn) -> list[dict]:
     """Return groups where more than one entity shares canonical_name + entity_type.
 
@@ -62,7 +70,13 @@ def main() -> int:
     print(f"Found {len(groups)} duplicate groups ({sum(len(g['members']) for g in groups)} total rows).")
     if args.dry_run:
         for g in groups:
-            print(f"  [{g['entity_type']}] {g['name']} — {len(g['members'])} copies")
+            survivor = pick_survivor(g["members"])
+            dup_ids = [m["id"] for m in g["members"] if m["id"] != survivor["id"]]
+            print(
+                f"  [{g['entity_type']}] {g['name']} — "
+                f"keep {survivor['id'][:8]}…, "
+                f"delete {len(dup_ids)} duplicate(s)"
+            )
     return 0
 
 
