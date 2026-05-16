@@ -16,6 +16,8 @@ def pick_survivor(members: list[dict]) -> dict:
 
     Prefer: has_embedding=True first, then oldest created_at.
     """
+    if not members:
+        raise ValueError("pick_survivor requires at least one member")
     return sorted(members, key=lambda m: (not m["has_embedding"], m["created_at"]))[0]
 
 
