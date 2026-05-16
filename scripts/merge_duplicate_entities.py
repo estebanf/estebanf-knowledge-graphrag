@@ -77,6 +77,40 @@ def merge_postgres(conn, survivor_id: str, dup_ids: list[str], all_members: list
     )
 
 
+def merge_memgraph(session, survivor_id: str, dup_ids: list[str]) -> int:
+    """Re-point MENTIONS edges from duplicates to survivor, delete duplicate nodes.
+
+    Returns the number of edges re-pointed.
+    """
+    edges_repointed = 0
+    for dup_id in dup_ids:
+        # Find all chunks that mention this duplicate
+        result = session.run(
+            "MATCH (c:Chunk)-[:MENTIONS]->(e:Entity {entity_id: $dup_id}) "
+            "RETURN c.chunk_id AS chunk_id",
+            dup_id=dup_id,
+        )
+        chunk_ids = [r["chunk_id"] for r in result]
+        edges_repointed += len(chunk_ids)
+
+        # Re-point each edge to the survivor
+        for chunk_id in chunk_ids:
+            session.run(
+                "MATCH (c:Chunk {chunk_id: $chunk_id}), (s:Entity {entity_id: $survivor_id}) "
+                "MERGE (c)-[:MENTIONS {confidence: 1.0}]->(s)",
+                chunk_id=chunk_id,
+                survivor_id=survivor_id,
+            )
+
+        # Delete the duplicate node (and any remaining edges)
+        session.run(
+            "MATCH (e:Entity {entity_id: $dup_id}) DETACH DELETE e",
+            dup_id=dup_id,
+        )
+
+    return edges_repointed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Merge duplicate entities.")
     group = parser.add_mutually_exclusive_group(required=True)
