@@ -101,26 +101,47 @@ def merge_memgraph(session, survivor_id: str, dup_ids: list[str]) -> int:
     return edges_repointed
 
 
+def merge_group(conn, session, group: dict, dry_run: bool) -> None:
+    survivor = pick_survivor(group["members"])
+    dup_ids = [m["id"] for m in group["members"] if m["id"] != survivor["id"]]
+
+    if dry_run:
+        print(
+            f"  [{group['entity_type']}] {group['name']} — "
+            f"keep {survivor['id'][:8]}…, delete {len(dup_ids)} duplicate(s)"
+        )
+        return
+
+    edges = merge_memgraph(session, survivor["id"], dup_ids)
+    merge_postgres(conn, survivor["id"], dup_ids, group["members"])
+    conn.commit()
+    print(
+        f"  [{group['entity_type']}] {group['name']} — "
+        f"merged {len(dup_ids)} duplicate(s), re-pointed {edges} edge(s)"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Merge duplicate entities.")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--dry-run", action="store_true", help="Print what would be merged.")
     group.add_argument("--execute", action="store_true", help="Perform the merge.")
     args = parser.parse_args()
+    dry_run = args.dry_run
 
-    with get_connection() as conn:
+    with get_connection() as conn, get_graph_driver() as driver:
         groups = fetch_duplicate_groups(conn)
+        print(
+            f"{'[DRY RUN] ' if dry_run else ''}"
+            f"Found {len(groups)} duplicate groups "
+            f"({sum(len(g['members']) for g in groups)} total rows)."
+        )
 
-    print(f"Found {len(groups)} duplicate groups ({sum(len(g['members']) for g in groups)} total rows).")
-    if args.dry_run:
-        for g in groups:
-            survivor = pick_survivor(g["members"])
-            dup_ids = [m["id"] for m in g["members"] if m["id"] != survivor["id"]]
-            print(
-                f"  [{g['entity_type']}] {g['name']} — "
-                f"keep {survivor['id'][:8]}…, "
-                f"delete {len(dup_ids)} duplicate(s)"
-            )
+        with driver.session() as session:
+            for g in groups:
+                merge_group(conn, session, g, dry_run=dry_run)
+
+    print("Done.")
     return 0
 
 
