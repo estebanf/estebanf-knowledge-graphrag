@@ -59,6 +59,23 @@ def fetch_duplicate_groups(conn) -> list[dict]:
     return list(groups.values())
 
 
+def merge_postgres(conn, survivor_id: str, dup_ids: list[str], all_members: list[dict]) -> None:
+    """Merge aliases from duplicates into survivor, then delete duplicate rows."""
+    # Collect all unique aliases across the group
+    all_aliases: set[str] = set()
+    for m in all_members:
+        all_aliases.update(m["aliases"])
+
+    conn.execute(
+        "UPDATE entities SET aliases = %s WHERE id = %s",
+        (list(all_aliases), survivor_id),
+    )
+    conn.execute(
+        "DELETE FROM entities WHERE id = ANY(%s::uuid[])",
+        (dup_ids,),
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Merge duplicate entities.")
     group = parser.add_mutually_exclusive_group(required=True)
