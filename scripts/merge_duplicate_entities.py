@@ -98,6 +98,30 @@ def merge_memgraph(session, survivor_id: str, dup_ids: list[str]) -> int:
         if record:
             edges_repointed += record["repointed"]
 
+        # Re-point outgoing RELATED_TO edges
+        session.run(
+            "MATCH (e:Entity {entity_id: $dup_id})-[r:RELATED_TO]->(other:Entity) "
+            "WHERE other.entity_id <> $survivor_id "
+            "MATCH (s:Entity {entity_id: $survivor_id}) "
+            "MERGE (s)-[:RELATED_TO {type: r.type, confidence: r.confidence, chunk_id: r.chunk_id}]->(other)",
+            dup_id=dup_id,
+            survivor_id=survivor_id,
+        )
+        # Re-point incoming RELATED_TO edges
+        session.run(
+            "MATCH (other:Entity)-[r:RELATED_TO]->(e:Entity {entity_id: $dup_id}) "
+            "WHERE other.entity_id <> $survivor_id "
+            "MATCH (s:Entity {entity_id: $survivor_id}) "
+            "MERGE (other)-[:RELATED_TO {type: r.type, confidence: r.confidence, chunk_id: r.chunk_id}]->(s)",
+            dup_id=dup_id,
+            survivor_id=survivor_id,
+        )
+        # Unconditional cleanup: delete node if it had no MENTIONS edges (idempotent if already deleted above)
+        session.run(
+            "MATCH (e:Entity {entity_id: $dup_id}) DETACH DELETE e",
+            dup_id=dup_id,
+        )
+
     return edges_repointed
 
 
