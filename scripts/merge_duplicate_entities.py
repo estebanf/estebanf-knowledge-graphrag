@@ -112,9 +112,13 @@ def merge_group(conn, session, group: dict, dry_run: bool) -> None:
         )
         return
 
-    edges = merge_memgraph(session, survivor["id"], dup_ids)
-    merge_postgres(conn, survivor["id"], dup_ids, group["members"])
-    conn.commit()
+    try:
+        edges = merge_memgraph(session, survivor["id"], dup_ids)
+        merge_postgres(conn, survivor["id"], dup_ids, group["members"])
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     print(
         f"  [{group['entity_type']}] {group['name']} — "
         f"merged {len(dup_ids)} duplicate(s), re-pointed {edges} edge(s)"
