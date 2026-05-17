@@ -21,6 +21,54 @@ def pick_survivor(members: list[dict]) -> dict:
     return sorted(members, key=lambda m: (not m["has_embedding"], m["created_at"]))[0]
 
 
+def fetch_cross_type_duplicate_groups(conn) -> list[dict]:
+    """Return groups where more than one entity shares canonical_name but has different entity_type.
+
+    Each group dict has the same shape as fetch_duplicate_groups but members may differ by entity_type.
+    """
+    rows = conn.execute(
+        """
+        SELECT e.id, e.canonical_name, e.entity_type, e.aliases,
+               e.embedding IS NOT NULL AS has_embedding, e.created_at
+        FROM entities e
+        WHERE e.canonical_name IN (
+            SELECT canonical_name
+            FROM entities
+            GROUP BY canonical_name
+            HAVING count(DISTINCT entity_type) > 1
+        )
+        ORDER BY e.canonical_name, e.entity_type, e.created_at
+        """
+    ).fetchall()
+
+    groups: dict[str, dict] = {}
+    for row in rows:
+        key = row[1]  # canonical_name only
+        if key not in groups:
+            groups[key] = {"name": row[1], "entity_type": None, "members": []}
+        groups[key]["members"].append({
+            "id": str(row[0]),
+            "entity_type": row[2],
+            "aliases": row[3] or [],
+            "has_embedding": row[4],
+            "created_at": row[5],
+        })
+
+    return list(groups.values())
+
+
+def pick_survivor_cross_type(members: list[dict]) -> dict:
+    """Pick the entity to keep for cross-type groups.
+
+    Prefer the most-frequent entity_type among members, then has_embedding=True, then oldest created_at.
+    """
+    from collections import Counter
+    type_counts = Counter(m["entity_type"] for m in members)
+    dominant_type = type_counts.most_common(1)[0][0]
+    preferred = [m for m in members if m["entity_type"] == dominant_type]
+    return sorted(preferred, key=lambda m: (not m["has_embedding"], m["created_at"]))[0]
+
+
 def fetch_duplicate_groups(conn) -> list[dict]:
     """Return groups where more than one entity shares canonical_name + entity_type.
 
@@ -125,13 +173,15 @@ def merge_memgraph(session, survivor_id: str, dup_ids: list[str]) -> int:
     return edges_repointed
 
 
-def merge_group(conn, session, group: dict, dry_run: bool) -> None:
-    survivor = pick_survivor(group["members"])
+def merge_group(conn, session, group: dict, dry_run: bool, survivor_picker=None) -> None:
+    picker = survivor_picker or pick_survivor
+    survivor = picker(group["members"])
     dup_ids = [m["id"] for m in group["members"] if m["id"] != survivor["id"]]
 
+    entity_type_label = survivor.get("entity_type") or group.get("entity_type") or "?"
     if dry_run:
         print(
-            f"  [{group['entity_type']}] {group['name']} — "
+            f"  [{entity_type_label}] {group['name']} — "
             f"keep {survivor['id'][:8]}…, delete {len(dup_ids)} duplicate(s)"
         )
         return
@@ -144,7 +194,7 @@ def merge_group(conn, session, group: dict, dry_run: bool) -> None:
         conn.rollback()
         raise
     print(
-        f"  [{group['entity_type']}] {group['name']} — "
+        f"  [{entity_type_label}] {group['name']} — "
         f"merged {len(dup_ids)} duplicate(s), re-pointed {edges} edge(s)"
     )
 
@@ -154,6 +204,11 @@ def main() -> int:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--dry-run", action="store_true", help="Print what would be merged.")
     group.add_argument("--execute", action="store_true", help="Perform the merge.")
+    parser.add_argument(
+        "--cross-type",
+        action="store_true",
+        help="Also merge entities sharing canonical_name but with different entity_type.",
+    )
     args = parser.parse_args()
     dry_run = args.dry_run
 
@@ -168,6 +223,17 @@ def main() -> int:
         with driver.session() as session:
             for g in groups:
                 merge_group(conn, session, g, dry_run=dry_run)
+
+        if args.cross_type:
+            cross_groups = fetch_cross_type_duplicate_groups(conn)
+            print(
+                f"{'[DRY RUN] ' if dry_run else ''}"
+                f"Found {len(cross_groups)} cross-type duplicate groups "
+                f"({sum(len(g['members']) for g in cross_groups)} total rows)."
+            )
+            with driver.session() as session:
+                for g in cross_groups:
+                    merge_group(conn, session, g, dry_run=dry_run, survivor_picker=pick_survivor_cross_type)
 
     print("Done.")
     return 0
