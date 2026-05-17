@@ -72,6 +72,7 @@ def test_extract_relationships_returns_empty_on_api_error():
 
 def test_store_entities_and_edges_inserts_to_postgres():
     conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = None  # no existing entity
     driver = MagicMock()
     driver.session.return_value.__enter__ = MagicMock(return_value=MagicMock())
     driver.session.return_value.__exit__ = MagicMock(return_value=False)
@@ -83,12 +84,13 @@ def test_store_entities_and_edges_inserts_to_postgres():
 
     assert len(entity_ids) == 1
     assert conn.execute.called
-    insert_call_args = conn.execute.call_args_list[0][0]
-    assert "INSERT INTO entities" in insert_call_args[0]
+    insert_calls = [c for c in conn.execute.call_args_list if "INSERT INTO entities" in str(c)]
+    assert len(insert_calls) == 1
 
 
 def test_store_entities_and_edges_creates_memgraph_nodes():
     conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = None  # no existing entity
     session_mock = MagicMock()
     driver = MagicMock()
     driver.session.return_value.__enter__ = MagicMock(return_value=session_mock)
@@ -106,6 +108,7 @@ def test_store_entities_and_edges_creates_memgraph_nodes():
 
 def test_store_entities_and_edges_creates_related_to_edges():
     conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = None  # no existing entity
     session_mock = MagicMock()
     driver = MagicMock()
     driver.session.return_value.__enter__ = MagicMock(return_value=session_mock)
@@ -142,6 +145,7 @@ def test_extract_and_store_graph_skips_relationship_extraction():
 
 def test_store_entities_and_edges_stores_embedding():
     conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = None  # no existing entity
     driver = MagicMock()
     driver.session.return_value.__enter__ = MagicMock(return_value=MagicMock())
     driver.session.return_value.__exit__ = MagicMock(return_value=False)
@@ -154,7 +158,9 @@ def test_store_entities_and_edges_stores_embedding():
         store_entities_and_edges(conn, driver, "chunk-uuid", "source-uuid", entities, [])
 
     mock_embed.assert_called_once_with(["Acme"])
-    insert_sql, insert_params = conn.execute.call_args_list[0][0]
+    insert_calls = [c for c in conn.execute.call_args_list if "INSERT INTO entities" in str(c)]
+    assert len(insert_calls) == 1
+    insert_sql, insert_params = insert_calls[0][0]
     assert "embedding" in insert_sql
     assert f"[{','.join(str(v) for v in fake_vec)}]" in insert_params
 
@@ -173,3 +179,53 @@ def test_extract_and_store_graph_iterates_all_chunks():
     assert mock_ent.call_count == 2
     assert mock_rel.call_count == 0
     assert mock_store.call_count == 2
+
+
+def test_extract_entities_filters_invalid_type():
+    payload = json.dumps([
+        {"canonical_name": "ChatGPT", "entity_type": "PRODUCT", "aliases": []},
+        {"canonical_name": "January 2024", "entity_type": "DATE", "aliases": []},
+        {"canonical_name": "Engineer", "entity_type": "ROLE", "aliases": []},
+    ])
+    with patch("rag.graph_extraction.requests.post", return_value=_mock_llm_response(payload)):
+        from rag.graph_extraction import extract_entities
+        result = extract_entities("ChatGPT launched in January 2024 for engineers.")
+    assert len(result) == 1
+    assert result[0]["canonical_name"] == "ChatGPT"
+    assert all(e["entity_type"] != "DATE" for e in result)
+    assert all(e["entity_type"] != "ROLE" for e in result)
+
+
+def test_extract_entities_normalises_html_entities():
+    payload = json.dumps([
+        {"canonical_name": "AT&amp;T", "entity_type": "ORGANIZATION", "aliases": ["AT&amp;T Inc"]},
+    ])
+    with patch("rag.graph_extraction.requests.post", return_value=_mock_llm_response(payload)):
+        from rag.graph_extraction import extract_entities
+        result = extract_entities("AT&T is a telecom company.")
+    assert len(result) == 1
+    assert result[0]["canonical_name"] == "AT&T"
+    assert "AT&T Inc" in result[0]["aliases"]
+
+
+def test_store_entities_and_edges_reuses_existing_entity():
+    conn = MagicMock()
+    existing_id = "existing-uuid-1234"
+    conn.execute.return_value.fetchone.return_value = (existing_id,)
+
+    driver = MagicMock()
+    session_mock = MagicMock()
+    driver.session.return_value.__enter__ = MagicMock(return_value=session_mock)
+    driver.session.return_value.__exit__ = MagicMock(return_value=False)
+
+    entities = [{"canonical_name": "Acme", "entity_type": "ORGANIZATION", "aliases": []}]
+    with patch("rag.graph_extraction.get_embeddings", return_value=[[0.1] * 4096]):
+        from rag.graph_extraction import store_entities_and_edges
+        entity_ids = store_entities_and_edges(conn, driver, "chunk-uuid", "source-uuid", entities, [])
+
+    assert entity_ids == [existing_id]
+    insert_calls = [c for c in conn.execute.call_args_list if "INSERT INTO entities" in str(c)]
+    assert len(insert_calls) == 0
+    select_calls = [c for c in conn.execute.call_args_list if "SELECT id" in str(c)]
+    assert len(select_calls) == 1
+    assert select_calls[0][0][1] == ("Acme",)

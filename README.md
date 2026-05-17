@@ -109,6 +109,8 @@ All runtime settings are env-backed. The CLI, backend, worker, and Docker servic
 | `RELATIONSHIP_CONFIDENCE_THRESHOLD` | `0.75` | Minimum relationship confidence kept during graph extraction. |
 | `ENTITY_DEDUP_COSINE_THRESHOLD` | `0.92` | Similarity threshold used when deduplicating entities. |
 
+**Entity quality at insert time:** The extraction prompt instructs the LLM to correct misspellings and transcript noise before extracting. Responses are validated against a JSON schema — items with `entity_type` values outside the 7 defined types are dropped. `canonical_name` and aliases are normalised (HTML unescaping, whitespace collapse, punctuation trim) before insert. If a `canonical_name` already exists in the `entities` table, the existing row is reused rather than creating a duplicate. Residual semantic duplicates across ingestion runs are resolved offline using `scripts/merge_semantic_duplicates.py`.
+
 ### Insight extraction
 
 | Variable | Default | Purpose |

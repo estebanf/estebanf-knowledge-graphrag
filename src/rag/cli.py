@@ -8,6 +8,8 @@ from rich.panel import Panel
 from rich.table import Table
 
 from rag.config import settings
+from rag.db import get_connection
+from rag.graph_db import get_graph_driver
 from rag.retrieval import hybrid_search, retrieve
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".md", ".txt"}
@@ -44,15 +46,26 @@ def _parse_key_value_pairs(items: Optional[list[str]], label: str) -> dict[str, 
 
 
 def _get_connection():
-    from rag.db import get_connection
-
     return get_connection()
 
 
 def _get_graph_driver():
-    from rag.graph_db import get_graph_driver
-
     return get_graph_driver()
+
+
+def submit_ingestion_job(*args, **kwargs):
+    from rag.ingestion import submit_ingestion_job as _fn
+    return _fn(*args, **kwargs)
+
+
+def retry_job(*args, **kwargs):
+    from rag.ingestion import retry_job as _fn
+    return _fn(*args, **kwargs)
+
+
+def cancel_job(*args, **kwargs):
+    from rag.ingestion import cancel_job as _fn
+    return _fn(*args, **kwargs)
 
 
 def detect_communities(*args, **kwargs):
@@ -88,8 +101,6 @@ def ingest(
     ] = None,
 ) -> None:
     """Ingest one or more documents, or all supported files in a folder."""
-    from rag.ingestion import submit_ingestion_job
-
     try:
         parsed_metadata = _parse_key_value_pairs(metadata, "metadata")
     except ValueError as e:
@@ -539,8 +550,6 @@ def jobs_list(
     retry: Annotated[bool, typer.Option("--retry", help="Retry all failed jobs")] = False,
 ) -> None:
     """List ingestion jobs."""
-    from rag.ingestion import retry_job
-
     if stats:
         with _get_connection() as conn:
             rows = conn.execute(
@@ -666,8 +675,6 @@ def jobs_retry(
     ] = None,
 ) -> None:
     """Retry a failed job."""
-    from rag.ingestion import retry_job
-
     try:
         result = retry_job(job_id, from_stage=from_stage)
     except ValueError as e:
@@ -684,8 +691,6 @@ def jobs_cancel(
     job_id: Annotated[str, typer.Argument(help="Job UUID to cancel")],
 ) -> None:
     """Cancel a pending or processing job."""
-    from rag.ingestion import cancel_job
-
     try:
         result = cancel_job(job_id)
     except ValueError as e:

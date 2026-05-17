@@ -29,8 +29,18 @@ Return ONLY: {"pass": true} or {"pass": false, "reason": "brief explanation"}
 Chunk:
 """
 
-ENTITY_EXTRACTION = """Extract named entities from the following text. Return ONLY a JSON array.
-Each item must have: "canonical_name" (string), "entity_type" (one of: {types}), "aliases" (list of strings).
+ENTITY_EXTRACTION = """Extract named entities from the following text. Return ONLY a JSON array with no other text.
+
+Rules:
+1. Correct obvious misspellings and transcript noise to their canonical form before extracting.
+   Example: "Chad GPT" → "ChatGPT", "Microsift" → "Microsoft", "Open Eye" → "OpenAI".
+2. entity_type MUST be exactly one of: {types}. No other values are acceptable — omit the entity entirely if none fits.
+3. canonical_name must be the clean, properly capitalised, real-world name.
+4. aliases: include only meaningfully distinct alternative names (abbreviations, prior names). Leave as [] if none.
+
+Example input: "Chad GPT was released by Open Eye in twenty twenty-two"
+Example output: [{{"canonical_name": "ChatGPT", "entity_type": "PRODUCT", "aliases": []}}, {{"canonical_name": "OpenAI", "entity_type": "ORGANIZATION", "aliases": []}}]
+
 Return [] if no entities found.
 
 Text:

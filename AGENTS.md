@@ -90,6 +90,11 @@ The repo is split into a few main areas:
 - Retrieval config remains env-backed through `src/rag/config.py`.
 - Use `MENTIONS` as the authoritative chunk-to-entity edge for retrieval expansion.
 - Same-source fallback is part of retrieval when graph expansion yields no non-seed chunk evidence.
+- Entity extraction enforces `entity_type` via JSON schema validation at parse time; items with invalid types (e.g. DATE, ROLE, EVENT) are silently dropped before insert.
+- `canonical_name` and all aliases are normalised before insert: `html.unescape` → whitespace collapse → leading/trailing punctuation strip (`_normalise_name` in `graph_extraction.py`).
+- Exact-match dedup runs at insert time: if a `canonical_name` already exists in `entities`, the existing row is reused and no INSERT is issued. This is a SELECT-first pattern; concurrent ingestion of the same entity may create a duplicate, which is resolved by the offline `merge_semantic_duplicates.py` script.
+- The `ENTITY_EXTRACTION` prompt instructs the LLM to correct misspellings and transcript noise to canonical form before extracting (e.g. "Chad GPT" → "ChatGPT").
+- CLI functions `submit_ingestion_job`, `retry_job`, `cancel_job`, `get_connection`, and `get_graph_driver` are exposed as module-level names in `rag.cli` (via lazy-import wrappers) so test patches work correctly without eagerly loading heavy modules.
 - Insight extraction uses the OpenCode API (`deepseek-v4-flash`) per chunk. Dedup uses pgvector `<=>` cosine distance with `INSIGHT_DEDUP_COSINE_THRESHOLD`.
 - Insight extraction parallelizes only OpenCode calls using `INSIGHT_EXTRACTION_CONCURRENCY`; embeddings, dedup, Postgres writes, and Memgraph writes remain serial.
 - Mutual top-K for insight `RELATED_TO` edges is computed in Postgres via pgvector and excludes same-source candidates; Memgraph stores the resulting `Insight` nodes and edges.

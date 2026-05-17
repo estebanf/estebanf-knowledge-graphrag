@@ -1,7 +1,9 @@
+import html
 import json
 import re
 import uuid
 
+import jsonschema
 import requests
 
 from rag import prompts
@@ -9,6 +11,34 @@ from rag.config import settings
 from rag.embedding import get_embeddings
 
 _ENTITY_TYPES = ["ORGANIZATION", "PERSON", "POLICY", "PRODUCT", "REGULATION", "CONCEPT", "LOCATION"]
+
+_ENTITY_SCHEMA = {
+    "type": "object",
+    "required": ["canonical_name", "entity_type"],
+    "properties": {
+        "canonical_name": {"type": "string", "minLength": 1},
+        "entity_type": {"type": "string", "enum": _ENTITY_TYPES},
+        "aliases": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
+_WHITESPACE_RE = re.compile(r"\s+")
+_LEADING_TRAILING_PUNCT_RE = re.compile(r"^[.,;:!?\-\s]+|[.,;:!?\-\s]+$")
+
+
+def _normalise_name(name: str) -> str:
+    name = html.unescape(name)
+    name = _WHITESPACE_RE.sub(" ", name).strip()
+    name = _LEADING_TRAILING_PUNCT_RE.sub("", name)
+    return name
+
+
+def _validate_entity(entity: dict) -> bool:
+    try:
+        jsonschema.validate(entity, _ENTITY_SCHEMA)
+        return True
+    except jsonschema.ValidationError:
+        return False
 
 
 def extract_entities(chunk_content: str) -> list[dict]:
@@ -37,7 +67,16 @@ def extract_entities(chunk_content: str) -> list[dict]:
         parsed = json.loads(raw)
         if isinstance(parsed, dict):
             parsed = next((v for v in parsed.values() if isinstance(v, list)), [])
-        return [e for e in parsed if isinstance(e, dict)]
+        result = []
+        for e in parsed:
+            if not isinstance(e, dict):
+                continue
+            if not _validate_entity(e):
+                continue
+            e["canonical_name"] = _normalise_name(e["canonical_name"])
+            e["aliases"] = [_normalise_name(a) for a in e.get("aliases", [])]
+            result.append(e)
+        return result
     except Exception:
         return []
 
@@ -97,31 +136,40 @@ def store_entities_and_edges(
 
     with driver.session() as session:
         for entity, vec in zip(entities, vecs):
-            entity_id = str(uuid.uuid4())
+            normalised = _normalise_name(entity["canonical_name"])
+
+            existing = conn.execute(
+                "SELECT id::text FROM entities WHERE canonical_name = %s LIMIT 1",
+                (normalised,),
+            ).fetchone()
+
+            if existing:
+                entity_id = existing[0]
+            else:
+                entity_id = str(uuid.uuid4())
+                embedding_str = f"[{','.join(str(v) for v in vec)}]" if vec is not None else None
+                conn.execute(
+                    """INSERT INTO entities (id, canonical_name, entity_type, aliases, source_id, embedding)
+                       VALUES (%s, %s, %s, %s, %s, %s::vector)
+                       ON CONFLICT DO NOTHING""",
+                    (
+                        entity_id,
+                        normalised,
+                        entity["entity_type"],
+                        entity.get("aliases", []),
+                        source_id,
+                        embedding_str,
+                    ),
+                )
+
             entity_ids.append(entity_id)
-            name_to_id[entity["canonical_name"]] = entity_id
-
-            embedding_str = f"[{','.join(str(v) for v in vec)}]" if vec is not None else None
-
-            conn.execute(
-                """INSERT INTO entities (id, canonical_name, entity_type, aliases, source_id, embedding)
-                   VALUES (%s, %s, %s, %s, %s, %s::vector)
-                   ON CONFLICT DO NOTHING""",
-                (
-                    entity_id,
-                    entity["canonical_name"],
-                    entity["entity_type"],
-                    entity.get("aliases", []),
-                    source_id,
-                    embedding_str,
-                ),
-            )
+            name_to_id[normalised] = entity_id
 
             session.run(
                 "MERGE (e:Entity {entity_id: $entity_id}) "
                 "SET e.canonical_name = $canonical_name, e.entity_type = $entity_type",
                 entity_id=entity_id,
-                canonical_name=entity["canonical_name"],
+                canonical_name=normalised,
                 entity_type=entity["entity_type"],
             )
             session.run(
@@ -133,8 +181,8 @@ def store_entities_and_edges(
             )
 
         for rel in relationships:
-            e1_id = name_to_id.get(rel.get("source", ""))
-            e2_id = name_to_id.get(rel.get("target", ""))
+            e1_id = name_to_id.get(_normalise_name(rel.get("source", "")))
+            e2_id = name_to_id.get(_normalise_name(rel.get("target", "")))
             if not e1_id or not e2_id:
                 continue
             session.run(
