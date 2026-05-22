@@ -108,6 +108,16 @@ class Settings(BaseSettings):
     WORKER_POLL_INTERVAL: int = 5       # seconds between polls when queue is empty
     WORKER_STUCK_JOB_MINUTES: int = 30  # minutes before a processing job is declared stuck
 
+    # Server / auth
+    RAG_DATA_DIR: Path = Path("./data")
+    RAG_API_KEYS_PATH: Path = Path("./data/api_keys.toml")
+    RAG_WORKER_LOG_DIR: Path = Path("./data/worker_logs")
+    RAG_UPLOAD_DIR: Path = Path("./data/uploads")
+    RAG_FRONTEND_ORIGIN: str = "http://localhost"
+    RAG_COOKIE_SECURE: bool = False
+    RAG_SESSION_TTL_HOURS: Annotated[int, Field(gt=0)] = 24 * 7
+    RAG_SESSION_COOKIE_NAME: str = "rag_session"
+
     def retrieval_variant_weight(self, variant_name: str) -> float:
         if variant_name.startswith("decomposed_"):
             return self.RETRIEVAL_WEIGHT_DECOMPOSED

@@ -4,7 +4,11 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from rag.api.schemas import SourceDetail, SourceInsightsResponse, SourceListResponse
+from rag.db import get_connection
+from rag.graph_db import get_graph_driver
+from rag.ingestion import _write_audit_log, delete_source_artifacts
 from rag.sources import get_source_detail, list_recent_sources, list_source_insights
+from rag.storage import delete_stored_file
 
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
@@ -74,3 +78,36 @@ def download_source(source_id: str) -> FileResponse:
         media_type=detail.get("file_type") or "application/octet-stream",
         filename=detail.get("file_name") or stored_path.name,
     )
+
+
+@router.delete("/{source_id}")
+def delete_source(source_id: str, hard: bool = Query(default=False)) -> dict:
+    """Soft- or hard-delete a source."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT storage_path FROM sources WHERE id = %s AND deleted_at IS NULL",
+            (source_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"source not found: {source_id}")
+
+        if hard:
+            with get_graph_driver() as driver:
+                delete_source_artifacts(conn, driver, source_id)
+        else:
+            conn.execute(
+                "UPDATE sources SET deleted_at = now() WHERE id = %s",
+                (source_id,),
+            )
+        _write_audit_log(
+            conn,
+            "source_hard_deleted" if hard else "source_soft_deleted",
+            "source",
+            source_id,
+            {"hard": hard},
+        )
+        conn.commit()
+
+    if hard:
+        delete_stored_file(source_id)
+    return {"source_id": source_id, "hard": hard}

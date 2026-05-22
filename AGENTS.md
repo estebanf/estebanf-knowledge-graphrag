@@ -77,6 +77,35 @@ The repo is split into a few main areas:
 - Base package installs support API/search/retrieval/community flows.
 - Local parsing and ingestion require the optional `ingest` extra: `pip install -e .[ingest]`.
 
+## Auth and server invariants
+
+- Every `/api/*` route except `GET /api/health` and `POST /api/auth/login` requires a `Principal` resolved by `rag.api.auth.require_principal`. The dep accepts either an `Authorization: Bearer <key>` (validated against `data/api_keys.toml`) or a session cookie set by `POST /api/auth/login` (validated against the `user_sessions` table).
+- API key file is hot-reloaded by mtime. Editing `data/api_keys.toml` does not require a backend restart.
+- The frontend uses username/password → `HttpOnly` session cookie; the CLI and MCP use API keys. The same `require_principal` accepts either.
+- Scopes are `read`, `ingest`, `admin`. `admin` implies all. Route declarations use `Depends(require_principal())` and explicit `requires_scope("...")` on top when needed.
+- `data/api_keys.toml` lives outside Postgres on purpose so an operator can edit it by hand. Auditing of usage is in the `api_key_audit` table.
+
+## Worker supervisor
+
+- The backend owns worker lifecycle via `rag.worker_supervisor.WorkerSupervisor` (singleton, attached lazily through `get_supervisor()`).
+- Invariant: every spawn writes a row to `worker_processes` **before** the subprocess starts; the reaper thread owns subsequent status transitions. Never mutate worker rows outside the supervisor.
+- The supervised process is the hidden CLI command `rag _worker-run --worker-id <uuid>`. Do not document it for end users — they use `rag worker launch/stop/list/log`.
+- Worker logs are at `data/worker_logs/{worker_id}.log` (append, line-buffered). `tail_log(worker_id, follow=True)` streams them via SSE.
+- On startup the supervisor reconciles orphan rows: any `running` row whose PID is not alive is marked `crashed`.
+
+## MCP server
+
+- Mounted at `/mcp` via `rag.mcp_server.build_mcp_app()`. Uses Streamable HTTP transport from the official Python `mcp` SDK.
+- The MCP ASGI sub-app is wrapped with `BearerAuthMiddleware`, which reuses the same `KeyStore` as the REST layer. Bypassing it would create a parallel auth surface; do not.
+- The FastAPI `lifespan` enters the inner MCP app's lifespan so the streamable-http session manager is initialized. Tests must use `with TestClient(app) as c:` to trigger lifespan.
+- Tool surface is intentionally read-only: `search`, `retrieve`, `community`, `list_sources`, `source_insights`. Ingestion, jobs, and worker management are CLI-only.
+
+## CLI
+
+- `rag.cli_config.load_cli_config()` resolves precedence env > `~/.config/rag/config.toml` > none. `rag configure` writes the file (mode `0600`).
+- `rag.api_client.RagClient` is the only HTTP entry point. CLI commands check `_use_api()` and dispatch through `_get_client()`; without config they fall back to direct-DB behavior (kept for local-dev convenience). New CLI commands should be API-only unless there's a strong reason.
+- CLI tests use `httpx.MockTransport` via `RagClient.with_transport`. The auto-applied `_isolate_cli_config` fixture in `tests/conftest.py` ensures no developer-machine config bleeds into the test run.
+
 ## Current Behavioral Notes
 
 - Search, retrieval, and community APIs are implemented under `src/rag/api/routes/`.
@@ -124,5 +153,9 @@ Pick verification based on the area you changed:
 - ingestion/jobs/parser/storage: `pytest -q tests/test_cli_jobs.py tests/test_job_lifecycle.py tests/test_worker.py tests/test_ingestion_submit.py tests/test_parser.py tests/test_storage.py tests/test_cli_ingest.py`
 - insight extraction: `pytest -q tests/test_insight_extraction.py tests/test_config.py tests/test_prompts.py tests/test_cli_sources.py`
 - prompts: `pytest -q tests/test_prompts.py`
+- auth (api keys + sessions + gating): `pytest -q tests/test_api_auth_apikey.py tests/test_api_auth_session.py tests/test_api_gating.py`
+- new server APIs (ingest, jobs, sources delete, workers, mcp): `pytest -q tests/test_api_ingest.py tests/test_api_jobs.py tests/test_api_sources_delete.py tests/test_api_workers.py tests/test_worker_supervisor.py tests/test_mcp_server.py`
+- CLI HTTP path: `pytest -q tests/test_cli_api_mode.py tests/test_cli_config.py tests/test_api_client.py`
+- end-to-end against the live stack: `scripts/smoke_e2e.sh` (requires `docker compose up -d`)
 
 When unsure, read the README verification section and then narrow to the impacted area.

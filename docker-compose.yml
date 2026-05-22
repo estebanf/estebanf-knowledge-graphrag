@@ -51,8 +51,17 @@ services:
       POSTGRES_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-rag}
       MEMGRAPH_URL: bolt://memgraph:7687
       STORAGE_BASE_PATH: /data/documents
+      RAG_DATA_DIR: /data
+      RAG_API_KEYS_PATH: /data/api_keys.toml
+      RAG_WORKER_LOG_DIR: /data/worker_logs
+      RAG_UPLOAD_DIR: /data/uploads
+      RAG_FRONTEND_ORIGIN: ${RAG_FRONTEND_ORIGIN:-http://localhost}
+      RAG_COOKIE_SECURE: ${RAG_COOKIE_SECURE:-false}
     volumes:
       - ./data/documents:/data/documents
+      - ./data/worker_logs:/data/worker_logs
+      - ./data/uploads:/data/uploads
+      - ./data/api_keys.toml:/data/api_keys.toml
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:
@@ -60,6 +69,12 @@ services:
         condition: service_healthy
       memgraph:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')\" || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
 
   frontend:

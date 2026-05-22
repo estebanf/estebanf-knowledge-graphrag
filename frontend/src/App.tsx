@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import MonacoEditor from "@monaco-editor/react";
 
+import { useAuth } from "./auth/AuthContext";
+import { Login } from "./auth/Login";
 import BucketPopover from "./components/BucketPopover";
 import InsightCard from "./components/InsightCard";
 import ResultCard from "./components/ResultCard";
@@ -14,6 +16,23 @@ type BucketEntry = { sourceId: string; title: string };
 const SOURCES_PAGE_SIZE = 20;
 
 export default function App() {
+  const { state } = useAuth();
+  if (state.status === "loading") {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-300 text-sm">
+        Loading…
+      </div>
+    );
+  }
+  if (state.status === "anonymous") {
+    return <Login />;
+  }
+  return <Authenticated />;
+}
+
+function Authenticated() {
+  const { logout, state } = useAuth();
+  const username = state.status === "authenticated" ? state.user.username : "";
   const [mode, setMode] = useState<Mode>("search");
   const [query, setQuery] = useState("");
   const [searchMinScore, setSearchMinScore] = useState("0.7");
@@ -347,11 +366,23 @@ export default function App() {
               <h1>estebanf&apos;s RAG</h1>
             </div>
           </div>
-          <BucketPopover
-            entries={bucket}
-            onClear={handleClearBucket}
-            onCopy={handleCopyBucket}
-          />
+          <div className="flex items-center gap-3">
+            <BucketPopover
+              entries={bucket}
+              onClear={handleClearBucket}
+              onCopy={handleCopyBucket}
+            />
+            <div className="flex items-center gap-2 text-xs text-slate-400">
+              <span>{username}</span>
+              <button
+                type="button"
+                onClick={() => { void logout(); }}
+                className="rounded border border-slate-700 px-2 py-1 hover:bg-slate-800"
+              >
+                Sign out
+              </button>
+            </div>
+          </div>
         </header>
 
         <main className="content">

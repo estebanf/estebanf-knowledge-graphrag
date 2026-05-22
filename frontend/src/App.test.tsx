@@ -3,6 +3,15 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import App from "./App";
+import { AuthProvider } from "./auth/AuthContext";
+
+function renderApp() {
+  return render(
+    <AuthProvider>
+      <App />
+    </AuthProvider>,
+  );
+}
 
 
 const searchResponse = {
@@ -175,7 +184,7 @@ describe("App", () => {
   });
 
   test("renders the simplified shell with the new title", () => {
-    render(<App />);
+    renderApp();
 
     expect(screen.getByRole("heading", { name: "estebanf's RAG" })).toBeInTheDocument();
     expect(screen.queryByText(/Workspaces/i)).not.toBeInTheDocument();
@@ -189,7 +198,7 @@ describe("App", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    renderApp();
 
     await userEvent.type(screen.getByLabelText(/semantic query/i), "economics of agents");
     await userEvent.clear(screen.getByLabelText(/minimum score/i));
@@ -221,7 +230,7 @@ describe("App", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    renderApp();
 
     await userEvent.type(screen.getByLabelText(/semantic query/i), "economics of agents{enter}");
 
@@ -230,7 +239,7 @@ describe("App", () => {
   });
 
   test("shows score and count controls only in search mode", async () => {
-    render(<App />);
+    renderApp();
 
     expect(screen.getByLabelText(/minimum score/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/result count/i)).toBeInTheDocument();
@@ -257,7 +266,7 @@ describe("App", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    renderApp();
 
     await userEvent.click(screen.getByRole("tab", { name: /retrieve/i }));
     await userEvent.type(screen.getByLabelText(/semantic query/i), "economics of agents{enter}");
@@ -292,7 +301,7 @@ describe("App", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    renderApp();
 
     await userEvent.click(screen.getByRole("tab", { name: /answer/i }));
     expect(await screen.findByLabelText(/answer model/i)).toBeInTheDocument();
@@ -321,7 +330,7 @@ describe("App", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    renderApp();
 
     await userEvent.click(screen.getByRole("tab", { name: /retrieve/i }));
     await userEvent.type(screen.getByLabelText(/semantic query/i), "economics of agents");
@@ -347,7 +356,7 @@ describe("App", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    renderApp();
 
     await userEvent.type(screen.getByLabelText(/semantic query/i), "economics of agents");
     await userEvent.click(screen.getByRole("button", { name: /search/i }));
@@ -385,7 +394,7 @@ describe("App", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    renderApp();
 
     await userEvent.click(screen.getByRole("tab", { name: /sources/i }));
 
@@ -432,7 +441,7 @@ describe("App", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    renderApp();
 
     await userEvent.click(screen.getByRole("tab", { name: /sources/i }));
 
@@ -472,7 +481,7 @@ describe("App", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    renderApp();
 
     await userEvent.click(screen.getByRole("tab", { name: /sources/i }));
 
@@ -516,7 +525,7 @@ describe("App", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    renderApp();
 
     await userEvent.click(screen.getByRole("tab", { name: /sources/i }));
     expect(await screen.findByText(/Page 1 of 2/i)).toBeInTheDocument();
@@ -525,7 +534,7 @@ describe("App", () => {
 
     expect(await screen.findByRole("button", { name: /Warehouse Metrics/i })).toBeInTheDocument();
     expect(screen.getByText(/Page 2 of 2/i)).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledWith("/api/sources?limit=20&offset=20");
+    expect(fetchMock).toHaveBeenCalledWith("/api/sources?limit=20&offset=20", { credentials: "include" });
   });
 
   test("filters sources by clicked metadata attributes and removes filter chips", async () => {
@@ -557,22 +566,22 @@ describe("App", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    renderApp();
 
     await userEvent.click(screen.getByRole("tab", { name: /sources/i }));
     const kindFilter = await screen.findByRole("button", { name: /filter by kind report/i });
     await userEvent.click(kindFilter);
 
     expect(await screen.findByRole("button", { name: /remove filter kind report/i })).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledWith("/api/sources?limit=20&offset=0&metadata=kind%3Areport");
+    expect(fetchMock).toHaveBeenCalledWith("/api/sources?limit=20&offset=0&metadata=kind%3Areport", { credentials: "include" });
 
     await userEvent.click(screen.getByRole("button", { name: /filter by source gartner/i }));
 
-    expect(fetchMock).toHaveBeenCalledWith("/api/sources?limit=20&offset=0&metadata=kind%3Areport&metadata=source%3AGartner");
+    expect(fetchMock).toHaveBeenCalledWith("/api/sources?limit=20&offset=0&metadata=kind%3Areport&metadata=source%3AGartner", { credentials: "include" });
 
     await userEvent.click(screen.getByRole("button", { name: /remove filter kind report/i }));
 
-    expect(fetchMock).toHaveBeenCalledWith("/api/sources?limit=20&offset=0&metadata=source%3AGartner");
+    expect(fetchMock).toHaveBeenCalledWith("/api/sources?limit=20&offset=0&metadata=source%3AGartner", { credentials: "include" });
   });
 
   test("clear resets the query and removes rendered results", async () => {
@@ -582,7 +591,7 @@ describe("App", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    renderApp();
 
     const input = screen.getByLabelText(/semantic query/i);
     await userEvent.type(input, "economics of agents");
@@ -602,7 +611,7 @@ describe("App", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    renderApp();
 
     await userEvent.type(screen.getByLabelText(/semantic query/i), "economics of agents");
     await userEvent.click(screen.getByRole("button", { name: /search/i }));
@@ -625,7 +634,7 @@ describe("App", () => {
     const writeText = installClipboard();
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    renderApp();
 
     await userEvent.type(screen.getByLabelText(/semantic query/i), "economics of agents");
     await userEvent.click(screen.getByRole("button", { name: /search/i }));
@@ -644,7 +653,7 @@ describe("App", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    renderApp();
     await userEvent.type(screen.getByLabelText(/semantic query/i), "economics{enter}");
     await screen.findByRole("heading", { name: /Economics of GenAI/i });
 
@@ -658,7 +667,7 @@ describe("App", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    renderApp();
     await userEvent.type(screen.getByLabelText(/semantic query/i), "economics{enter}");
     await screen.findByRole("heading", { name: /Economics of GenAI/i });
 
@@ -679,7 +688,7 @@ describe("App", () => {
     const writeText = installClipboard();
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    renderApp();
     await userEvent.type(screen.getByLabelText(/semantic query/i), "economics{enter}");
     await screen.findByRole("heading", { name: /Economics of GenAI/i });
 
@@ -701,7 +710,7 @@ describe("App", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    renderApp();
     await userEvent.type(screen.getByLabelText(/semantic query/i), "economics{enter}");
     await screen.findByRole("heading", { name: /Economics of GenAI/i });
 
@@ -725,7 +734,7 @@ describe("App", () => {
     const writeText = installClipboard();
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    renderApp();
 
     await userEvent.type(screen.getByLabelText(/semantic query/i), "economics of agents");
     await userEvent.click(screen.getByRole("button", { name: /search/i }));

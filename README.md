@@ -2,58 +2,114 @@
 
 Self-hosted ingestion, search, retrieval, and community analysis over PostgreSQL/pgvector and Memgraph. The project ships with:
 
-- a Python CLI for operators
-- a FastAPI backend
-- a React frontend served by nginx in Docker
+- a FastAPI backend (REST + Streamable HTTP MCP server)
+- a background worker supervisor managed through the API
+- a React frontend served by nginx in Docker, gated by username/password
+- a Python CLI that wraps the API for operators on laptops
+
+Two roles to keep straight:
+
+- **Server** — the host running `docker compose up`. Stores data, runs the API, supervises workers, exposes `/mcp`.
+- **CLI** — the laptop client. Talks to the server over HTTP, authenticates with an API key.
 
 ## Requirements
 
-- Python `3.11+`
-- Docker Desktop or a compatible Docker engine
-- OpenRouter API key with access to:
-  - chat-completions models for metadata extraction, profiling, chunk validation, graph extraction, retrieval query rewriting, graph-stage selection, image description, and community summarization
-  - an embeddings model
-  - a reranker model
+- Server: Docker Desktop or a compatible Docker engine; Python `3.11+` only needed for operator scripts (e.g. `scripts/create_user.py`).
+- Laptop CLI: Python `3.11+`.
+- OpenRouter API key (server-side) with access to chat, embedding, and reranker models — see [Model selection](#model-selection).
 
-## Installation
+## Server installation
 
-1. Copy the environment template:
+1. Clone the repository on the server and copy the env template:
 
-```bash
-cp .env.example .env
-```
+   ```bash
+   cp .env.example .env
+   ```
 
-2. Fill in at least:
+2. Fill in at minimum:
 
-```bash
-OPENROUTER_API_KEY=...
-POSTGRES_PASSWORD=...
-```
+   ```bash
+   POSTGRES_PASSWORD=changeme
+   OPENROUTER_API_KEY=...
+   RAG_FRONTEND_ORIGIN=https://rag.example.com   # public origin the browser will hit
+   RAG_COOKIE_SECURE=true                        # set to true behind HTTPS
+   ```
 
-3. Start the local stack:
+3. Bring the stack up:
 
-```bash
-./scripts/start.sh
-```
+   ```bash
+   ./scripts/start.sh
+   ```
 
-4. Install the package into your active Python environment:
+4. Apply migration 008 (creates `users`, `user_sessions`, `worker_processes`, `api_key_audit`):
 
-```bash
-pip install -e .
-```
+   ```bash
+   docker compose exec -T postgres psql -U rag -d rag -f /docker-entrypoint-initdb.d/../../scripts/migrate/008_auth_and_workers.sql
+   # or, equivalently, from the host:
+   docker compose exec -T postgres psql -U rag -d rag < scripts/migrate/008_auth_and_workers.sql
+   ```
 
-If you need local document parsing and ingestion support, install the ingest extra:
+5. Create at least one frontend user:
 
-```bash
-pip install -e .[ingest]
-```
+   ```bash
+   docker compose exec backend python scripts/create_user.py --username admin
+   # (prompts for password)
+   ```
 
-5. Confirm connectivity:
+6. Create at least one API key. Edit `data/api_keys.toml` — the backend reloads on mtime change:
 
-```bash
-venv/bin/rag health
-curl http://localhost:8000/api/health
-```
+   ```toml
+   [[keys]]
+   id = "laptop-cli"
+   token = "use-an-actual-random-secret-here"
+   scopes = ["read", "ingest", "admin"]
+   ```
+
+   Scopes are `read` (search/retrieve/sources), `ingest` (POST /api/ingest, ingest_text MCP tool), and `admin` (jobs + workers). `admin` implies all others.
+
+7. Sanity check:
+
+   ```bash
+   curl http://localhost:8000/api/health
+   curl -H "Authorization: Bearer <token>" http://localhost:8000/api/auth/me  # should 401 (API keys don't have a user)
+   ```
+
+The frontend is now reachable on the host port mapped by `FRONTEND_PORT` (default `80`). Browse to it, sign in, and start ingesting via the UI or the CLI.
+
+## CLI installation (laptop)
+
+1. Install the package (the laptop only needs the base extras, not `ingest`):
+
+   ```bash
+   pip install -e .       # from a clone of this repo
+   # or, when published:
+   # pipx install knowledge-graphrag
+   ```
+
+2. Point the CLI at your server:
+
+   ```bash
+   rag configure
+   # Server URL: https://rag.example.com
+   # API key:    use-an-actual-random-secret-here
+   ```
+
+   The values land in `~/.config/rag/config.toml` (mode `0600`). Override per-shell with `RAG_SERVER_URL` and `RAG_API_KEY`.
+
+3. Verify:
+
+   ```bash
+   rag health   # → "Ready: server is reachable."
+   ```
+
+Without `RAG_SERVER_URL`+`RAG_API_KEY` (and no config file), the CLI falls back to talking directly to Postgres/Memgraph on `localhost`, which is convenient for local development but not how a deployed server is used.
+
+## Authentication
+
+- **Frontend** — username/password POSTed to `/api/auth/login`. The backend issues an opaque session token, stored in an `HttpOnly; SameSite=Lax` cookie (`Secure` when `RAG_COOKIE_SECURE=true`). Sessions are persisted in `user_sessions` and revoked by `/api/auth/logout`.
+- **CLI and MCP** — API keys loaded from `data/api_keys.toml`. The file is the source of truth; edit it directly and the backend reloads. Every authenticated request writes a row to `api_key_audit`.
+- **Scopes** — `read`, `ingest`, `admin`. Each protected route or tool declares the scope it requires; `admin` implies all.
+- A request can present a Bearer token *or* a session cookie. Routes that accept either use the `require_principal` dependency.
 
 ## Environment
 
@@ -82,6 +138,27 @@ All runtime settings are env-backed. The CLI, backend, worker, and Docker servic
 | `OPENROUTER_API_KEY` | empty | Required for embeddings and all LLM-backed stages. |
 | `LOG_LEVEL` | `INFO` | Application log verbosity. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP collector endpoint for telemetry if observability is enabled. |
+
+### Server / auth
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `RAG_DATA_DIR` | `./data` | Base data directory mounted into the backend container. |
+| `RAG_API_KEYS_PATH` | `./data/api_keys.toml` | File-backed API keys store. Reloaded on mtime change. |
+| `RAG_WORKER_LOG_DIR` | `./data/worker_logs` | Where supervised worker subprocesses write their logs. |
+| `RAG_UPLOAD_DIR` | `./data/uploads` | Scratch space for in-flight multipart uploads. |
+| `RAG_FRONTEND_ORIGIN` | `http://localhost` | Origin allowed by CORS for credentialed requests. Set to your real domain in production. |
+| `RAG_COOKIE_SECURE` | `false` | Set to `true` behind HTTPS so session cookies carry the `Secure` flag. |
+| `RAG_SESSION_TTL_HOURS` | `168` | Session lifetime. |
+| `RAG_SESSION_COOKIE_NAME` | `rag_session` | Cookie name used for the frontend session. |
+| `RAG_DISABLE_MCP` | unset | Set to `1` to skip mounting the `/mcp` server (useful in unit tests). |
+
+### CLI (laptop)
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `RAG_SERVER_URL` | unset | Server base URL the CLI hits. Overrides `~/.config/rag/config.toml`. |
+| `RAG_API_KEY` | unset | Bearer token the CLI sends. Overrides the config file. |
 
 ### Model selection
 
@@ -210,6 +287,53 @@ curl http://localhost:8000/api/health
 docker compose exec -T postgres psql -U rag -d rag
 printf "MATCH (n) RETURN count(n);\n" | docker compose exec -T memgraph mgconsole
 ```
+
+## Worker management
+
+Workers run on the server, supervised by the backend. They are created, listed, stopped, and tailed through the API (or, equivalently, via the CLI which wraps it):
+
+```bash
+rag worker launch 4              # spawn 4 workers; prints their IDs
+rag worker list                  # table of all workers + status
+rag worker stop <worker-id>      # SIGTERM, then SIGKILL after 5s
+rag worker log <worker-id> -f    # stream the worker's log over SSE
+```
+
+REST surface:
+
+```text
+POST /api/workers/launch?n=4
+GET  /api/workers
+POST /api/workers/{id}/stop
+GET  /api/workers/{id}/log?follow=true
+```
+
+Implementation notes:
+
+- The supervisor spawns `python -m rag.cli _worker-run --worker-id <id>` as a subprocess and tracks PID, status, exit code, and log path in the `worker_processes` table.
+- Logs are written to `data/worker_logs/<worker-id>.log` (appended, line-buffered) and tailed via Server-Sent Events.
+- On backend startup, any rows in `running` state with dead PIDs are reconciled to `crashed` so the operator can see the failure.
+- Worker management requires the `admin` scope.
+
+## MCP server
+
+The backend mounts an MCP (Model Context Protocol) server at `/mcp` using Streamable HTTP transport. Tools wrap the read-only REST endpoints:
+
+| Tool             | Wraps                       |
+| ---------------- | --------------------------- |
+| `search`         | `POST /api/search`          |
+| `retrieve`       | `POST /api/retrieve`        |
+| `community`      | `POST /api/community`       |
+| `list_sources`   | `GET  /api/sources`         |
+| `source_insights`| `GET  /api/sources/{id}/insights` |
+
+Connect from a compatible client (e.g. Claude Desktop, Claude Code) with the URL `https://your-server/mcp/` and `Authorization: Bearer <token>`. Quick probe:
+
+```bash
+python scripts/mcp_probe.py --server https://your-server --api-key TOKEN
+```
+
+The MCP server reuses the same `data/api_keys.toml` file as the REST API. Ingest, jobs, and worker management are deliberately not exposed via MCP — use the CLI for those.
 
 ## Ingestion
 

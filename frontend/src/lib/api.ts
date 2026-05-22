@@ -123,19 +123,49 @@ export type StreamAnswerOptions = {
   onResults: (results: RetrieveResponse["retrieval_results"]) => void;
 };
 
+export class UnauthorizedError extends Error {
+  constructor() {
+    super("unauthorized");
+    this.name = "UnauthorizedError";
+  }
+}
+
+type AuthErrorListener = () => void;
+let authErrorListener: AuthErrorListener | null = null;
+
+export function onAuthError(fn: AuthErrorListener | null): void {
+  authErrorListener = fn;
+}
+
+function ensureOk(response: Response): void {
+  if (response.status === 401) {
+    if (authErrorListener) authErrorListener();
+    throw new UnauthorizedError();
+  }
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status}`);
+  }
+}
+
+export async function authFetch(input: RequestInfo, init: RequestInit = {}): Promise<Response> {
+  const response = await fetch(input, { credentials: "include", ...init });
+  if (response.status === 401 && authErrorListener) {
+    authErrorListener();
+  }
+  return response;
+}
+
 async function postJson<T>(url: string, body: object): Promise<T> {
   const response = await fetch(url, {
     method: "POST",
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
   });
 
-  if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
-  }
-
+  ensureOk(response);
   return response.json() as Promise<T>;
 }
 
@@ -152,10 +182,8 @@ export function retrieve(query: string): Promise<RetrieveResponse> {
 }
 
 export async function getAnswerModels(): Promise<AnswerModel[]> {
-  const response = await fetch("/api/answer/models");
-  if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
-  }
+  const response = await fetch("/api/answer/models", { credentials: "include" });
+  ensureOk(response);
   const payload = (await response.json()) as { models: AnswerModel[] };
   return payload.models;
 }
@@ -163,6 +191,7 @@ export async function getAnswerModels(): Promise<AnswerModel[]> {
 export async function streamAnswer(options: StreamAnswerOptions): Promise<void> {
   const response = await fetch("/api/answer/stream", {
     method: "POST",
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
     },
@@ -172,9 +201,11 @@ export async function streamAnswer(options: StreamAnswerOptions): Promise<void> 
     }),
   });
 
-  if (!response.ok || !response.body) {
+  if (!response.body) {
+    ensureOk(response);
     throw new Error(`Request failed: ${response.status}`);
   }
+  ensureOk(response);
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -215,10 +246,8 @@ export async function streamAnswer(options: StreamAnswerOptions): Promise<void> 
 }
 
 export async function getSource(sourceId: string): Promise<SourceDetail> {
-  const response = await fetch(`/api/sources/${sourceId}`);
-  if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
-  }
+  const response = await fetch(`/api/sources/${sourceId}`, { credentials: "include" });
+  ensureOk(response);
   return response.json() as Promise<SourceDetail>;
 }
 
@@ -229,18 +258,14 @@ export async function listSources(limit = 20, offset = 0, metadataFilters: Metad
   });
   metadataFilters.forEach((filter) => params.append("metadata", `${filter.key}:${filter.value}`));
   if (q.trim()) params.set("q", q.trim());
-  const response = await fetch(`/api/sources?${params.toString()}`);
-  if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
-  }
+  const response = await fetch(`/api/sources?${params.toString()}`, { credentials: "include" });
+  ensureOk(response);
   return response.json() as Promise<SourceListResponse>;
 }
 
 export async function getSourceInsights(sourceId: string): Promise<SourceInsightsResponse> {
-  const response = await fetch(`/api/sources/${sourceId}/insights`);
-  if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
-  }
+  const response = await fetch(`/api/sources/${sourceId}/insights`, { credentials: "include" });
+  ensureOk(response);
   return response.json() as Promise<SourceInsightsResponse>;
 }
 

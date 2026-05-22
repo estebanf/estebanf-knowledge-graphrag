@@ -28,9 +28,26 @@ app = typer.Typer(help="RAG CLI — document ingestion and management")
 sources_app = typer.Typer(help="Manage ingested sources")
 jobs_app = typer.Typer(help="Manage ingestion jobs")
 community_app = typer.Typer(help="Community summarization")
+worker_app = typer.Typer(help="Manage background workers (server-side)")
 app.add_typer(sources_app, name="sources")
 app.add_typer(jobs_app, name="jobs")
 app.add_typer(community_app, name="community")
+app.add_typer(worker_app, name="worker")
+
+
+def _use_api() -> bool:
+    """Return True when the CLI should route commands through the API."""
+    from rag.cli_config import load_cli_config
+
+    cfg = load_cli_config()
+    return bool(cfg.server_url and cfg.api_key)
+
+
+def _get_client():
+    """Build a RagClient using config (env vars > config file)."""
+    from rag.api_client import RagClient
+
+    return RagClient.from_config()
 
 console = Console()
 
@@ -77,6 +94,15 @@ def detect_communities(*args, **kwargs):
 @app.command()
 def health() -> None:
     """Check Postgres and Memgraph connectivity."""
+    if _use_api():
+        try:
+            with _get_client() as client:
+                client.health()
+        except Exception as e:
+            console.print(f"[red]Unhealthy: {e}[/red]")
+            raise typer.Exit(1)
+        console.print("[green]Ready: server is reachable.[/green]")
+        return
     try:
         with _get_connection() as conn:
             conn.execute("SELECT 1").fetchone()
@@ -129,20 +155,35 @@ def ingest(
     # Submit each file
     results = []
     errors = []
-    for file in resolved_files:
-        try:
-            result = submit_ingestion_job(
-                file,
-                name=name if len(resolved_files) == 1 else None,
-                metadata=parsed_metadata,
-            )
-            results.append((file.name, result["job_id"], result["status"]))
-        except FileNotFoundError as e:
-            errors.append((file.name, str(e)))
-        except ValueError as e:
-            errors.append((file.name, str(e)))
-        except Exception as e:
-            errors.append((file.name, f"Error: {e}"))
+    if _use_api():
+        with _get_client() as client:
+            for file in resolved_files:
+                try:
+                    result = client.submit_ingest(
+                        file,
+                        name=name if len(resolved_files) == 1 else None,
+                        metadata=parsed_metadata,
+                    )
+                    results.append((file.name, result["job_id"], result["status"]))
+                except FileNotFoundError as e:
+                    errors.append((file.name, str(e)))
+                except Exception as e:
+                    errors.append((file.name, f"Error: {e}"))
+    else:
+        for file in resolved_files:
+            try:
+                result = submit_ingestion_job(
+                    file,
+                    name=name if len(resolved_files) == 1 else None,
+                    metadata=parsed_metadata,
+                )
+                results.append((file.name, result["job_id"], result["status"]))
+            except FileNotFoundError as e:
+                errors.append((file.name, str(e)))
+            except ValueError as e:
+                errors.append((file.name, str(e)))
+            except Exception as e:
+                errors.append((file.name, f"Error: {e}"))
 
     # Output table
     table = Table(title="Submitted Jobs")
@@ -161,14 +202,133 @@ def ingest(
         raise typer.Exit(1)
 
 
-@app.command()
-def worker(
+@worker_app.command("launch")
+def worker_launch(
+    n: Annotated[int, typer.Argument(help="Number of workers to launch")] = 1,
+) -> None:
+    """Launch N background workers on the server."""
+    with _get_client() as client:
+        try:
+            result = client.launch_workers(n)
+        except Exception as e:
+            console.print(f"[red]Failed to launch workers: {e}[/red]")
+            raise typer.Exit(1)
+    for wid in result.get("ids", []):
+        console.print(wid)
+
+
+@worker_app.command("stop")
+def worker_stop(
+    worker_id: Annotated[Optional[str], typer.Argument(help="Worker ID to stop")] = None,
+    all_workers: Annotated[bool, typer.Option("--all", help="Stop every active worker")] = False,
+) -> None:
+    """Stop a background worker (or every active worker with --all)."""
+    if all_workers and worker_id:
+        console.print("[red]Pass either a worker ID or --all, not both.[/red]")
+        raise typer.Exit(2)
+    if not all_workers and not worker_id:
+        console.print("[red]Provide a worker ID or use --all.[/red]")
+        raise typer.Exit(2)
+
+    with _get_client() as client:
+        try:
+            if all_workers:
+                result = client.stop_all_workers()
+            else:
+                client.stop_worker(worker_id)
+        except Exception as e:
+            console.print(f"[red]Failed to stop worker: {e}[/red]")
+            raise typer.Exit(1)
+
+    if all_workers:
+        stopped = result.get("stopped", [])
+        if not stopped:
+            console.print("[dim]No active workers.[/dim]")
+        else:
+            for wid in stopped:
+                console.print(f"[green]Stopped {wid}[/green]")
+    else:
+        console.print(f"[green]Worker {worker_id} stopped.[/green]")
+
+
+@worker_app.command("list")
+def worker_list(
+    show_all: Annotated[bool, typer.Option("--all", help="Include stopped and crashed workers")] = False,
+) -> None:
+    """List active workers (use --all to include stopped/crashed)."""
+    with _get_client() as client:
+        result = client.list_workers(include_stopped=show_all)
+    workers = result.get("workers", [])
+    if not workers:
+        console.print("[dim]No workers.[/dim]")
+        return
+    table = Table(title="Workers")
+    table.add_column("ID", style="dim", no_wrap=True)
+    table.add_column("Status")
+    table.add_column("PID")
+    table.add_column("Host")
+    table.add_column("Started")
+    for w in workers:
+        color = "green" if w["status"] == "running" else ("red" if w["status"] == "crashed" else "yellow")
+        from datetime import datetime, timezone
+
+        started = datetime.fromtimestamp(w["started_at"], tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        table.add_row(w["id"], f"[{color}]{w['status']}[/{color}]", str(w.get("pid") or "-"), w.get("host") or "", started)
+    console.print(table)
+
+
+@worker_app.command("log")
+def worker_log(
+    worker_id: Annotated[str, typer.Argument(help="Worker ID")],
+    follow: Annotated[bool, typer.Option("--follow", "-f", help="Tail the log")] = False,
+) -> None:
+    """Print (or tail) a worker's log."""
+    with _get_client() as client:
+        if not follow:
+            text = client.worker_log(worker_id)
+            console.print(text, markup=False, end="")
+            return
+        try:
+            for line in client.follow_worker_log(worker_id):
+                console.print(line, markup=False)
+        except KeyboardInterrupt:
+            pass
+
+
+@app.command("configure")
+def configure_command(
+    server_url: Annotated[Optional[str], typer.Option("--server-url", help="API server URL")] = None,
+    api_key: Annotated[Optional[str], typer.Option("--api-key", help="API key")] = None,
+) -> None:
+    """Save server URL + API key to ~/.config/rag/config.toml."""
+    from rag.cli_config import CliConfig, save_cli_config, load_cli_config
+
+    current = load_cli_config()
+    if server_url is None:
+        prompt_default = current.server_url or ""
+        server_url = typer.prompt("Server URL", default=prompt_default)
+    if api_key is None:
+        api_key = typer.prompt("API key", hide_input=True)
+    save_cli_config(CliConfig(server_url=server_url, api_key=api_key))
+    console.print("[green]Saved CLI config.[/green]")
+
+
+@app.command("_worker-run", hidden=True)
+def _worker_run(
+    worker_id: Annotated[str, typer.Option("--worker-id", help="Supervisor-assigned worker id")] = "",
     poll_interval: Annotated[int, typer.Option(help="Seconds between polls when queue is empty")] = 5,
     stuck_minutes: Annotated[int, typer.Option(help="Minutes before a processing job is considered stuck")] = 30,
 ) -> None:
-    """Start the ingestion worker. Processes pending jobs until Ctrl+C."""
+    """Internal: long-running worker process spawned by the API supervisor."""
     from rag.worker import run_worker
+    if worker_id:
+        os_environ_safe_set("RAG_WORKER_ID", worker_id)
     run_worker(poll_interval=poll_interval, stuck_minutes=stuck_minutes)
+
+
+def os_environ_safe_set(key: str, value: str) -> None:
+    import os
+    os.environ[key] = value
 
 
 @app.command("retrieve")
@@ -206,6 +366,23 @@ def retrieve_command(
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
 
+    if _use_api():
+        with _get_client() as client:
+            response = client.retrieve(
+                query,
+                source_ids=source_id or None,
+                filters=parsed_filters or None,
+                seed_count=seed_count,
+                result_count=result_count,
+                rrf_k=rrf_k,
+                entity_confidence_threshold=entity_confidence_threshold,
+                first_hop_similarity_threshold=first_hop_similarity_threshold,
+                second_hop_similarity_threshold=second_hop_similarity_threshold,
+                trace=trace,
+            )
+        console.print_json(json.dumps(response))
+        return
+
     trace_printer = None
     if trace:
         def _printer(message: str) -> None:
@@ -235,6 +412,11 @@ def search_command(
     min_score: Annotated[float, typer.Option("--min-score", help="Minimum score threshold")] = settings.SEARCH_MIN_SCORE,
 ) -> None:
     """Hybrid search over chunks and insights and return ranked results as JSON."""
+    if _use_api():
+        with _get_client() as client:
+            payload = client.search(query, limit=limit, min_score=min_score)
+        console.print_json(json.dumps(payload.get("results", payload)))
+        return
     results = hybrid_search(query, limit=limit, min_score=min_score)
     console.print_json(
         json.dumps(
@@ -277,6 +459,19 @@ def source_command(
     source_id: Annotated[str, typer.Argument(help="Source UUID")],
 ) -> None:
     """Print the stored markdown for a source."""
+    if _use_api():
+        from rag.api_client import ApiError
+        with _get_client() as client:
+            try:
+                detail = client.get_source(source_id)
+            except ApiError as e:
+                if e.status == 404:
+                    console.print(f"[red]Source not found: {source_id}[/red]")
+                    raise typer.Exit(1)
+                raise
+        console.print(detail.get("markdown_content") or "", markup=False)
+        return
+
     from rag.sources import get_source_detail
 
     detail = get_source_detail(source_id, connection_factory=_get_connection)
@@ -290,6 +485,29 @@ def source_command(
 @sources_app.command("list")
 def sources_list() -> None:
     """List all active sources."""
+    if _use_api():
+        with _get_client() as client:
+            data = client.list_sources(limit=100, offset=0)
+        rows_for_api = data.get("sources", [])
+        if not rows_for_api:
+            console.print("[dim]No sources found.[/dim]")
+            return
+        table = Table(title="Sources")
+        table.add_column("ID", style="dim", no_wrap=True)
+        table.add_column("Name")
+        table.add_column("File")
+        table.add_column("Type")
+        table.add_column("Created")
+        for r in rows_for_api:
+            table.add_row(
+                r.get("source_id", ""),
+                r.get("name") or "",
+                r.get("file_name") or "",
+                r.get("file_type") or "",
+                (r.get("created_at") or "")[:19],
+            )
+        console.print(table)
+        return
     with _get_connection() as conn:
         rows = conn.execute(
             """
@@ -385,6 +603,19 @@ def sources_insights(
     source_id: Annotated[str, typer.Argument(help="Source UUID")],
 ) -> None:
     """List insights extracted from chunks of a source."""
+    if _use_api():
+        with _get_client() as client:
+            data = client.source_insights(source_id)
+        items = [
+            {
+                "id": i.get("insight_id", ""),
+                "content": i.get("insight", ""),
+                "topics": i.get("topics", []),
+            }
+            for i in data.get("insights", [])
+        ]
+        console.print_json(json.dumps(items))
+        return
     with _get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -468,10 +699,15 @@ def sources_search(
     limit: Annotated[int, typer.Option("--limit", "-n", help="Maximum number of results")] = 20,
 ) -> None:
     """Search sources by metadata value (fuzzy substring match, no embeddings)."""
-    from rag.sources import list_recent_sources
+    if _use_api():
+        with _get_client() as client:
+            result = client.list_sources(limit=limit, q=query)
+        rows = result["sources"]
+    else:
+        from rag.sources import list_recent_sources
 
-    result = list_recent_sources(limit=limit, q=query, connection_factory=_get_connection)
-    rows = result["sources"]
+        result = list_recent_sources(limit=limit, q=query, connection_factory=_get_connection)
+        rows = result["sources"]
 
     if not rows:
         console.print("[dim]No sources matched.[/dim]")
@@ -506,6 +742,22 @@ def sources_delete(
     hard: Annotated[bool, typer.Option("--hard", help="Hard-delete: remove file from disk")] = False,
 ) -> None:
     """Delete a source (soft by default, hard with --hard)."""
+    if _use_api():
+        from rag.api_client import ApiError
+        with _get_client() as client:
+            try:
+                client.delete_source(source_id, hard=hard)
+            except ApiError as e:
+                if e.status == 404:
+                    console.print(f"[red]Source not found: {source_id}[/red]")
+                    raise typer.Exit(1)
+                raise
+        if hard:
+            console.print(f"[green]Hard-deleted source {source_id} (DB records and file removed).[/green]")
+        else:
+            console.print(f"[green]Soft-deleted source {source_id}.[/green]")
+        return
+
     from rag.ingestion import _write_audit_log, delete_source_artifacts
     from rag.storage import delete_stored_file
 
@@ -550,6 +802,54 @@ def jobs_list(
     retry: Annotated[bool, typer.Option("--retry", help="Retry all failed jobs")] = False,
 ) -> None:
     """List ingestion jobs."""
+    if _use_api():
+        with _get_client() as client:
+            if stats:
+                data = client.job_stats()
+                stats_rows = [(s["status"], s["count"]) for s in data.get("stats", [])]
+                if not stats_rows:
+                    console.print("[dim]No jobs found.[/dim]")
+                    return
+                table = Table(title="Job Stats")
+                table.add_column("Status")
+                table.add_column("Count", justify="right")
+                for status_group, cnt in stats_rows:
+                    color = "green" if status_group == "completed" else ("red" if status_group == "failed" else "yellow")
+                    table.add_row(f"[{color}]{status_group}[/{color}]", str(cnt))
+                console.print(table)
+                return
+            if retry:
+                failed = client.list_jobs(status="failed").get("jobs", [])
+                if not failed:
+                    console.print("[dim]No failed jobs found.[/dim]")
+                    return
+                retried = 0
+                for j in failed:
+                    try:
+                        client.retry_job(j["id"])
+                        retried += 1
+                    except Exception as e:
+                        console.print(f"[yellow]Could not retry {j['id']}: {e}[/yellow]")
+                label = "job" if retried == 1 else "jobs"
+                console.print(f"[green]{retried} {label} submitted for retry.[/green]")
+                return
+            data = client.list_jobs(status=status)
+            jobs = data.get("jobs", [])
+            if not jobs:
+                console.print("[dim]No jobs found.[/dim]")
+                return
+            table = Table(title="Jobs")
+            table.add_column("ID", style="dim", no_wrap=True)
+            table.add_column("Source ID", style="dim")
+            table.add_column("Status")
+            table.add_column("Stage")
+            table.add_column("Created")
+            for j in jobs:
+                status_color = "green" if j["status"] == "completed" else ("red" if j["status"].startswith("failed") else "yellow")
+                table.add_row(j["id"], j.get("source_id") or "", f"[{status_color}]{j['status']}[/{status_color}]", j.get("current_stage") or "", (j.get("created_at") or "")[:19])
+            console.print(table)
+            return
+
     if stats:
         with _get_connection() as conn:
             rows = conn.execute(
@@ -633,6 +933,35 @@ def jobs_status(
     job_id: Annotated[str, typer.Argument(help="Job UUID")],
 ) -> None:
     """Show job details and stage log."""
+    if _use_api():
+        from rag.api_client import ApiError
+        with _get_client() as client:
+            try:
+                j = client.get_job(job_id)
+            except ApiError as e:
+                if e.status == 404:
+                    console.print(f"[red]Job not found: {job_id}[/red]")
+                    raise typer.Exit(1)
+                raise
+        table = Table(show_header=False, box=None)
+        table.add_column("Key", style="bold")
+        table.add_column("Value")
+        for k, v in [
+            ("Job ID", j["id"]),
+            ("Source ID", j.get("source_id") or ""),
+            ("Status", j["status"]),
+            ("Current Stage", j.get("current_stage") or ""),
+            ("Created", (j.get("created_at") or "")[:19]),
+            ("Updated", (j.get("updated_at") or "")[:19]),
+        ]:
+            table.add_row(k, v)
+        console.print(Panel(table, title=f"[bold]Job {job_id}[/bold]"))
+        if j.get("stage_log"):
+            console.print(Panel(json.dumps(j["stage_log"], indent=2), title="Stage Log"))
+        if j.get("error_detail"):
+            console.print(Panel(json.dumps(j["error_detail"], indent=2), title="[red]Error Detail[/red]"))
+        return
+
     with _get_connection() as conn:
         row = conn.execute(
             "SELECT id, source_id, status, current_stage, stage_log, created_at, updated_at, error_detail FROM jobs WHERE id = %s",
@@ -675,6 +1004,16 @@ def jobs_retry(
     ] = None,
 ) -> None:
     """Retry a failed job."""
+    if _use_api():
+        from rag.api_client import ApiError
+        with _get_client() as client:
+            try:
+                result = client.retry_job(job_id, from_stage=from_stage)
+            except ApiError as e:
+                console.print(f"[red]{e.detail}[/red]")
+                raise typer.Exit(1)
+        console.print(f"[green]Job {result['job_id']} queued for retry from stage '{result['retry_from_stage']}'.[/green]")
+        return
     try:
         result = retry_job(job_id, from_stage=from_stage)
     except ValueError as e:
@@ -691,6 +1030,16 @@ def jobs_cancel(
     job_id: Annotated[str, typer.Argument(help="Job UUID to cancel")],
 ) -> None:
     """Cancel a pending or processing job."""
+    if _use_api():
+        from rag.api_client import ApiError
+        with _get_client() as client:
+            try:
+                result = client.cancel_job(job_id)
+            except ApiError as e:
+                console.print(f"[yellow]{e.detail}[/yellow]")
+                raise typer.Exit(1)
+        console.print(f"[green]Job {result['job_id']} has been cancelled.[/green]")
+        return
     try:
         result = cancel_job(job_id)
     except ValueError as e:
@@ -715,6 +1064,27 @@ def community_ids(
     max_cross_source_queries: Annotated[Optional[int], typer.Option("--max-cross-source-queries", help="Hard cap on per-entity ANN queries")] = None,
 ) -> None:
     """Detect communities from explicit source IDs."""
+    if _use_api():
+        with _get_client() as client:
+            payload = {
+                "scope_mode": "ids",
+                "source_ids": list(source_id),
+                "community_options": {
+                    k: v for k, v in {
+                        "semantic_threshold": semantic_threshold,
+                        "cutoff": cutoff,
+                        "min_community_size": min_community_size,
+                        "top_k_chunks": top_k,
+                        "cross_source_top_k": cross_source_top_k,
+                        "max_cross_source_queries": max_cross_source_queries,
+                    }.items() if v is not None
+                },
+            }
+            if summarize:
+                payload["summarize_model"] = summarize
+            result = client.community(payload)
+        console.print_json(json.dumps(result))
+        return
     result = detect_communities(
         scope_mode="ids", source_ids=list(source_id), criteria=[], filters={},
         search_options={}, retrieve_options={},
@@ -747,6 +1117,29 @@ def community_search(
     except ValueError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
+    if _use_api():
+        with _get_client() as client:
+            payload = {
+                "scope_mode": "search",
+                "criteria": list(criteria),
+                "filters": parsed_filters,
+                "search_options": {"limit": limit, "min_score": min_score},
+                "community_options": {
+                    k: v for k, v in {
+                        "semantic_threshold": semantic_threshold,
+                        "cutoff": cutoff,
+                        "min_community_size": min_community_size,
+                        "top_k_chunks": top_k,
+                        "cross_source_top_k": cross_source_top_k,
+                        "max_cross_source_queries": max_cross_source_queries,
+                    }.items() if v is not None
+                },
+            }
+            if summarize:
+                payload["summarize_model"] = summarize
+            result = client.community(payload)
+        console.print_json(json.dumps(result))
+        return
     result = detect_communities(
         scope_mode="search", source_ids=[], criteria=list(criteria),
         filters=parsed_filters, search_options={"limit": limit, "min_score": min_score},
@@ -783,6 +1176,39 @@ def community_retrieve(
     except ValueError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
+    if _use_api():
+        with _get_client() as client:
+            payload = {
+                "scope_mode": "retrieve",
+                "criteria": list(criteria),
+                "filters": parsed_filters,
+                "retrieve_options": {
+                    k: v for k, v in {
+                        "seed_count": seed_count,
+                        "result_count": result_count,
+                        "rrf_k": rrf_k,
+                        "entity_confidence_threshold": entity_confidence_threshold,
+                        "first_hop_similarity_threshold": first_hop_similarity_threshold,
+                        "second_hop_similarity_threshold": second_hop_similarity_threshold,
+                        "trace": trace,
+                    }.items() if v is not None
+                },
+                "community_options": {
+                    k: v for k, v in {
+                        "semantic_threshold": semantic_threshold,
+                        "cutoff": cutoff,
+                        "min_community_size": min_community_size,
+                        "top_k_chunks": top_k,
+                        "cross_source_top_k": cross_source_top_k,
+                        "max_cross_source_queries": max_cross_source_queries,
+                    }.items() if v is not None
+                },
+            }
+            if summarize:
+                payload["summarize_model"] = summarize
+            result = client.community(payload)
+        console.print_json(json.dumps(result))
+        return
     result = detect_communities(
         scope_mode="retrieve", source_ids=[], criteria=list(criteria),
         filters=parsed_filters, search_options={},
@@ -799,3 +1225,7 @@ def community_retrieve(
         max_cross_source_queries=max_cross_source_queries,
     )
     console.print_json(json.dumps(result))
+
+
+if __name__ == "__main__":
+    app()
