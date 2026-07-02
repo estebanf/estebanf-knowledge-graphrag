@@ -25,7 +25,7 @@ class ApiError(RuntimeError):
 class RagClient:
     base_url: str
     api_key: str
-    timeout: float = 30.0
+    timeout: float = 360.0
     _client: Optional[httpx.Client] = None
     _owns_client: bool = True
 
