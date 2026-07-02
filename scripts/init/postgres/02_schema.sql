@@ -58,6 +58,11 @@ CREATE TABLE IF NOT EXISTS entities (
   aliases         text[],
   embedding       vector(1536),
   created_at      timestamptz DEFAULT now()
+) WITH (
+  autovacuum_vacuum_scale_factor = 0.02,
+  autovacuum_vacuum_threshold = 500,
+  autovacuum_analyze_scale_factor = 0.02,
+  autovacuum_analyze_threshold = 500
 );
 
 CREATE TABLE IF NOT EXISTS audit_log (

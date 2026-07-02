@@ -1119,6 +1119,7 @@ The migrations most likely to matter for current code are:
 - `scripts/migrate/006_search_performance_indexes.sql`
 - `scripts/migrate/007_insights.sql`
 - `scripts/migrate/009_binary_vector_prefilter_indexes.sql`
+- `scripts/migrate/010_entities_autovacuum_tuning.sql`
 
 Example:
 
@@ -1127,11 +1128,12 @@ docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/004_job_im
 docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/006_search_performance_indexes.sql
 docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/007_insights.sql
 docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/009_binary_vector_prefilter_indexes.sql
+docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/010_entities_autovacuum_tuning.sql
 ```
 
 ### Storage maintenance
 
-`entities` accumulates dead TOAST rows from `scripts/merge_semantic_duplicates.py` and `scripts/merge_duplicate_entities.py` (each merge is an `UPDATE` + `DELETE`). Both scripts now run `VACUUM (ANALYZE) entities` automatically after a run that actually merged rows, and `entities` has lower autovacuum thresholds (`autovacuum_vacuum_scale_factor = 0.02`, `autovacuum_vacuum_threshold = 500`, matching for analyze) so bloat gets reclaimed without operator intervention going forward.
+`entities` accumulates dead TOAST rows from `scripts/merge_semantic_duplicates.py` and `scripts/merge_duplicate_entities.py` (each merge is an `UPDATE` + `DELETE`). Both scripts now run `VACUUM (ANALYZE) entities` automatically after a run that actually merged rows. `entities` also carries lower autovacuum thresholds (`autovacuum_vacuum_scale_factor = 0.02`, `autovacuum_vacuum_threshold = 500`, matching for analyze) so any other update/delete activity on the table gets reclaimed without operator intervention too — this is set in `scripts/init/postgres/02_schema.sql` for fresh installs and in `scripts/migrate/010_entities_autovacuum_tuning.sql` for existing databases (see Migrations above).
 
 If `entities` is already bloated on an existing database (check with the query below), reclaim it once with a maintenance-window `VACUUM FULL`, which takes an exclusive lock for its duration:
 
@@ -1140,14 +1142,6 @@ docker compose exec -T postgres psql -U rag -d rag -c "
 SELECT pg_size_pretty(pg_total_relation_size('entities')) AS entities_total;
 "
 docker compose exec -T postgres psql -U rag -d rag -c "VACUUM FULL VERBOSE entities;"
-docker compose exec -T postgres psql -U rag -d rag -c "
-ALTER TABLE entities SET (
-  autovacuum_vacuum_scale_factor = 0.02,
-  autovacuum_vacuum_threshold = 500,
-  autovacuum_analyze_scale_factor = 0.02,
-  autovacuum_analyze_threshold = 500
-);
-"
 ```
 
 Prefer `pg_repack -t entities` over `VACUUM FULL` if the exclusive lock is too disruptive for your deployment; it avoids the lock at the cost of needing roughly 1x extra disk headroom during the run.
