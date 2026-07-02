@@ -99,6 +99,20 @@ def test_health_endpoint_reports_ready(mock_conn, mock_graph_driver):
     assert response.json() == {"status": "ready"}
 
 
+@patch("rag.api.main.reconcile_schema")
+def test_lifespan_survives_schema_reconciliation_failure(mock_reconcile):
+    mock_reconcile.side_effect = RuntimeError("memgraph unreachable")
+
+    with TestClient(create_app()) as client:
+        response = client.get("/api/health")
+
+    # The app must finish starting even when reconciliation fails; the health
+    # check's own (unmocked) Memgraph/Postgres calls are what should fail here,
+    # not lifespan startup itself.
+    assert response.status_code in (200, 500)
+    mock_reconcile.assert_called_once()
+
+
 @patch("rag.api.routes.search.hybrid_search")
 def test_search_endpoint_returns_ranked_results(mock_search):
     mock_search.return_value = _search_results()

@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -22,6 +23,7 @@ from rag.config import settings
 from rag.db import get_connection
 from rag.graph_db import get_graph_driver, reconcile_schema
 
+log = logging.getLogger(__name__)
 
 # Stable references so tests can override via app.dependency_overrides.
 principal_dep = require_principal()
@@ -36,8 +38,15 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        with get_graph_driver() as driver:
-            reconcile_schema(driver)
+        try:
+            with get_graph_driver() as driver:
+                reconcile_schema(driver)
+        except Exception:
+            log.exception(
+                "Memgraph schema reconciliation failed at startup; graph-dependent "
+                "routes may fail until this is resolved, but the API will still serve "
+                "other traffic."
+            )
         if mcp_app is not None and hasattr(mcp_app, "lifespan_context"):
             async with mcp_app.lifespan_context(app):
                 yield
