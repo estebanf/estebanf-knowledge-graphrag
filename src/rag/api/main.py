@@ -20,7 +20,7 @@ from rag.api.routes.sources import router as sources_router
 from rag.api.routes.workers import router as workers_router
 from rag.config import settings
 from rag.db import get_connection
-from rag.graph_db import get_graph_driver
+from rag.graph_db import get_graph_driver, reconcile_schema
 
 
 # Stable references so tests can override via app.dependency_overrides.
@@ -36,6 +36,8 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        with get_graph_driver() as driver:
+            reconcile_schema(driver)
         if mcp_app is not None and hasattr(mcp_app, "lifespan_context"):
             async with mcp_app.lifespan_context(app):
                 yield
