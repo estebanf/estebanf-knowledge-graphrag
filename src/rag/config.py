@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     RETRIEVAL_EXPANSION_MAX_WORKERS: Annotated[int, Field(gt=0)] = 5
     RETRIEVAL_RESULT_COUNT: Annotated[int, Field(gt=0)] = 5
     RETRIEVAL_MAX_DECOMPOSED_QUERIES: Annotated[int, Field(gt=0)] = 2
-    RETRIEVAL_DENSE_PREFETCH_COUNT: Annotated[int, Field(ge=0)] = 1000
+    RETRIEVAL_DENSE_PREFETCH_COUNT: Annotated[int, Field(ge=0)] = 250
     RETRIEVAL_USE_LLM_ENTITY_QUERIES: bool = False
     RETRIEVAL_USE_LLM_SECOND_HOP_SELECTION: bool = False
     RETRIEVAL_FIRST_STAGE_TOP_N: Annotated[int, Field(gt=0)] = 20
