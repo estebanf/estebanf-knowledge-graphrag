@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import argparse
 
-from rag.db import get_connection
+from rag.db import get_connection, vacuum_analyze_entities
 from rag.graph_db import get_graph_driver
 
 
@@ -173,7 +173,7 @@ def merge_memgraph(session, survivor_id: str, dup_ids: list[str]) -> int:
     return edges_repointed
 
 
-def merge_group(conn, session, group: dict, dry_run: bool, survivor_picker=None) -> None:
+def merge_group(conn, session, group: dict, dry_run: bool, survivor_picker=None) -> int:
     picker = survivor_picker or pick_survivor
     survivor = picker(group["members"])
     dup_ids = [m["id"] for m in group["members"] if m["id"] != survivor["id"]]
@@ -184,7 +184,7 @@ def merge_group(conn, session, group: dict, dry_run: bool, survivor_picker=None)
             f"  [{entity_type_label}] {group['name']} — "
             f"keep {survivor['id'][:8]}…, delete {len(dup_ids)} duplicate(s)"
         )
-        return
+        return 0
 
     try:
         edges = merge_memgraph(session, survivor["id"], dup_ids)
@@ -197,6 +197,7 @@ def merge_group(conn, session, group: dict, dry_run: bool, survivor_picker=None)
         f"  [{entity_type_label}] {group['name']} — "
         f"merged {len(dup_ids)} duplicate(s), re-pointed {edges} edge(s)"
     )
+    return len(dup_ids)
 
 
 def main() -> int:
@@ -212,6 +213,7 @@ def main() -> int:
     args = parser.parse_args()
     dry_run = args.dry_run
 
+    total_merged = 0
     with get_connection() as conn, get_graph_driver() as driver:
         groups = fetch_duplicate_groups(conn)
         print(
@@ -222,7 +224,7 @@ def main() -> int:
 
         with driver.session() as session:
             for g in groups:
-                merge_group(conn, session, g, dry_run=dry_run)
+                total_merged += merge_group(conn, session, g, dry_run=dry_run)
 
         if args.cross_type:
             cross_groups = fetch_cross_type_duplicate_groups(conn)
@@ -233,7 +235,13 @@ def main() -> int:
             )
             with driver.session() as session:
                 for g in cross_groups:
-                    merge_group(conn, session, g, dry_run=dry_run, survivor_picker=pick_survivor_cross_type)
+                    total_merged += merge_group(
+                        conn, session, g, dry_run=dry_run, survivor_picker=pick_survivor_cross_type
+                    )
+
+    if total_merged > 0:
+        print(f"Reclaiming space from {total_merged} merged row(s)...", flush=True)
+        vacuum_analyze_entities()
 
     print("Done.")
     return 0

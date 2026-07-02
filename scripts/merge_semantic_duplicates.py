@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import numpy as np
 
-from rag.db import get_connection
+from rag.db import get_connection, vacuum_analyze_entities
 from rag.graph_db import get_graph_driver
 
 
@@ -212,7 +212,7 @@ def merge_memgraph(session, survivor_id: str, dup_ids: list[str]) -> int:
     return edges_repointed
 
 
-def merge_cluster(conn, session, cluster_members: list[dict], dry_run: bool) -> None:
+def merge_cluster(conn, session, cluster_members: list[dict], dry_run: bool) -> int:
     survivor = pick_survivor(cluster_members)
     dup_ids = [m["id"] for m in cluster_members if m["id"] != survivor["id"]]
     dup_names = [m["canonical_name"] for m in cluster_members if m["id"] != survivor["id"]]
@@ -222,7 +222,7 @@ def merge_cluster(conn, session, cluster_members: list[dict], dry_run: bool) -> 
             f"  [{survivor['entity_type']}] {survivor['canonical_name']!r} — "
             f"absorbs: {dup_names}"
         )
-        return
+        return 0
 
     try:
         edges = merge_memgraph(session, survivor["id"], dup_ids)
@@ -236,6 +236,7 @@ def merge_cluster(conn, session, cluster_members: list[dict], dry_run: bool) -> 
         f"  [{survivor['entity_type']}] {survivor['canonical_name']!r} — "
         f"merged {len(dup_ids)} duplicate(s), re-pointed {edges} edge(s)"
     )
+    return len(dup_ids)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -305,13 +306,18 @@ def main() -> int:
         f"({total_members} total entities)."
     )
 
+    total_merged = 0
     with get_connection() as conn, get_graph_driver() as driver:
         with driver.session() as session:
             for cluster_ids in clusters.values():
                 members = [entity_meta[eid] for eid in cluster_ids if eid in entity_meta]
                 if len(members) < 2:
                     continue
-                merge_cluster(conn, session, members, dry_run=dry_run)
+                total_merged += merge_cluster(conn, session, members, dry_run=dry_run)
+
+    if total_merged > 0:
+        print(f"Reclaiming space from {total_merged} merged row(s)...", flush=True)
+        vacuum_analyze_entities()
 
     print("Done.")
     return 0
