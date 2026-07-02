@@ -1,4 +1,5 @@
 from unittest.mock import MagicMock
+import threading
 
 import pytest
 
@@ -15,8 +16,17 @@ from rag.retrieval import (
     expand_seed_candidate,
     normalize_query_variants,
     retrieve,
+    should_include_expanded_variant,
     weighted_reciprocal_rank_fusion,
 )
+
+
+class NullConnection:
+    def __enter__(self):
+        return object()
+
+    def __exit__(self, *args):
+        return False
 
 
 def test_normalize_query_variants_drops_empty_and_duplicate_values():
@@ -35,6 +45,12 @@ def test_normalize_query_variants_drops_empty_and_duplicate_values():
     assert "expanded" not in variants
     assert "step_back" not in variants
     assert variants["decomposed"] == ["Who changed it?"]
+
+
+def test_should_include_expanded_variant_examples():
+    assert should_include_expanded_variant("insurance triage") is True
+    assert should_include_expanded_variant("How to optimize broker submissions with agents") is False
+    assert should_include_expanded_variant("Biggest challenges in manufacturing right now") is False
 
 
 def test_weighted_reciprocal_rank_fusion_merges_by_chunk_id():
@@ -138,6 +154,7 @@ def test_retrieve_emits_trace_and_returns_final_results(monkeypatch):
         "rag.retrieval.finalize_root_results",
         lambda query, root_results, result_count, trace_logger=None: root_results,
     )
+    monkeypatch.setattr("rag.retrieval.get_connection", lambda: NullConnection())
     monkeypatch.setattr("rag.retrieval._expand_neighbor_contexts", lambda conn, results: None)
 
     response = retrieve(
@@ -158,6 +175,64 @@ def test_retrieve_emits_trace_and_returns_final_results(monkeypatch):
     assert any("starting retrieval" in entry for entry in traces)
     assert any("generated query variants" in entry for entry in traces)
     assert any("selected 1 seed chunks" in entry for entry in traces)
+
+
+def test_retrieve_generates_chunk_and_insight_variants_concurrently(monkeypatch):
+    monkeypatch.setattr("rag.retrieval.settings.OPENROUTER_API_KEY", "test-key")
+
+    chunk_started = threading.Event()
+    insight_started = threading.Event()
+
+    def fake_chunk_variants(query, trace_logger=None):
+        chunk_started.set()
+        assert insight_started.wait(0.5)
+        return {"original": query}
+
+    def fake_insight_variants(query, trace_logger=None):
+        insight_started.set()
+        assert chunk_started.wait(0.5)
+        return {}
+
+    class FakeDriver:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *args):
+            return False
+
+    class NullConnection:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr("rag.retrieval.generate_query_variants", fake_chunk_variants)
+    monkeypatch.setattr("rag.retrieval.generate_insight_query_variants", fake_insight_variants)
+    monkeypatch.setattr("rag.retrieval.get_graph_driver", lambda: FakeDriver())
+    monkeypatch.setattr("rag.retrieval.get_connection", lambda: NullConnection())
+    monkeypatch.setattr("rag.retrieval.run_first_stage_retrieval", lambda **kwargs: [])
+    monkeypatch.setattr("rag.retrieval.run_insight_first_stage_retrieval", lambda **kwargs: [])
+    monkeypatch.setattr("rag.retrieval.rerank_candidates", lambda *args, **kwargs: [])
+    monkeypatch.setattr("rag.retrieval.finalize_root_results", lambda *args, **kwargs: [])
+    monkeypatch.setattr("rag.retrieval.finalize_insight_results", lambda *args, **kwargs: [])
+    monkeypatch.setattr("rag.retrieval._expand_neighbor_contexts", lambda *args, **kwargs: None)
+
+    response = retrieve(
+        query="what changed?",
+        source_ids=[],
+        filters={},
+        seed_count=1,
+        result_count=1,
+        rrf_k=60,
+        entity_confidence_threshold=None,
+        first_hop_similarity_threshold=None,
+        second_hop_similarity_threshold=None,
+        trace=False,
+        trace_printer=None,
+    )
+
+    assert response == {"retrieval_results": [], "insights": []}
 
 
 def test_trace_logger_emits_only_when_enabled():
@@ -237,6 +312,7 @@ def test_expand_seed_candidate_falls_back_to_same_source_neighbors(monkeypatch):
     monkeypatch.setattr("rag.retrieval._load_seed_entities", lambda driver, chunk_id: [entity])
     monkeypatch.setattr("rag.retrieval._select_entity_names", lambda *args, **kwargs: ["agentic identity"])
     monkeypatch.setattr("rag.retrieval._generate_entity_query", lambda *args, **kwargs: "agentic identity security")
+    monkeypatch.setattr("rag.retrieval.get_embeddings", lambda texts: [[0.1] * 3 for _ in texts])
     monkeypatch.setattr(
         "rag.retrieval._load_chunk_ids_for_entity",
         lambda driver, entity_name, entity_type: ["seed-1"],
@@ -265,6 +341,116 @@ def test_expand_seed_candidate_falls_back_to_same_source_neighbors(monkeypatch):
 
     assert result["related"][0]["chunks"][0]["chunk_id"] == "neighbor-1"
     assert any("falling back to same-source neighbors for entity agentic identity" in entry for entry in traces)
+
+
+def test_expand_seed_candidate_generates_first_hop_queries_concurrently(monkeypatch):
+    seed = RetrievalCandidate(
+        chunk_id="seed-1",
+        chunk="Seed chunk about insurance triage",
+        source_id="source-1",
+        source_path="/tmp/source.md",
+        source_metadata={},
+        score=0.9,
+    )
+    entities = [
+        EntityCandidate(entity_id="e1", name="insurance", entity_type="INDUSTRY"),
+        EntityCandidate(entity_id="e2", name="triage", entity_type="PROCESS"),
+    ]
+    first_started = threading.Event()
+    second_started = threading.Event()
+
+    def fake_generate(query, seed_arg, entity_name, *, entity_context=None):
+        if entity_name == "insurance":
+            first_started.set()
+            assert second_started.wait(0.5)
+        elif entity_name == "triage":
+            second_started.set()
+            assert first_started.wait(0.5)
+        return f"{query} {entity_name}"
+
+    monkeypatch.setattr("rag.retrieval._load_seed_entities", lambda driver, chunk_id: entities)
+    monkeypatch.setattr("rag.retrieval._select_entity_names", lambda *args, **kwargs: ["insurance", "triage"])
+    monkeypatch.setattr("rag.retrieval._generate_entity_query", fake_generate)
+    monkeypatch.setattr("rag.retrieval.get_embeddings", lambda texts: [[0.1] * 3 for _ in texts])
+    monkeypatch.setattr("rag.retrieval._load_chunk_ids_for_entity", lambda *args, **kwargs: [])
+    monkeypatch.setattr("rag.retrieval._fetch_chunk_candidates_by_ids", lambda *args, **kwargs: [])
+    monkeypatch.setattr("rag.retrieval._fetch_same_source_neighbor_candidates", lambda *args, **kwargs: [])
+    monkeypatch.setattr("rag.retrieval._load_entities_for_chunks", lambda *args, **kwargs: {})
+
+    result = expand_seed_candidate(
+        seed,
+        "insurance triage",
+        source_ids=[],
+        filters={},
+        entity_confidence_threshold=0.5,
+        first_hop_similarity_threshold=0.5,
+        second_hop_similarity_threshold=0.5,
+        conn=object(),
+        driver=object(),
+        trace_logger=None,
+        budget={"llm_calls": 0, "query_started_at": 10.0},
+    )
+
+    assert [related["entity"] for related in result["related"]] == ["insurance", "triage"]
+
+
+def test_generate_entity_query_uses_deterministic_default(monkeypatch):
+    from rag.retrieval import _generate_entity_query
+
+    seed = RetrievalCandidate(
+        chunk_id="seed-1",
+        chunk="seed chunk",
+        source_id="source-1",
+        source_path="/tmp/source.md",
+        source_metadata={},
+        score=0.9,
+    )
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_USE_LLM_ENTITY_QUERIES", False)
+
+    def unexpected_chat(*args, **kwargs):
+        raise AssertionError("entity query generation should not call the LLM by default")
+
+    monkeypatch.setattr("rag.retrieval._chat_json", unexpected_chat)
+
+    assert _generate_entity_query("insurance triage", seed, "claims") == "insurance triage claims"
+
+
+def test_second_hop_selection_uses_deterministic_default(monkeypatch):
+    from rag.retrieval import _select_second_hop_entities_from_chunks
+
+    seed = RetrievalCandidate(
+        chunk_id="seed-1",
+        chunk="seed chunk",
+        source_id="source-1",
+        source_path="/tmp/source.md",
+        source_metadata={},
+        score=0.9,
+    )
+    first_hop = RetrievalCandidate(
+        chunk_id="chunk-1",
+        chunk="first hop chunk",
+        source_id="source-1",
+        source_path="/tmp/source.md",
+        source_metadata={},
+        score=0.8,
+    )
+    candidate = EntityCandidate(entity_id="e2", name="claims", entity_type="PROCESS")
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_USE_LLM_SECOND_HOP_SELECTION", False)
+
+    def unexpected_chat(*args, **kwargs):
+        raise AssertionError("second-hop selection should not call the LLM by default")
+
+    monkeypatch.setattr("rag.retrieval._chat_json", unexpected_chat)
+
+    selected = _select_second_hop_entities_from_chunks(
+        "insurance triage",
+        seed,
+        "insurance",
+        {"chunk-1": {"chunk": first_hop, "entities": [candidate]}},
+        trace_logger=None,
+    )
+
+    assert selected == [(first_hop, candidate)]
 
 
 def test_load_seed_entities_uses_mentions_only():
@@ -396,6 +582,49 @@ def test_fetch_same_source_neighbor_candidates_uses_provided_vector_without_reem
     assert called is False
 
 
+def test_dense_retrieve_uses_binary_prefilter_before_full_vector_rerank(monkeypatch):
+    from rag.retrieval import dense_retrieve
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = []
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_DENSE_PREFETCH_COUNT", 1000)
+
+    dense_retrieve(
+        conn,
+        "insurance triage",
+        source_ids=[],
+        filters={},
+        top_n=20,
+        vector=[0.1, 0.2, 0.3],
+    )
+
+    sql = conn.execute.call_args.args[0]
+    params = conn.execute.call_args.args[1]
+    assert "dense_prefilter AS MATERIALIZED" in sql
+    assert "binary_quantize(c.embedding)::bit(4096)" in sql
+    assert "binary_quantize(%s::vector)::bit(4096)" in sql
+    assert "ORDER BY c.embedding <=> %s::vector" in sql
+    assert params == ("[0.1,0.2,0.3]", 1000, "[0.1,0.2,0.3]", "[0.1,0.2,0.3]", 20)
+
+
+def test_insight_dense_retrieve_uses_binary_prefilter_before_full_vector_rerank(monkeypatch):
+    from rag.retrieval import insight_dense_retrieve
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = []
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_DENSE_PREFETCH_COUNT", 1000)
+
+    insight_dense_retrieve(conn, [0.1, 0.2, 0.3], top_n=20)
+
+    sql = conn.execute.call_args.args[0]
+    params = conn.execute.call_args.args[1]
+    assert "dense_prefilter AS MATERIALIZED" in sql
+    assert "binary_quantize(i.embedding)::bit(4096)" in sql
+    assert "binary_quantize(%s::vector)::bit(4096)" in sql
+    assert "ORDER BY i.embedding <=> %s::vector" in sql
+    assert params == ("[0.1,0.2,0.3]", 1000, "[0.1,0.2,0.3]", "[0.1,0.2,0.3]", 20)
+
+
 def test_expand_seed_candidate_uses_chunk_mediated_second_hop(monkeypatch):
     seed = RetrievalCandidate(
         chunk_id="seed-1",
@@ -435,6 +664,7 @@ def test_expand_seed_candidate_uses_chunk_mediated_second_hop(monkeypatch):
             second_hop_queries.append((entity_name, kwargs)) or f"query for {entity_name}"
         ),
     )
+    monkeypatch.setattr("rag.retrieval.get_embeddings", lambda texts: [[0.1] * 3 for _ in texts])
     monkeypatch.setattr(
         "rag.retrieval._load_chunk_ids_for_entity",
         lambda driver, entity_name, entity_type: ["chunk-2"] if entity_name == "identity" else ["chunk-3"],
@@ -714,6 +944,181 @@ def test_run_insight_first_stage_retrieval_fuses_per_variant_results(monkeypatch
     assert all(r.score > 0 for r in results)
 
 
+def test_run_first_stage_retrieval_omits_step_back_and_gates_expanded(monkeypatch):
+    from rag.retrieval import run_first_stage_retrieval
+
+    calls: list[tuple[str, str]] = []
+
+    def fake_dense(conn, query_text, *, source_ids, filters, top_n, vector=None):
+        calls.append(("dense", query_text))
+        return [
+            RetrievalCandidate(
+                chunk_id=f"dense-{len(calls)}",
+                chunk=query_text,
+                source_id="s1",
+                source_path="/tmp/source.md",
+                source_metadata={},
+                score=0.9,
+            )
+        ]
+
+    def fake_sparse(conn, query_text, *, source_ids, filters, top_n):
+        calls.append(("sparse", query_text))
+        return [
+            RetrievalCandidate(
+                chunk_id=f"sparse-{len(calls)}",
+                chunk=query_text,
+                source_id="s1",
+                source_path="/tmp/source.md",
+                source_metadata={},
+                score=0.8,
+            )
+        ]
+
+    class NullConnection:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr("rag.retrieval.get_connection", lambda: NullConnection())
+    monkeypatch.setattr("rag.retrieval.get_embeddings", lambda texts: [[0.1] * 3 for _ in texts])
+    monkeypatch.setattr("rag.retrieval.dense_retrieve", fake_dense)
+    monkeypatch.setattr("rag.retrieval.sparse_retrieve", fake_sparse)
+
+    variants = {
+        "original": "How to optimize broker submissions with agents",
+        "expanded": "insurance broker agent submission workflow optimization",
+        "hyde": "Broker submissions can be optimized with agentic triage.",
+        "step_back": "insurance operations optimization",
+        "decomposed": ["broker submission intake", "agent workflow bottlenecks"],
+    }
+
+    run_first_stage_retrieval(
+        query="How to optimize broker submissions with agents",
+        variants=variants,
+        source_ids=[],
+        filters={},
+        rrf_k=60,
+    )
+
+    queried_texts = [query_text for _, query_text in calls]
+    assert "insurance operations optimization" not in queried_texts
+    assert "insurance broker agent submission workflow optimization" not in queried_texts
+    assert "How to optimize broker submissions with agents" in queried_texts
+    assert "Broker submissions can be optimized with agentic triage." in queried_texts
+    assert "broker submission intake" in queried_texts
+
+
+def test_run_first_stage_retrieval_includes_expanded_for_short_query(monkeypatch):
+    from rag.retrieval import run_first_stage_retrieval
+
+    calls: list[str] = []
+
+    def fake_dense(conn, query_text, *, source_ids, filters, top_n, vector=None):
+        calls.append(query_text)
+        return []
+
+    def fake_sparse(conn, query_text, *, source_ids, filters, top_n):
+        calls.append(query_text)
+        return []
+
+    class NullConnection:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr("rag.retrieval.get_connection", lambda: NullConnection())
+    monkeypatch.setattr("rag.retrieval.get_embeddings", lambda texts: [[0.1] * 3 for _ in texts])
+    monkeypatch.setattr("rag.retrieval.dense_retrieve", fake_dense)
+    monkeypatch.setattr("rag.retrieval.sparse_retrieve", fake_sparse)
+
+    run_first_stage_retrieval(
+        query="insurance triage",
+        variants={
+            "original": "insurance triage",
+            "expanded": "insurance claim intake triage prioritization",
+            "step_back": "insurance operations",
+        },
+        source_ids=[],
+        filters={},
+        rrf_k=60,
+    )
+
+    assert "insurance claim intake triage prioritization" in calls
+    assert "insurance operations" not in calls
+
+
+def test_run_insight_first_stage_retrieval_omits_step_back_and_gates_expanded(monkeypatch):
+    from rag.retrieval import InsightSearchResult, run_insight_first_stage_retrieval
+
+    calls: list[str] = []
+
+    def fake_insight_search(query_text, *, vector, limit, min_score, conn):
+        calls.append(query_text)
+        return [InsightSearchResult(score=0.9, insight=query_text, insight_id=f"i{len(calls)}", topics=[], sources=[])]
+
+    monkeypatch.setattr("rag.retrieval.get_embeddings", lambda texts: [[0.1] * 3 for _ in texts])
+    monkeypatch.setattr("rag.retrieval.insight_hybrid_search", fake_insight_search)
+
+    run_insight_first_stage_retrieval(
+        conn=object(),
+        query="Biggest challenges in manufacturing right now",
+        variants={
+            "original": "Biggest challenges in manufacturing right now",
+            "expanded": "manufacturing supply chain labor automation challenges 2024",
+            "hyde": "Manufacturers face labor, cost, and supply chain pressure.",
+            "step_back": "industrial sector challenges",
+        },
+        source_ids=[],
+        filters={},
+        rrf_k=60,
+    )
+
+    assert "industrial sector challenges" not in calls
+    assert "manufacturing supply chain labor automation challenges 2024" not in calls
+    assert "Biggest challenges in manufacturing right now" in calls
+    assert "Manufacturers face labor, cost, and supply chain pressure." in calls
+
+
+def test_run_insight_first_stage_retrieval_searches_variants_concurrently(monkeypatch):
+    from rag.retrieval import InsightSearchResult, run_insight_first_stage_retrieval
+
+    original_started = threading.Event()
+    hyde_started = threading.Event()
+
+    def fake_insight_search(query_text, *, vector, limit, min_score, conn):
+        if query_text == "insurance triage":
+            original_started.set()
+            assert hyde_started.wait(0.5)
+            insight_id = "i1"
+        else:
+            hyde_started.set()
+            assert original_started.wait(0.5)
+            insight_id = "i2"
+        return [InsightSearchResult(score=0.9, insight=query_text, insight_id=insight_id, topics=[], sources=[])]
+
+    monkeypatch.setattr("rag.retrieval.get_embeddings", lambda texts: [[0.1] * 3 for _ in texts])
+    monkeypatch.setattr("rag.retrieval.insight_hybrid_search", fake_insight_search)
+
+    results = run_insight_first_stage_retrieval(
+        conn=object(),
+        query="insurance triage",
+        variants={
+            "original": "insurance triage",
+            "hyde": "Insurance teams triage submissions by urgency and risk.",
+        },
+        source_ids=[],
+        filters={},
+        rrf_k=60,
+    )
+
+    assert {result.insight_id for result in results} == {"i1", "i2"}
+
+
 class FakeInsightSession:
     def __init__(self):
         self.query = None
@@ -795,6 +1200,34 @@ def test_expand_seed_insight_returns_related_and_second_hop(monkeypatch):
     assert "topics" not in result
 
 
+def test_expand_seed_insight_batches_second_hop_embeddings(monkeypatch):
+    from rag.retrieval import InsightSearchResult, expand_seed_insight
+
+    related = [
+        {"insight_id": "i2", "content": "first related", "similarity": 0.92},
+        {"insight_id": "i3", "content": "second related", "similarity": 0.91},
+    ]
+    embedding_calls: list[list[str]] = []
+
+    monkeypatch.setattr("rag.retrieval._load_related_insights", lambda *args, **kwargs: related)
+    monkeypatch.setattr("rag.retrieval._fetch_insight_sources_and_topics", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        "rag.retrieval._generate_insight_sub_query",
+        lambda original_query, insight, trace_logger=None: f"subquery for {insight}",
+    )
+    monkeypatch.setattr(
+        "rag.retrieval.get_embeddings",
+        lambda texts: embedding_calls.append(list(texts)) or [[0.1] * 3 for _ in texts],
+    )
+    monkeypatch.setattr("rag.retrieval.insight_hybrid_search", lambda *args, **kwargs: [])
+
+    seed = InsightSearchResult(score=0.95, insight="seed insight", insight_id="i1", topics=[], sources=[])
+    result = expand_seed_insight(seed, "what changed?", conn=object(), driver=object(), trace_logger=None)
+
+    assert embedding_calls == [["subquery for first related", "subquery for second related"]]
+    assert result["related"][0]["type"] == "first_hop"
+
+
 def test_finalize_insight_results_sorts_by_score_and_slices(monkeypatch):
     expanded = [
         {"insight_id": "i1", "insight": "s1", "score": 0.9, "sources": [], "related": []},
@@ -844,6 +1277,7 @@ def test_retrieve_returns_insights_alongside_chunks(monkeypatch):
     monkeypatch.setattr("rag.retrieval.finalize_insight_results", lambda *a, **kw: [{
         "insight_id": "i1", "insight": "insight text", "score": 0.88, "sources": [], "related": [],
     }])
+    monkeypatch.setattr("rag.retrieval.get_connection", lambda: NullConnection())
     monkeypatch.setattr("rag.retrieval._expand_neighbor_contexts", lambda conn, results: None)
 
     response = retrieve(
@@ -856,3 +1290,49 @@ def test_retrieve_returns_insights_alongside_chunks(monkeypatch):
     assert "insights" in response
     assert len(response["insights"]) > 0
     assert response["insights"][0]["insight_id"] == "i1"
+
+
+def test_retrieve_seed_count_caps_insight_seed_expansion(monkeypatch):
+    from rag.retrieval import InsightSearchResult
+
+    monkeypatch.setattr("rag.retrieval.settings.OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr("rag.retrieval.settings.OPENCODE_API_KEY", "test-key")
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_INSIGHT_SEED_COUNT", 5)
+    monkeypatch.setattr("rag.retrieval.generate_query_variants", lambda q, **kw: {"original": q})
+    monkeypatch.setattr("rag.retrieval.generate_insight_query_variants", lambda q, **kw: {"original": q})
+    monkeypatch.setattr("rag.retrieval.run_first_stage_retrieval", lambda **kw: [])
+
+    insights = [
+        InsightSearchResult(0.9, "first insight", "i1", [], []),
+        InsightSearchResult(0.8, "second insight", "i2", [], []),
+    ]
+    monkeypatch.setattr("rag.retrieval.run_insight_first_stage_retrieval", lambda **kw: insights)
+    monkeypatch.setattr("rag.retrieval.rerank_candidates", lambda q, c, **kw: c[:kw["top_n"]])
+    monkeypatch.setattr("rag.retrieval.get_connection", lambda: NullConnection())
+    monkeypatch.setattr("rag.retrieval._expand_neighbor_contexts", lambda *a, **kw: None)
+
+    expanded_ids: list[str] = []
+
+    def fake_expand(seed, *args, **kwargs):
+        expanded_ids.append(seed.insight_id)
+        return {"insight_id": seed.insight_id, "insight": seed.insight, "score": seed.score, "sources": [], "related": []}
+
+    monkeypatch.setattr("rag.retrieval.expand_seed_insight", fake_expand)
+    monkeypatch.setattr("rag.retrieval.finalize_insight_results", lambda q, results, result_count, trace_logger=None: results)
+
+    response = retrieve(
+        query="insurance triage",
+        source_ids=[],
+        filters={},
+        seed_count=1,
+        result_count=1,
+        rrf_k=60,
+        entity_confidence_threshold=None,
+        first_hop_similarity_threshold=None,
+        second_hop_similarity_threshold=None,
+        trace=False,
+        trace_printer=None,
+    )
+
+    assert expanded_ids == ["i1"]
+    assert [item["insight_id"] for item in response["insights"]] == ["i1"]

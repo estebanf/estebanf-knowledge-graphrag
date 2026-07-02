@@ -96,6 +96,30 @@ _CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
 _RERANK_URL = "https://openrouter.ai/api/v1/rerank"
 _OPENCODE_URL = "https://opencode.ai/zen/go/v1/chat/completions"
 _ENC = tiktoken.get_encoding("cl100k_base")
+_QUERY_WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9'/-]*")
+_QUERY_INTENT_TERMS = {
+    "how",
+    "what",
+    "why",
+    "when",
+    "where",
+    "who",
+    "which",
+    "compare",
+    "explain",
+    "find",
+    "show",
+    "summarize",
+    "optimize",
+    "improve",
+    "biggest",
+    "challenge",
+    "challenges",
+    "risk",
+    "risks",
+    "benefit",
+    "benefits",
+}
 
 
 def _require_api_key() -> None:
@@ -123,6 +147,27 @@ def _normalize_text(value: str) -> str:
 
 def _token_count(text: str) -> int:
     return len(_ENC.encode(text))
+
+
+def should_include_expanded_variant(query: str) -> bool:
+    tokens = _QUERY_WORD_RE.findall(query)
+    if len(tokens) <= 4:
+        return True
+
+    if any("/" in token or "-" in token for token in tokens):
+        return True
+
+    if any(len(token) >= 2 and token.isupper() for token in tokens):
+        return True
+
+    normalized = {token.casefold() for token in tokens}
+    if query.strip().endswith("?") or normalized.intersection(_QUERY_INTENT_TERMS):
+        return False
+
+    if len(tokens) >= 7:
+        return False
+
+    return True
 
 
 def normalize_query_variants(raw: dict) -> dict[str, object]:
@@ -327,6 +372,31 @@ def dense_retrieve(
         vector = get_embeddings([query_text])[0]
     where_sql, params = _build_chunk_filter_sql(source_ids, filters)
     vector_param = _vector_literal(vector)
+    prefetch_count = settings.RETRIEVAL_DENSE_PREFETCH_COUNT
+    if prefetch_count > top_n:
+        rows = conn.execute(
+            f"""
+            WITH dense_prefilter AS MATERIALIZED (
+                SELECT c.id
+                FROM chunks c
+                JOIN sources s ON s.id = c.source_id
+                JOIN jobs j ON j.id = c.job_id
+                WHERE {where_sql}
+                ORDER BY binary_quantize(c.embedding)::bit(4096) <~> binary_quantize(%s::vector)::bit(4096)
+                LIMIT %s
+            )
+            SELECT c.id, c.content, s.id, s.storage_path, s.metadata,
+                   (1 - (c.embedding <=> %s::vector)) AS score
+            FROM dense_prefilter p
+            JOIN chunks c ON c.id = p.id
+            JOIN sources s ON s.id = c.source_id
+            ORDER BY c.embedding <=> %s::vector
+            LIMIT %s
+            """,
+            (*params, vector_param, prefetch_count, vector_param, vector_param, top_n),
+        ).fetchall()
+        return [_row_to_candidate(row) for row in rows]
+
     rows = conn.execute(
         f"""
         SELECT c.id, c.content, s.id, s.storage_path, s.metadata,
@@ -512,6 +582,28 @@ def insight_dense_retrieve(
     top_n: int,
 ) -> list[InsightCandidate]:
     vector_param = _vector_literal(vector)
+    prefetch_count = settings.RETRIEVAL_DENSE_PREFETCH_COUNT
+    if prefetch_count > top_n:
+        rows = conn.execute(
+            """
+            WITH dense_prefilter AS MATERIALIZED (
+                SELECT i.id
+                FROM insights i
+                WHERE i.embedding IS NOT NULL
+                ORDER BY binary_quantize(i.embedding)::bit(4096) <~> binary_quantize(%s::vector)::bit(4096)
+                LIMIT %s
+            )
+            SELECT i.id, i.content,
+                   (1 - (i.embedding <=> %s::vector)) AS score
+            FROM dense_prefilter p
+            JOIN insights i ON i.id = p.id
+            ORDER BY i.embedding <=> %s::vector
+            LIMIT %s
+            """,
+            (vector_param, prefetch_count, vector_param, vector_param, top_n),
+        ).fetchall()
+        return _insight_rows_to_candidates(rows)
+
     rows = conn.execute(
         f"""
         SELECT i.id, i.content,
@@ -694,7 +786,10 @@ def run_insight_first_stage_retrieval(
     variant_names: list[str] = []
     variant_values: list[str] = []
 
-    for key in ("original", "expanded", "hyde", "step_back"):
+    include_expanded = should_include_expanded_variant(query)
+    for key in ("original", "expanded", "hyde"):
+        if key == "expanded" and not include_expanded:
+            continue
         value = variants.get(key)
         if not value or not isinstance(value, str):
             continue
@@ -708,20 +803,41 @@ def run_insight_first_stage_retrieval(
     for i, key in enumerate(variant_names):
         vectors[key] = embeddings[i]
 
-    for key, value in zip(variant_names, variant_values):
+    results_lock = threading.Lock()
+
+    def _run_variant(key: str, value: str) -> None:
         vector = vectors.get(key)
         if vector is None:
-            continue
-        candidates = insight_hybrid_search(
-            value,
-            vector=vector,
-            limit=settings.RETRIEVAL_FUSED_CANDIDATE_COUNT,
-            min_score=0.0,
-            conn=conn,
-        )
-        all_candidates.append(candidates)
+            return
+        if hasattr(conn, "execute"):
+            with get_connection() as thread_conn:
+                candidates = insight_hybrid_search(
+                    value,
+                    vector=vector,
+                    limit=settings.RETRIEVAL_FUSED_CANDIDATE_COUNT,
+                    min_score=0.0,
+                    conn=thread_conn,
+                )
+        else:
+            candidates = insight_hybrid_search(
+                value,
+                vector=vector,
+                limit=settings.RETRIEVAL_FUSED_CANDIDATE_COUNT,
+                min_score=0.0,
+                conn=conn,
+            )
         if trace_logger:
             trace_logger.emit(f"insight variant '{key}' returned {len(candidates)} candidates")
+        with results_lock:
+            all_candidates.append(candidates)
+
+    with ThreadPoolExecutor(max_workers=len(variant_names)) as executor:
+        futures = [
+            executor.submit(_run_variant, key, value)
+            for key, value in zip(variant_names, variant_values)
+        ]
+        for future in futures:
+            future.result()
 
     if not all_candidates:
         return []
@@ -772,10 +888,8 @@ def run_first_stage_retrieval(
     # Build the ordered list of (name, text, dense_only) specs
     variant_specs: list[tuple[str, str, bool]] = []
     variant_specs.append(("original", str(variants["original"]), False))
-    if isinstance(variants.get("expanded"), str):
+    if isinstance(variants.get("expanded"), str) and should_include_expanded_variant(query):
         variant_specs.append(("expanded", variants["expanded"], False))
-    if isinstance(variants.get("step_back"), str):
-        variant_specs.append(("step_back", variants["step_back"], False))
     if isinstance(variants.get("hyde"), str):
         variant_specs.append(("hyde", variants["hyde"], True))
     for index, subquery in enumerate(variants.get("decomposed", []) or []):
@@ -919,6 +1033,10 @@ def _generate_entity_query(
     *,
     entity_context: Optional[dict] = None,
 ) -> str:
+    fallback_query = f"{query} {entity_name}".strip()
+    if not settings.RETRIEVAL_USE_LLM_ENTITY_QUERIES:
+        return fallback_query
+
     prompt = prompts.ENTITY_QUERY_GENERATION.format(
         query=query,
         seed_chunk=seed.chunk[:1200],
@@ -934,7 +1052,7 @@ def _generate_entity_query(
             return value.strip()
     except Exception:
         pass
-    return f"{query} {entity_name}".strip()
+    return fallback_query
 
 
 def _load_seed_entities(driver, chunk_id: str) -> list[EntityCandidate]:
@@ -1172,13 +1290,29 @@ def expand_seed_insight(
     if trace_logger:
         trace_logger.emit(f"insight expansion: {len(first_hop)} first-hop related")
 
+    related_for_second_hop = first_hop[:3]
+
+    def _sub_query_for_related(related_insight: dict) -> tuple[dict, str]:
+        sub_query = _generate_insight_sub_query(query, related_insight["content"], trace_logger=trace_logger)
+        return related_insight, sub_query
+
+    if related_for_second_hop:
+        with ThreadPoolExecutor(max_workers=len(related_for_second_hop)) as pool:
+            sub_query_pairs = [
+                (related_insight, sub_query)
+                for related_insight, sub_query in pool.map(_sub_query_for_related, related_for_second_hop)
+                if sub_query
+            ]
+    else:
+        sub_query_pairs = []
+
+    sub_query_vectors = get_embeddings([sub_query for _, sub_query in sub_query_pairs]) if sub_query_pairs else []
+
     # Group second-hop results by sub_query
     second_hop_groups: list[dict] = []
-    for related_insight in first_hop[:3]:
-        sub_query = _generate_insight_sub_query(query, related_insight["content"], trace_logger=trace_logger)
+    for (related_insight, sub_query), vector in zip(sub_query_pairs, sub_query_vectors):
         if not sub_query:
             continue
-        vector = get_embeddings([sub_query])[0]
         sub_results = insight_hybrid_search(
             sub_query, vector=vector,
             limit=5, min_score=0.0, conn=conn,
@@ -1262,17 +1396,20 @@ def _select_second_hop_entities_from_chunks(
     if not deduped_candidates:
         return []
 
-    prompt = prompts.SECOND_HOP_ENTITY_SELECTION.format(
-        max_entities=settings.RETRIEVAL_SECOND_HOP_SELECTION_COUNT,
-        query=query,
-        seed_chunk=seed.chunk[:1200],
-        entity_name=entity_name,
-        candidates=json.dumps([candidate.__dict__ for candidate in deduped_candidates], ensure_ascii=True),
-    )
-    try:
-        response = _chat_json(settings.MODEL_RETRIEVAL_GRAPH, prompt, timeout=60)
-        names = [value for value in response.get("selected_entities", []) if isinstance(value, str)]
-    except Exception:
+    if settings.RETRIEVAL_USE_LLM_SECOND_HOP_SELECTION:
+        prompt = prompts.SECOND_HOP_ENTITY_SELECTION.format(
+            max_entities=settings.RETRIEVAL_SECOND_HOP_SELECTION_COUNT,
+            query=query,
+            seed_chunk=seed.chunk[:1200],
+            entity_name=entity_name,
+            candidates=json.dumps([candidate.__dict__ for candidate in deduped_candidates], ensure_ascii=True),
+        )
+        try:
+            response = _chat_json(settings.MODEL_RETRIEVAL_GRAPH, prompt, timeout=60)
+            names = [value for value in response.get("selected_entities", []) if isinstance(value, str)]
+        except Exception:
+            names = [candidate.name for candidate in deduped_candidates[: settings.RETRIEVAL_SECOND_HOP_SELECTION_COUNT]]
+    else:
         names = [candidate.name for candidate in deduped_candidates[: settings.RETRIEVAL_SECOND_HOP_SELECTION_COUNT]]
 
     selected: list[tuple[RetrievalCandidate, EntityCandidate]] = []
@@ -1370,14 +1507,35 @@ def expand_seed_candidate(
     selected_names = _select_entity_names(query, seed, entities, trace_logger=trace_logger)
     selected_entities = [entity for entity in entities if entity.name in selected_names]
 
+    first_hop_entities: list[EntityCandidate] = []
     for entity in selected_entities[: settings.RETRIEVAL_ENTITY_SELECTION_COUNT]:
-        if not _consume_llm_budget(budget, budget_lock) or _time_exhausted():
+        if _time_exhausted() or not _consume_llm_budget(budget, budget_lock):
+            if trace_logger:
+                trace_logger.emit(f"stopping lower-priority branches for seed {seed.chunk_id}")
+            break
+        first_hop_entities.append(entity)
+
+    def _first_hop_query_for_entity(entity: EntityCandidate) -> tuple[EntityCandidate, str]:
+        return entity, _generate_entity_query(query, seed, entity.name)
+
+    if first_hop_entities:
+        with ThreadPoolExecutor(max_workers=min(settings.RETRIEVAL_EXPANSION_MAX_WORKERS, len(first_hop_entities))) as pool:
+            first_hop_query_pairs = list(pool.map(_first_hop_query_for_entity, first_hop_entities))
+    else:
+        first_hop_query_pairs = []
+
+    first_hop_vectors = (
+        get_embeddings([first_hop_query for _, first_hop_query in first_hop_query_pairs])
+        if first_hop_query_pairs
+        else []
+    )
+
+    for (entity, first_hop_query), first_hop_vector in zip(first_hop_query_pairs, first_hop_vectors):
+        if _time_exhausted():
             if trace_logger:
                 trace_logger.emit(f"stopping lower-priority branches for seed {seed.chunk_id}")
             break
 
-        first_hop_query = _generate_entity_query(query, seed, entity.name)
-        first_hop_vector = get_embeddings([first_hop_query])[0]
         if trace_logger:
             trace_logger.emit(f"first-hop query for {entity.name}: {first_hop_query}")
         first_hop_candidates = _fetch_chunk_candidates_by_ids(
@@ -1783,9 +1941,12 @@ def retrieve(
         )
     )
 
-    variants = generate_query_variants(query, trace_logger=trace_logger)
-    insight_variants = generate_insight_query_variants(query, trace_logger=trace_logger)
-    insight_seed_count = settings.RETRIEVAL_INSIGHT_SEED_COUNT
+    with ThreadPoolExecutor(max_workers=2) as variant_pool:
+        variants_future = variant_pool.submit(generate_query_variants, query, trace_logger=trace_logger)
+        insight_variants_future = variant_pool.submit(generate_insight_query_variants, query, trace_logger=trace_logger)
+        variants = variants_future.result()
+        insight_variants = insight_variants_future.result()
+    insight_seed_count = min(settings.RETRIEVAL_INSIGHT_SEED_COUNT, params.seed_count)
     max_workers = settings.RETRIEVAL_EXPANSION_MAX_WORKERS
 
     def _run_chunk_retrieval(driver) -> list[dict]:
@@ -1805,6 +1966,8 @@ def retrieve(
             trace_logger=trace_logger,
         )[: params.seed_count]
         trace_logger.emit(f"selected {len(seed_candidates)} seed chunks")
+        if not seed_candidates:
+            return []
 
         budget: dict = {"llm_calls": 0, "started_at": time.monotonic()}
         budget_lock = threading.Lock()

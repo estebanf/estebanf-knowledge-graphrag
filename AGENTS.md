@@ -71,6 +71,8 @@ The repo is split into a few main areas:
 - `tests/`: CLI, API, ingestion, retrieval, prompt, and community coverage
 - `scripts/`: local environment startup, backups, migrations, and utility entrypoints
 - `frontend/`: React UI, Vite config, and nginx assets for the containerized frontend
+- `docs/solutions/`: documented solutions to past problems, organized by category with YAML frontmatter (`module`, `tags`, `problem_type`); relevant when implementing or debugging in documented areas
+- `CONCEPTS.md`: shared project vocabulary for domain concepts used across retrieval, ingestion, graph, and storage work
 
 ## Packaging Note
 
@@ -117,6 +119,10 @@ The repo is split into a few main areas:
 - `community retrieve` resolves source scope through a lightweight retrieval-stage pass, not full retrieval result expansion.
 - `--trace` on retrieval still prints live activity first and the final JSON block last.
 - Retrieval config remains env-backed through `src/rag/config.py`.
+- Retrieval starts chunk and insight variant generation in parallel. Active first-stage variants are `original`, HyDE, decomposed chunk sub-queries, and gated `expanded`; `step_back` is no longer scheduled by default.
+- Dense chunk and insight retrieval over 4096-dimensional embeddings depends on the binary-quantized HNSW prefilter indexes from `scripts/migrate/009_binary_vector_prefilter_indexes.sql`, followed by full-vector reranking in SQL.
+- Chunk graph expansion uses deterministic `query + entity` expansion queries by default. `RETRIEVAL_USE_LLM_ENTITY_QUERIES=true` restores the slower LLM-written entity query behavior.
+- Second-hop chunk entity selection is deterministic by default. `RETRIEVAL_USE_LLM_SECOND_HOP_SELECTION=true` restores slower LLM-backed second-hop selection.
 - Use `MENTIONS` as the authoritative chunk-to-entity edge for retrieval expansion.
 - Same-source fallback is part of retrieval when graph expansion yields no non-seed chunk evidence.
 - Entity extraction enforces `entity_type` via JSON schema validation at parse time; items with invalid types (e.g. DATE, ROLE, EVENT) are silently dropped before insert.

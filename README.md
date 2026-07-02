@@ -212,7 +212,10 @@ All runtime settings are env-backed. The CLI, backend, worker, and Docker servic
 | `RETRIEVAL_RRF_SCORE_FLOOR` | `0.0` | Minimum fused score retained after RRF. |
 | `RETRIEVAL_SEED_COUNT` | `10` | Number of top reranked seed chunks expanded in the graph stage. |
 | `RETRIEVAL_RESULT_COUNT` | `5` | Number of final root results returned. |
-| `RETRIEVAL_MAX_DECOMPOSED_QUERIES` | `5` | Max number of decomposed variants generated from the query. |
+| `RETRIEVAL_MAX_DECOMPOSED_QUERIES` | `2` | Max number of decomposed variants generated from the query. |
+| `RETRIEVAL_DENSE_PREFETCH_COUNT` | `1000` | Binary-quantized ANN candidate count for dense chunk/insight search before full-vector reranking. Set to `0` to use exact full-corpus dense scans. |
+| `RETRIEVAL_USE_LLM_ENTITY_QUERIES` | `false` | Use the graph LLM to rewrite entity expansion queries. Disabled by default because deterministic `query + entity` queries avoid slow expansion calls. |
+| `RETRIEVAL_USE_LLM_SECOND_HOP_SELECTION` | `false` | Use the graph LLM to select second-hop entities. Disabled by default so chunk graph expansion stays within the time budget. |
 | `RETRIEVAL_FIRST_STAGE_TOP_N` | `20` | Top candidates kept per first-stage search path before fusion. |
 | `RETRIEVAL_FUSED_CANDIDATE_COUNT` | `50` | Max fused first-stage candidates retained before reranking. |
 | `RETRIEVAL_ENTITY_SELECTION_COUNT` | `5` | Max entities selected from each seed for first-hop expansion. |
@@ -228,8 +231,7 @@ All runtime settings are env-backed. The CLI, backend, worker, and Docker servic
 | `RETRIEVAL_TEXT_SEARCH_CONFIG` | `english` | Postgres full-text search configuration for sparse retrieval. |
 | `RETRIEVAL_WEIGHT_ORIGINAL` | `1.0` | Weight applied to the original query path in first-stage fusion. |
 | `RETRIEVAL_WEIGHT_DECOMPOSED` | `1.0` | Weight applied to decomposed query paths. |
-| `RETRIEVAL_WEIGHT_EXPANDED` | `0.85` | Weight applied to expanded query variants. |
-| `RETRIEVAL_WEIGHT_STEP_BACK` | `0.75` | Weight applied to step-back query variants. |
+| `RETRIEVAL_WEIGHT_EXPANDED` | `0.85` | Weight applied to expanded query variants when the deterministic gate includes them. |
 | `RETRIEVAL_WEIGHT_HYDE` | `0.65` | Weight applied to HyDE-style variants. |
 | `RETRIEVAL_FINAL_ROOT_WEIGHT` | `0.60` | Weight of the reranked root chunk in final aggregation. |
 | `RETRIEVAL_FINAL_FIRST_HOP_WEIGHT` | `0.25` | Weight of first-hop evidence in final aggregation. |
@@ -695,12 +697,20 @@ Response body:
 
 Retrieval is the graph-aware query pipeline. It:
 
-1. generates query variants (chunk and insight)
+1. generates chunk and insight query variants in parallel
 2. runs first-stage hybrid search for chunks and insights
 3. fuses and reranks candidates
 4. expands selected chunk seeds through graph evidence (entity MENTIONS), and insight seeds through RELATED_TO + LLM-generated sub-queries
 5. falls back to same-source neighbors when chunk graph expansion has no non-seed evidence
 6. reranks and returns root chunk results plus related supporting chunks, and a parallel list of ranked insights
+
+Active variant fanout is `original`, HyDE, up to two decomposed chunk sub-queries, and `expanded` only when the deterministic gate treats the query as short or under-specified. Step-back variants are retired from active retrieval. Dense chunk and insight search use binary-quantized pgvector HNSW indexes as a candidate prefilter for 4096-dimensional embeddings, then rerank those candidates with the original full-precision cosine score. Chunk graph expansion uses deterministic entity queries and second-hop entity selection by default; set `RETRIEVAL_USE_LLM_ENTITY_QUERIES=true` or `RETRIEVAL_USE_LLM_SECOND_HOP_SELECTION=true` to restore those slower LLM-backed graph steps.
+
+To profile a live retrieval run, use:
+
+```bash
+PYTHONPATH=src venv/bin/python scripts/profile_retrieve.py "insurance triage"
+```
 
 ### CLI
 
@@ -1108,6 +1118,7 @@ The migrations most likely to matter for current code are:
 - `scripts/migrate/004_job_improvements.sql`
 - `scripts/migrate/006_search_performance_indexes.sql`
 - `scripts/migrate/007_insights.sql`
+- `scripts/migrate/009_binary_vector_prefilter_indexes.sql`
 
 Example:
 
@@ -1115,6 +1126,7 @@ Example:
 docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/004_job_improvements.sql
 docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/006_search_performance_indexes.sql
 docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/007_insights.sql
+docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/009_binary_vector_prefilter_indexes.sql
 ```
 
 ## Verification

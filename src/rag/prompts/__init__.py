@@ -94,11 +94,10 @@ COMMUNITY_SUMMARIZATION = (
 )
 
 QUERY_VARIANTS = """You are generating bounded retrieval query variants.
-Return ONLY a JSON object with keys: original, hyde, expanded, step_back, decomposed.
+Return ONLY a JSON object with keys: original, hyde, expanded, decomposed.
 - original must be the exact input query
 - hyde must be a short hypothetical answer passage for dense retrieval
 - expanded must add synonyms, aliases, abbreviations, and related terms
-- step_back must be a more general background query
 - decomposed must contain at most {max_decomposed} focused sub-queries
 - avoid near-duplicate variants
 
@@ -107,11 +106,10 @@ Query:
 """
 
 INSIGHT_QUERY_VARIANTS = """You are generating retrieval query variants for insight search.
-Return ONLY a JSON object with keys: original, hyde, expanded, step_back.
+Return ONLY a JSON object with keys: original, hyde, expanded.
 - original must be the exact input query
 - hyde must be a short hypothetical insight passage
 - expanded must add synonyms, aliases, and related concepts
-- step_back must be a more general background query
 - avoid near-duplicate variants
 
 Query:

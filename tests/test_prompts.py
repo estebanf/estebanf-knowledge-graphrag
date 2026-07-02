@@ -25,3 +25,8 @@ def test_insight_extraction_prompt_placeholders():
     assert "{chunk}" in INSIGHT_EXTRACTION
     assert "insights" in INSIGHT_EXTRACTION
     assert "topics" in INSIGHT_EXTRACTION.lower()
+
+
+def test_query_variant_prompts_do_not_request_step_back():
+    assert "step_back" not in prompts.QUERY_VARIANTS
+    assert "step_back" not in prompts.INSIGHT_QUERY_VARIANTS
