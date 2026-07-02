@@ -213,7 +213,7 @@ All runtime settings are env-backed. The CLI, backend, worker, and Docker servic
 | `RETRIEVAL_SEED_COUNT` | `10` | Number of top reranked seed chunks expanded in the graph stage. |
 | `RETRIEVAL_RESULT_COUNT` | `5` | Number of final root results returned. |
 | `RETRIEVAL_MAX_DECOMPOSED_QUERIES` | `2` | Max number of decomposed variants generated from the query. |
-| `RETRIEVAL_DENSE_PREFETCH_COUNT` | `1000` | Binary-quantized ANN candidate count for dense chunk/insight search before full-vector reranking. Set to `0` to use exact full-corpus dense scans. |
+| `RETRIEVAL_DENSE_PREFETCH_COUNT` | `1000` | Binary-quantized ANN candidate count for dense chunk/insight search before full-vector reranking. Set to `0` to use exact full-corpus dense scans. Dense retrieval sets Postgres's `hnsw.ef_search` to this value before running the prefilter query — pgvector's HNSW candidate search otherwise caps returned rows at the `hnsw.ef_search` default (`40`) regardless of this setting. Raising this value widens the exact-rerank candidate pool but costs roughly linear extra query latency (measured locally: ~0.25s at 40 candidates vs. ~1.6s at 1000 for a single dense query). |
 | `RETRIEVAL_USE_LLM_ENTITY_QUERIES` | `false` | Use the graph LLM to rewrite entity expansion queries. Disabled by default because deterministic `query + entity` queries avoid slow expansion calls. |
 | `RETRIEVAL_USE_LLM_SECOND_HOP_SELECTION` | `false` | Use the graph LLM to select second-hop entities. Disabled by default so chunk graph expansion stays within the time budget. |
 | `RETRIEVAL_FIRST_STAGE_TOP_N` | `20` | Top candidates kept per first-stage search path before fusion. |
@@ -1128,6 +1128,33 @@ docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/006_search
 docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/007_insights.sql
 docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/009_binary_vector_prefilter_indexes.sql
 ```
+
+### Storage maintenance
+
+`entities` accumulates dead TOAST rows from `scripts/merge_semantic_duplicates.py` and `scripts/merge_duplicate_entities.py` (each merge is an `UPDATE` + `DELETE`). Both scripts now run `VACUUM (ANALYZE) entities` automatically after a run that actually merged rows, and `entities` has lower autovacuum thresholds (`autovacuum_vacuum_scale_factor = 0.02`, `autovacuum_vacuum_threshold = 500`, matching for analyze) so bloat gets reclaimed without operator intervention going forward.
+
+If `entities` is already bloated on an existing database (check with the query below), reclaim it once with a maintenance-window `VACUUM FULL`, which takes an exclusive lock for its duration:
+
+```bash
+docker compose exec -T postgres psql -U rag -d rag -c "
+SELECT pg_size_pretty(pg_total_relation_size('entities')) AS entities_total;
+"
+docker compose exec -T postgres psql -U rag -d rag -c "VACUUM FULL VERBOSE entities;"
+docker compose exec -T postgres psql -U rag -d rag -c "
+ALTER TABLE entities SET (
+  autovacuum_vacuum_scale_factor = 0.02,
+  autovacuum_vacuum_threshold = 500,
+  autovacuum_analyze_scale_factor = 0.02,
+  autovacuum_analyze_threshold = 500
+);
+"
+```
+
+Prefer `pg_repack -t entities` over `VACUUM FULL` if the exclusive lock is too disruptive for your deployment; it avoids the lock at the cost of needing roughly 1x extra disk headroom during the run.
+
+### Memgraph schema reconciliation
+
+The backend re-applies `src/rag/graph_db.py`'s `SCHEMA_STATEMENTS` (the same index/constraint statements as `scripts/init/memgraph_init.cypher`) idempotently on every startup, so a live instance can't silently drift out of sync with statements added after its initial setup (this is how the `Insight(insight_id)` index/constraint gap was found and fixed). No manual migration step is needed for future schema additions to that list — just add the statement and restart the backend.
 
 ## Verification
 

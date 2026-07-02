@@ -142,6 +142,9 @@ The repo is split into a few main areas:
 - `insights` and `chunk_insights` are added in `scripts/migrate/007_insights.sql`; apply it on any database predating insight extraction.
 - Hard delete order matters: remove insight join rows, orphan insights, `entities`, and `chunks` before `jobs`, then `sources`, or foreign keys will break deletes.
 - Postgres schema is initialized from `scripts/init/postgres/`.
+- `entities` has tightened autovacuum thresholds (`scale_factor = 0.02`) because `scripts/merge_semantic_duplicates.py`/`merge_duplicate_entities.py` are update/delete-heavy; both scripts also call `rag.db.vacuum_analyze_entities()` after a run that merges at least one row. Don't remove that call without re-checking `entities` doesn't re-bloat.
+- Dense retrieval (`dense_retrieve`/`insight_dense_retrieve` in `src/rag/retrieval.py`) sets Postgres's `hnsw.ef_search` to `RETRIEVAL_DENSE_PREFETCH_COUNT` before the binary-quantized prefilter query. pgvector's HNSW candidate search silently caps returned rows at `hnsw.ef_search` (default `40`) regardless of the SQL `LIMIT`, so without this the prefetch count setting was a no-op past ~40 candidates.
+- `src/rag/graph_db.py::reconcile_schema()` re-applies Memgraph's index/constraint statements idempotently on every backend startup (`SCHEMA_STATEMENTS`, mirroring `scripts/init/memgraph_init.cypher`). Add new statements to that list, not just the `.cypher` file, or a live instance won't pick them up.
 
 ## Valuable Carryover From `CLAUDE.md`
 
