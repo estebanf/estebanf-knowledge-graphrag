@@ -625,6 +625,79 @@ def test_insight_dense_retrieve_uses_binary_prefilter_before_full_vector_rerank(
     assert params == ("[0.1,0.2,0.3]", 1000, "[0.1,0.2,0.3]", "[0.1,0.2,0.3]", 20)
 
 
+def test_dense_retrieve_sets_hnsw_ef_search_to_prefetch_count_when_prefiltering(monkeypatch):
+    from rag.retrieval import dense_retrieve
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = []
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_DENSE_PREFETCH_COUNT", 1000)
+
+    dense_retrieve(
+        conn,
+        "insurance triage",
+        source_ids=[],
+        filters={},
+        top_n=20,
+        vector=[0.1, 0.2, 0.3],
+    )
+
+    calls = [call.args[0] for call in conn.execute.call_args_list]
+    assert any("SET hnsw.ef_search = 1000" in sql for sql in calls)
+    # SET must run before the prefilter query, not after.
+    set_index = next(i for i, sql in enumerate(calls) if "SET hnsw.ef_search" in sql)
+    query_index = next(i for i, sql in enumerate(calls) if "dense_prefilter" in sql)
+    assert set_index < query_index
+
+
+def test_insight_dense_retrieve_sets_hnsw_ef_search_to_prefetch_count_when_prefiltering(monkeypatch):
+    from rag.retrieval import insight_dense_retrieve
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = []
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_DENSE_PREFETCH_COUNT", 1000)
+
+    insight_dense_retrieve(conn, [0.1, 0.2, 0.3], top_n=20)
+
+    calls = [call.args[0] for call in conn.execute.call_args_list]
+    assert any("SET hnsw.ef_search = 1000" in sql for sql in calls)
+    set_index = next(i for i, sql in enumerate(calls) if "SET hnsw.ef_search" in sql)
+    query_index = next(i for i, sql in enumerate(calls) if "dense_prefilter" in sql)
+    assert set_index < query_index
+
+
+def test_dense_retrieve_does_not_set_hnsw_ef_search_when_not_prefiltering(monkeypatch):
+    from rag.retrieval import dense_retrieve
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = []
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_DENSE_PREFETCH_COUNT", 10)
+
+    dense_retrieve(
+        conn,
+        "insurance triage",
+        source_ids=[],
+        filters={},
+        top_n=20,
+        vector=[0.1, 0.2, 0.3],
+    )
+
+    calls = [call.args[0] for call in conn.execute.call_args_list]
+    assert not any("hnsw.ef_search" in sql for sql in calls)
+
+
+def test_insight_dense_retrieve_does_not_set_hnsw_ef_search_when_not_prefiltering(monkeypatch):
+    from rag.retrieval import insight_dense_retrieve
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = []
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_DENSE_PREFETCH_COUNT", 10)
+
+    insight_dense_retrieve(conn, [0.1, 0.2, 0.3], top_n=20)
+
+    calls = [call.args[0] for call in conn.execute.call_args_list]
+    assert not any("hnsw.ef_search" in sql for sql in calls)
+
+
 def test_expand_seed_candidate_uses_chunk_mediated_second_hop(monkeypatch):
     seed = RetrievalCandidate(
         chunk_id="seed-1",

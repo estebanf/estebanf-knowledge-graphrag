@@ -348,6 +348,20 @@ def _vector_literal(vector: list[float]) -> str:
     return f"[{','.join(str(v) for v in vector)}]"
 
 
+def _set_hnsw_ef_search(conn, prefetch_count: int) -> None:
+    """Widen the HNSW candidate search so the binary prefilter actually
+    returns ``prefetch_count`` rows.
+
+    pgvector's ``hnsw.ef_search`` GUC defaults to 40 and silently caps the
+    candidate pool below any larger ``LIMIT`` requested against an HNSW
+    index — the prefilter query returns at most ``ef_search`` rows
+    regardless of the SQL ``LIMIT``. Session-scoped ``SET`` (not
+    ``SET LOCAL``) is fine here: each call site holds its own short-lived
+    connection for a single retrieval query.
+    """
+    conn.execute(f"SET hnsw.ef_search = {int(prefetch_count)}")
+
+
 def _row_to_candidate(row) -> RetrievalCandidate:
     return RetrievalCandidate(
         chunk_id=str(row[0]),
@@ -374,6 +388,7 @@ def dense_retrieve(
     vector_param = _vector_literal(vector)
     prefetch_count = settings.RETRIEVAL_DENSE_PREFETCH_COUNT
     if prefetch_count > top_n:
+        _set_hnsw_ef_search(conn, prefetch_count)
         rows = conn.execute(
             f"""
             WITH dense_prefilter AS MATERIALIZED (
@@ -584,6 +599,7 @@ def insight_dense_retrieve(
     vector_param = _vector_literal(vector)
     prefetch_count = settings.RETRIEVAL_DENSE_PREFETCH_COUNT
     if prefetch_count > top_n:
+        _set_hnsw_ef_search(conn, prefetch_count)
         rows = conn.execute(
             """
             WITH dense_prefilter AS MATERIALIZED (
