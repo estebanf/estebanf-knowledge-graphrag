@@ -602,8 +602,19 @@ def ingest_file(
     file_path: Path,
     name: str | None = None,
     metadata: dict | None = None,
+    *,
+    original_md5: str | None = None,
+    original_file_name: str | None = None,
+    original_file_type: str | None = None,
 ) -> dict:
-    result = submit_ingestion_job(file_path, name=name, metadata=metadata)
+    result = submit_ingestion_job(
+        file_path,
+        name=name,
+        metadata=metadata,
+        original_md5=original_md5,
+        original_file_name=original_file_name,
+        original_file_type=original_file_type,
+    )
     with get_connection() as conn:
         conn.execute(
             "UPDATE jobs SET status='processing:parsing', current_stage='parsing', updated_at=now() WHERE id=%s",

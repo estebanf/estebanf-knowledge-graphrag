@@ -19,16 +19,15 @@ def test_parse_document_returns_structured_result_for_markdown(tmp_path):
 
 
 def test_parse_document_parses_markdown_without_docling(tmp_path):
-    # Backend-safe: markdown parsing never touches Docling.
+    # Backend-safe: markdown parsing succeeds without Docling. (Process-wide
+    # import isolation is asserted separately by the subprocess guard in
+    # tests/test_cli_imports.py.)
     file_path = tmp_path / "sample.md"
     file_path.write_text("# Title\n\nParagraph.\n", encoding="utf-8")
 
     result = parse_document(file_path)
 
     assert result.markdown.startswith("# Title")
-    import sys
-
-    assert not any(name.startswith("docling") for name in sys.modules)
 
 
 @patch("rag.parser.describe_image", return_value="A red square.")
@@ -78,7 +77,3 @@ def test_parse_document_raises_clear_error_for_binary_formats(tmp_path):
 
     with pytest.raises(ParseError, match="markdown/text only"):
         parse_document(file_path)
-
-    import sys
-
-    assert not any(name.startswith("docling") for name in sys.modules)

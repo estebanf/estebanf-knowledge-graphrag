@@ -53,6 +53,26 @@ def cleanup_existing_file(file_path: Path) -> None:
         conn.commit()
 
 
+def cleanup_existing_hash(file_md5: str) -> None:
+    """Remove any sources/jobs stored under a given md5 (prepared binary provenance)."""
+    url = settings.POSTGRES_URL
+    with psycopg.connect(url) as conn:
+        source_rows = conn.execute(
+            "SELECT id FROM sources WHERE md5 = %s",
+            (file_md5,),
+        ).fetchall()
+        for row in source_rows:
+            source_id = str(row[0])
+            conn.execute("DELETE FROM entities WHERE source_id = %s", (source_id,))
+            conn.execute("DELETE FROM chunks WHERE source_id = %s", (source_id,))
+            conn.execute("DELETE FROM jobs WHERE source_id = %s", (source_id,))
+            conn.execute("DELETE FROM sources WHERE id = %s", (source_id,))
+            stored = settings.STORAGE_BASE_PATH / source_id
+            if stored.exists():
+                shutil.rmtree(stored)
+        conn.commit()
+
+
 @pytest.fixture()
 def ingested(request):
     """Yield nothing; after each test hard-delete any source_id stored in result."""
@@ -98,7 +118,19 @@ def test_ingest_markdown(mock_profile, mock_chunk, mock_validate, mock_embed, mo
     assert row[1] and len(row[1]) > 0
 
 
-@patch("rag.parser.describe_image", return_value="[image description]")
+def _prepare_to_markdown(binary_path: Path, tmp_path: Path) -> tuple[Path, "object"]:
+    """Prepare a real binary into markdown (as the CLI would) for an end-to-end
+    ingestion test. Image descriptions are stubbed locally so the test needs no
+    network. Returns the prepared markdown path and the PreparedDocument."""
+    from rag.prepare import finalize_markdown, prepare_binary
+
+    prepared = prepare_binary(binary_path)
+    content = finalize_markdown(prepared, lambda data, mime: "[image description]")
+    md_path = tmp_path / (binary_path.stem + ".md")
+    md_path.write_text(content, encoding="utf-8")
+    return md_path, prepared
+
+
 @patch("rag.ingestion.link_graph")
 @patch("rag.ingestion.extract_and_store_graph")
 @patch("rag.ingestion.get_graph_driver")
@@ -106,7 +138,9 @@ def test_ingest_markdown(mock_profile, mock_chunk, mock_validate, mock_embed, mo
 @patch("rag.ingestion.validate_chunks")
 @patch("rag.ingestion.chunk_document")
 @patch("rag.ingestion.profile_document")
-def test_ingest_pdf(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, mock_link, mock_describe, ingested):
+def test_ingest_prepared_pdf_markdown(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, mock_link, ingested, tmp_path):
+    # New contract: the CLI prepares the PDF into markdown; the worker ingests the
+    # markdown and the source records original PDF provenance (R9-R11).
     mock_profile.return_value = _DEFAULT_PROFILE
     mock_chunk.return_value = []
     mock_validate.return_value = True
@@ -115,9 +149,16 @@ def test_ingest_pdf(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd
     mock_gd.return_value.session.return_value.__enter__ = lambda s: s
     mock_gd.return_value.session.return_value.__exit__ = lambda s, *a: None
 
-    file = TEST_DOCS / "Product Leader Insights_ Healthcare Provider Security Buying Behavior.pdf"
-    cleanup_existing_file(file)
-    result = ingest_file(file, name="test-pdf")
+    binary = TEST_DOCS / "Product Leader Insights_ Healthcare Provider Security Buying Behavior.pdf"
+    md_path, prepared = _prepare_to_markdown(binary, tmp_path)
+    cleanup_existing_hash(prepared.original_md5)
+    result = ingest_file(
+        md_path,
+        name="test-pdf",
+        original_md5=prepared.original_md5,
+        original_file_name=prepared.original_filename,
+        original_file_type=prepared.original_extension,
+    )
     ingested.update(result)
 
     assert result["status"] == "completed"
@@ -125,16 +166,17 @@ def test_ingest_pdf(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd
     url = settings.POSTGRES_URL
     with psycopg.connect(url) as conn:
         row = conn.execute(
-            "SELECT file_type, markdown_content FROM sources WHERE id = %s",
+            "SELECT file_type, markdown_content, md5, metadata FROM sources WHERE id = %s",
             (result["source_id"],),
         ).fetchone()
 
     assert row is not None
     assert row[0] == "pdf"
     assert row[1] and len(row[1]) > 0
+    assert row[2] == prepared.original_md5  # dedup keyed on original binary hash
+    assert row[3]["original_filename"] == prepared.original_filename
 
 
-@patch("rag.parser.describe_image", return_value="[image description]")
 @patch("rag.ingestion.link_graph")
 @patch("rag.ingestion.extract_and_store_graph")
 @patch("rag.ingestion.get_graph_driver")
@@ -142,7 +184,7 @@ def test_ingest_pdf(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd
 @patch("rag.ingestion.validate_chunks")
 @patch("rag.ingestion.chunk_document")
 @patch("rag.ingestion.profile_document")
-def test_ingest_docx(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, mock_link, mock_describe, ingested):
+def test_ingest_prepared_docx_markdown(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, mock_link, ingested, tmp_path):
     mock_profile.return_value = _DEFAULT_PROFILE
     mock_chunk.return_value = []
     mock_validate.return_value = True
@@ -151,9 +193,16 @@ def test_ingest_docx(mock_profile, mock_chunk, mock_validate, mock_embed, mock_g
     mock_gd.return_value.session.return_value.__enter__ = lambda s: s
     mock_gd.return_value.session.return_value.__exit__ = lambda s, *a: None
 
-    file = TEST_DOCS / "Extension GTM Doc.docx"
-    cleanup_existing_file(file)
-    result = ingest_file(file, name="test-docx")
+    binary = TEST_DOCS / "Extension GTM Doc.docx"
+    md_path, prepared = _prepare_to_markdown(binary, tmp_path)
+    cleanup_existing_hash(prepared.original_md5)
+    result = ingest_file(
+        md_path,
+        name="test-docx",
+        original_md5=prepared.original_md5,
+        original_file_name=prepared.original_filename,
+        original_file_type=prepared.original_extension,
+    )
     ingested.update(result)
 
     assert result["status"] == "completed"
