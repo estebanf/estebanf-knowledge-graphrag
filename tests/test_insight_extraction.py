@@ -39,6 +39,10 @@ def test_upsert_insight_reuses_existing():
     insight_id, is_new = upsert_insight(conn, "some insight", [0.1] * 4096)
     assert insight_id == "existing-uuid"
     assert is_new is False
+    # Only the prefilter+rerank SELECT ran — no INSERT was issued.
+    assert cursor.execute.call_count == 1
+    select_sql = cursor.execute.call_args_list[0].args[0]
+    assert "INSERT" not in select_sql.upper()
 
 
 def test_upsert_insight_creates_new_when_below_threshold():
@@ -50,6 +54,9 @@ def test_upsert_insight_creates_new_when_below_threshold():
     conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
     insight_id, is_new = upsert_insight(conn, "different insight", [0.9] * 4096)
     assert is_new is True
+    assert insight_id == "new-uuid"
+    insert_sql = cursor.execute.call_args_list[1].args[0]
+    assert "INSERT" in insert_sql.upper()
 
 
 def test_upsert_insight_ignores_null_embeddings():
@@ -64,6 +71,75 @@ def test_upsert_insight_ignores_null_embeddings():
 
     similarity_sql = cursor.execute.call_args_list[0].args[0]
     assert "embedding IS NOT NULL" in similarity_sql
+
+
+def test_upsert_insight_uses_binary_prefilter_cte():
+    """Mirrors dense_retrieve's SQL shape: a MATERIALIZED CTE prefilter over
+    the binary-quantized HNSW index, reranked by full-precision cosine
+    distance. This is the fix for the O(corpus) sequential scan."""
+    from rag.insight_extraction import upsert_insight
+    conn = MagicMock()
+    cursor = MagicMock()
+    cursor.fetchone.return_value = ("existing-uuid", 0.97)
+    conn.cursor.return_value.__enter__ = lambda s: cursor
+    conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+    upsert_insight(conn, "some insight", [0.1] * 4096)
+
+    select_sql = cursor.execute.call_args_list[0].args[0]
+    assert "MATERIALIZED" in select_sql
+    assert "binary_quantize(embedding)::bit(4096)" in select_sql
+    assert "<~>" in select_sql
+    assert "binary_quantize(%s::vector)::bit(4096)" in select_sql
+    assert "embedding <=>" in select_sql or "i.embedding <=>" in select_sql
+
+
+def test_upsert_insight_sets_hnsw_ef_search_to_candidate_count(monkeypatch):
+    from rag.insight_extraction import upsert_insight
+    from rag.config import settings
+    monkeypatch.setattr(settings, "INSIGHT_PREFILTER_CANDIDATES", 137)
+    conn = MagicMock()
+    cursor = MagicMock()
+    cursor.fetchone.return_value = ("existing-uuid", 0.97)
+    conn.cursor.return_value.__enter__ = lambda s: cursor
+    conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+    upsert_insight(conn, "some insight", [0.1] * 4096)
+
+    conn.execute.assert_called_once_with("SET hnsw.ef_search = 137")
+
+
+def test_upsert_insight_empty_table_creates_new_without_error():
+    """Empty insights table: prefilter CTE returns zero rows, the rerank
+    join yields no candidates, and the function falls through to INSERT
+    with no error raised."""
+    from rag.insight_extraction import upsert_insight
+    conn = MagicMock()
+    cursor = MagicMock()
+    cursor.fetchone.side_effect = [None, ("new-uuid",)]
+    conn.cursor.return_value.__enter__ = lambda s: cursor
+    conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+    insight_id, is_new = upsert_insight(conn, "first insight", [0.1] * 4096)
+
+    assert insight_id == "new-uuid"
+    assert is_new is True
+
+
+def test_upsert_insight_all_prefilter_candidates_below_threshold():
+    """Prefilter returns candidates, but the best one after full-precision
+    rerank is still below INSIGHT_DEDUP_COSINE_THRESHOLD → new insight."""
+    from rag.insight_extraction import upsert_insight
+    conn = MagicMock()
+    cursor = MagicMock()
+    cursor.fetchone.side_effect = [("closest-uuid", 0.42), ("new-uuid",)]
+    conn.cursor.return_value.__enter__ = lambda s: cursor
+    conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+    insight_id, is_new = upsert_insight(conn, "novel insight", [0.5] * 4096)
+
+    assert is_new is True
+    assert insight_id == "new-uuid"
 
 
 def test_link_chunk_insight_executes_upsert_sql():

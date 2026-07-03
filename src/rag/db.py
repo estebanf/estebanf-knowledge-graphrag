@@ -23,6 +23,23 @@ def get_connection() -> Generator[psycopg.Connection, None, None]:
         conn.close()
 
 
+def set_hnsw_ef_search(conn, prefetch_count: int) -> None:
+    """Widen the HNSW candidate search so a binary prefilter query actually
+    returns ``prefetch_count`` rows.
+
+    pgvector's ``hnsw.ef_search`` GUC defaults to 40 and silently caps the
+    candidate pool below any larger ``LIMIT`` requested against an HNSW
+    index — the prefilter query returns at most ``ef_search`` rows
+    regardless of the SQL ``LIMIT``. Session-scoped ``SET`` (not
+    ``SET LOCAL``) is fine here: each call site holds its own short-lived
+    connection for a single query.
+
+    Shared by `rag.retrieval.dense_retrieve`/`insight_dense_retrieve` and
+    `rag.insight_extraction.upsert_insight` — do not duplicate this logic.
+    """
+    conn.execute(f"SET hnsw.ef_search = {int(prefetch_count)}")
+
+
 def prewarm_vector_indexes() -> list[int]:
     """Load the binary-quantized HNSW vector indexes into shared_buffers.
 

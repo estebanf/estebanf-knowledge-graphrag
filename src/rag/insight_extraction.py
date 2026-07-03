@@ -8,6 +8,7 @@ import httpx
 
 from rag import prompts
 from rag.config import settings
+from rag.db import set_hnsw_ef_search
 from rag.embedding import get_embeddings
 
 log = logging.getLogger(__name__)
@@ -69,17 +70,37 @@ def extract_insights_from_chunk(content: str) -> list[dict]:
 
 
 def upsert_insight(conn, content: str, embedding: list[float]) -> tuple[str, bool]:
+    """Dedup an insight against the corpus and insert it if it's new.
+
+    Dedup lookup mirrors `retrieval.dense_retrieve`'s prefilter + rerank
+    pattern: a binary-quantized HNSW prefilter (`insights_embedding_binary_hnsw_idx`)
+    narrows the corpus to `INSIGHT_PREFILTER_CANDIDATES` candidates, then
+    full-precision `embedding <=>` cosine distance reranks that pool. This
+    keeps the lookup index-assisted regardless of corpus size — the raw
+    4096-dim vector column has no usable index for `ORDER BY embedding <=>`
+    (pgvector caps native HNSW/IVFFlat at 2000 dims), so unprefiltered
+    ordering forces a full sequential scan.
+    """
     emb_str = _embedding_literal(embedding)
+    prefilter_count = settings.INSIGHT_PREFILTER_CANDIDATES
+    set_hnsw_ef_search(conn, prefilter_count)
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT id, 1 - (embedding <=> %s::vector) AS sim
-            FROM insights
-            WHERE embedding IS NOT NULL
-            ORDER BY embedding <=> %s::vector
+            WITH insight_prefilter AS MATERIALIZED (
+                SELECT id
+                FROM insights
+                WHERE embedding IS NOT NULL
+                ORDER BY binary_quantize(embedding)::bit(4096) <~> binary_quantize(%s::vector)::bit(4096)
+                LIMIT %s
+            )
+            SELECT i.id, 1 - (i.embedding <=> %s::vector) AS sim
+            FROM insight_prefilter p
+            JOIN insights i ON i.id = p.id
+            ORDER BY i.embedding <=> %s::vector
             LIMIT 1
             """,
-            (emb_str, emb_str),
+            (emb_str, prefilter_count, emb_str, emb_str),
         )
         row = cur.fetchone()
         if row and row[1] >= settings.INSIGHT_DEDUP_COSINE_THRESHOLD:
