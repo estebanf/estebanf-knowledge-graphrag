@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     MODEL_IMAGE_DESCRIPTION: str = "google/gemini-2.0-flash-lite-001"
     RELATIONSHIP_CONFIDENCE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.75
     ENTITY_DEDUP_COSINE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.92
+    GRAPH_EXTRACTION_CONCURRENCY: Annotated[int, Field(gt=0)] = 8
 
     # OpenCode Go (answer generation)
     OPENCODE_GO_API_KEY: str = ""

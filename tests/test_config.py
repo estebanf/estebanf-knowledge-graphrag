@@ -93,3 +93,17 @@ def test_stage_failure_rate_threshold_overridable_from_env(monkeypatch):
     from rag.config import Settings
     s = Settings(_env_file=None)
     assert s.STAGE_FAILURE_RATE_THRESHOLD == 0.5
+
+
+def test_graph_extraction_concurrency_default(monkeypatch):
+    monkeypatch.delenv("GRAPH_EXTRACTION_CONCURRENCY", raising=False)
+    from rag.config import Settings
+    s = Settings(_env_file=None)
+    assert s.GRAPH_EXTRACTION_CONCURRENCY == 8
+
+
+def test_graph_extraction_concurrency_overridable_from_env(monkeypatch):
+    monkeypatch.setenv("GRAPH_EXTRACTION_CONCURRENCY", "4")
+    from rag.config import Settings
+    s = Settings(_env_file=None)
+    assert s.GRAPH_EXTRACTION_CONCURRENCY == 4

@@ -598,11 +598,14 @@ def execute_ingestion_pipeline(job_id: str, source_id: str, start_stage: str = "
                             source_id=source_id, chunk_id=chunk_id,
                         )
                 try:
-                    extract_and_store_graph(conn, driver, source_id, job_id, chunk_rows)
+                    graph_result = extract_and_store_graph(conn, driver, source_id, job_id, chunk_rows)
                 except Exception as exc:
                     _fail_stage(conn, job_id, "graph_extraction", exc)
                     raise
-                _complete_stage(conn, job_id, "graph_extraction", {"chunk_nodes": len(chunk_rows)})
+                stage_output = {"chunk_nodes": len(chunk_rows)}
+                if isinstance(graph_result, dict):
+                    stage_output.update(graph_result)
+                _complete_stage(conn, job_id, "graph_extraction", stage_output)
                 log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
 
             # --- Graph Linking ---
