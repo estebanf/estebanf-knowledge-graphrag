@@ -31,6 +31,7 @@ GATED_REQUESTS = [
     ("GET", "/api/jobs/some-id", None),
     ("GET", "/api/workers", None),
     ("POST", "/api/workers/launch", None),
+    ("POST", "/api/prepare/describe-image", {"image_base64": "eA==", "mime_type": "image/png"}),
 ]
 
 

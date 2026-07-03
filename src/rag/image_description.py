@@ -4,6 +4,12 @@ import requests
 
 from rag.config import settings
 
+# Image MIME types the description endpoint accepts. Kept here (not in the route)
+# so the CLI-side preparation and the backend endpoint agree on one source list.
+SUPPORTED_IMAGE_MIME_TYPES = frozenset(
+    {"image/png", "image/jpeg", "image/gif", "image/webp"}
+)
+
 _PROMPT = (
     "Describe this image concisely for use in a knowledge base. "
     "Focus on the key information, data, concepts, or visual content shown. "

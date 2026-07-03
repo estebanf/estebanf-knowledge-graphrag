@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from rag.api.auth import Principal, require_principal
+from rag.api.auth import Principal, default_principal_dependency
 from rag.api.routes.answer import router as answer_router
 from rag.api.routes.auth import (
     PostgresUserAuthService,
@@ -16,6 +16,7 @@ from rag.api.routes.auth import (
 from rag.api.routes.community import router as community_router
 from rag.api.routes.ingest import router as ingest_router
 from rag.api.routes.jobs import router as jobs_router
+from rag.api.routes.prepare import router as prepare_router
 from rag.api.routes.retrieve import router as retrieve_router
 from rag.api.routes.search import router as search_router
 from rag.api.routes.sources import router as sources_router
@@ -26,8 +27,9 @@ from rag.graph_db import get_graph_driver, reconcile_schema
 
 log = logging.getLogger(__name__)
 
-# Stable references so tests can override via app.dependency_overrides.
-principal_dep = require_principal()
+# Stable reference so tests can override via app.dependency_overrides and so
+# requires_scope() sub-depends on the same object (shared per-request cache).
+principal_dep = default_principal_dependency
 
 
 async def _prewarm_with_retry(attempts: int = 5, base_delay: float = 1.0) -> None:
@@ -130,6 +132,7 @@ def create_app() -> FastAPI:
     app.include_router(sources_router, dependencies=gated)
     app.include_router(community_router, dependencies=gated)
     app.include_router(ingest_router, dependencies=gated)
+    app.include_router(prepare_router, dependencies=gated)
     app.include_router(jobs_router, dependencies=gated)
     app.include_router(workers_router, dependencies=gated)
 

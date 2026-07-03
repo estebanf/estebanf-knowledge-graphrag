@@ -174,10 +174,17 @@ def _scopes_include(scopes: list[str], required: str) -> bool:
     return "admin" in scopes or required in scopes
 
 
-def requires_scope(scope: str) -> Callable[[Principal], Principal]:
-    """Dependency that enforces a scope on an already-resolved principal."""
+def requires_scope(scope: str) -> Callable[..., Principal]:
+    """Dependency that enforces a scope on top of the shared principal dependency.
 
-    def dep(principal: Principal) -> Principal:
+    Resolves the principal through ``default_principal_dependency`` so a route
+    can require a scope with a single ``Depends(requires_scope("ingest"))``. Using
+    the shared singleton keeps FastAPI's per-request dependency cache and the test
+    auth-bypass override (``app.dependency_overrides[default_principal_dependency]``)
+    in effect, rather than triggering a second, un-overridable auth resolution.
+    """
+
+    def dep(principal: Principal = Depends(default_principal_dependency)) -> Principal:
         if not principal.has_scope(scope):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="insufficient scope")
         return principal
@@ -242,3 +249,11 @@ def require_principal(
         return principal
 
     return dep
+
+
+# Shared principal dependency reused across the app so FastAPI's per-request
+# dependency cache and the test auth-bypass override key on one stable object.
+# ``main.py`` binds ``principal_dep`` to this and ``requires_scope`` sub-depends
+# on it. Instantiate once — ``require_principal()`` returns a fresh closure per
+# call, and per-request caching + dependency_overrides both key on identity.
+default_principal_dependency = require_principal()

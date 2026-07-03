@@ -4,6 +4,15 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 
+class DescribeImageRequest(BaseModel):
+    image_base64: str = Field(..., min_length=1)
+    mime_type: str
+
+
+class DescribeImageResponse(BaseModel):
+    description: str
+
+
 class SearchRequest(BaseModel):
     query: str
     limit: int = Field(default=10, gt=0)
