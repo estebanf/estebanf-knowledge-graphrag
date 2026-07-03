@@ -35,7 +35,11 @@ def prewarm_vector_indexes() -> list[int]:
 
     Returns the block count pg_prewarm reported for each index it warmed.
     """
-    conn = psycopg.connect(settings.POSTGRES_URL, autocommit=True)
+    # connect_timeout bounds a stalled TCP handshake: this runs in a worker
+    # thread that asyncio cancellation can't interrupt, so an unbounded connect
+    # during a Postgres-restart race would hang backend shutdown until the OS
+    # TCP timeout.
+    conn = psycopg.connect(settings.POSTGRES_URL, autocommit=True, connect_timeout=5)
     blocks: list[int] = []
     try:
         for index_name in PREWARM_INDEXES:

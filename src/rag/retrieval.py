@@ -513,7 +513,8 @@ def hybrid_search(
         dense_future = executor.submit(_run_dense)
         sparse_future = executor.submit(_run_sparse)
         insights_future = executor.submit(_run_insights)
-        # .result() re-raises any leg's exception, preserving fail-fast behavior.
+        # .result() re-raises a leg's exception (sibling legs still finish
+        # first, since the executor context manager waits on shutdown).
         dense = dense_future.result()
         sparse = sparse_future.result()
         insights = insights_future.result()

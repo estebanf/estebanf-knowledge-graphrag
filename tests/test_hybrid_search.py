@@ -153,6 +153,38 @@ def test_hybrid_search_surfaces_leg_exception(mock_expand, mock_conn, mock_dense
         hybrid_search("test query", limit=10, min_score=0.0)
 
 
+@patch("rag.retrieval.get_embeddings", return_value=[[0.1] * 4096])
+@patch("rag.retrieval.insight_hybrid_search")
+@patch("rag.retrieval.sparse_retrieve")
+@patch("rag.retrieval.dense_retrieve")
+@patch("rag.retrieval.get_connection")
+@patch("rag.retrieval._expand_chunk_texts", return_value={})
+def test_hybrid_search_runs_legs_concurrently(
+    mock_expand, mock_conn, mock_dense, mock_sparse, mock_insight, mock_embeddings
+):
+    # A 3-party barrier only releases if all three legs are in flight at once.
+    # If the legs ran serially, the first would block on the barrier forever and
+    # raise BrokenBarrierError on timeout, failing this test — so it guards
+    # against a silent regression back to serial execution.
+    import threading
+
+    barrier = threading.Barrier(3, timeout=5)
+
+    def _wait_at_barrier(*args, **kwargs):
+        barrier.wait()
+        return []
+
+    mock_conn.return_value.__enter__.return_value = MagicMock()
+    mock_dense.side_effect = _wait_at_barrier
+    mock_sparse.side_effect = _wait_at_barrier
+    mock_insight.side_effect = _wait_at_barrier
+
+    results = hybrid_search("test query", limit=5, min_score=0.0)
+
+    assert results.chunks == []
+    assert results.insights == []
+
+
 def test_sparse_retrieve_uses_indexable_english_tsvector_expression():
     conn = MagicMock()
     conn.execute.return_value.fetchall.return_value = []

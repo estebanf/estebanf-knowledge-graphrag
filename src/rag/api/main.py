@@ -90,7 +90,7 @@ def create_app() -> FastAPI:
                 yield
         finally:
             prewarm_task.cancel()
-            with suppress(BaseException):
+            with suppress(asyncio.CancelledError):
                 await prewarm_task
 
     app = FastAPI(title="RAG Explorer API", lifespan=lifespan)
