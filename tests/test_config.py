@@ -70,13 +70,15 @@ def test_insight_config_defaults(monkeypatch):
     monkeypatch.delenv("INSIGHT_LINK_TOP_K", raising=False)
     monkeypatch.delenv("INSIGHT_EXTRACTION_CONCURRENCY", raising=False)
     monkeypatch.delenv("INSIGHT_PREFILTER_CANDIDATES", raising=False)
+    monkeypatch.delenv("STAGE_FAILURE_RATE_THRESHOLD", raising=False)
     from rag.config import Settings
     s = Settings(_env_file=None)
     assert s.OPENCODE_API_KEY == ""
     assert s.INSIGHT_DEDUP_COSINE_THRESHOLD == 0.95
     assert s.INSIGHT_LINK_TOP_K == 10
-    assert s.INSIGHT_EXTRACTION_CONCURRENCY == 3
+    assert s.INSIGHT_EXTRACTION_CONCURRENCY == 12
     assert s.INSIGHT_PREFILTER_CANDIDATES == 100
+    assert s.STAGE_FAILURE_RATE_THRESHOLD == 0.25
 
 
 def test_insight_prefilter_candidates_overridable_from_env(monkeypatch):
@@ -84,3 +86,10 @@ def test_insight_prefilter_candidates_overridable_from_env(monkeypatch):
     from rag.config import Settings
     s = Settings(_env_file=None)
     assert s.INSIGHT_PREFILTER_CANDIDATES == 250
+
+
+def test_stage_failure_rate_threshold_overridable_from_env(monkeypatch):
+    monkeypatch.setenv("STAGE_FAILURE_RATE_THRESHOLD", "0.5")
+    from rag.config import Settings
+    s = Settings(_env_file=None)
+    assert s.STAGE_FAILURE_RATE_THRESHOLD == 0.5

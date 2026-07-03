@@ -51,8 +51,15 @@ class Settings(BaseSettings):
     OPENCODE_API_KEY: str = ""
     INSIGHT_DEDUP_COSINE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.95
     INSIGHT_LINK_TOP_K: Annotated[int, Field(gt=0)] = 10
-    INSIGHT_EXTRACTION_CONCURRENCY: Annotated[int, Field(gt=0)] = 3
+    INSIGHT_EXTRACTION_CONCURRENCY: Annotated[int, Field(gt=0)] = 12
     INSIGHT_PREFILTER_CANDIDATES: Annotated[int, Field(gt=0)] = 100
+
+    # Shared intake-stage failure-audit policy (KTD6): per-chunk LLM failures
+    # are recorded, not silently swallowed; the stage raises only when the
+    # failure rate exceeds this threshold. Shared by insight_extraction and
+    # graph_extraction — do not add a second, differently-named knob for the
+    # same policy.
+    STAGE_FAILURE_RATE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.25
 
     # Retrieval
     RETRIEVAL_RRF_K: Annotated[int, Field(gt=0)] = 60

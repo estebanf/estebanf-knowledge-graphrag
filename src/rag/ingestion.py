@@ -234,10 +234,62 @@ def _cleanup_orphan_insights(conn: psycopg.Connection, driver) -> None:
             )
 
 
+def _cleanup_ghost_memgraph_insights_for_source(
+    conn: psycopg.Connection,
+    driver,
+    source_id: str,
+) -> None:
+    """R9b/AE4b: delete source-scoped Memgraph `Insight` nodes whose
+    `insight_id` no longer has a matching Postgres `insights` row.
+
+    `_cleanup_orphan_insights` only catches Memgraph-local orphans — nodes
+    with NO `CONTAINS` edge at all. It misses a crash mid-Phase-E where some
+    `Insight` node + `CONTAINS` edge writes committed in Memgraph but the
+    corresponding Postgres transaction never committed (or was rolled back):
+    those nodes DO have a `CONTAINS` edge, so the CONTAINS-less check leaves
+    them behind as ghosts. On retry, re-extraction creates a new Postgres row
+    with a new id, and the old ghost node/edge would linger forever without
+    this check.
+
+    Scoped to the source being retried (via `Chunk.source_id`, not a
+    corpus-wide scan) so this stays cheap even against a large corpus.
+    """
+    if not driver:
+        return
+
+    with driver.session() as session:
+        records = session.run(
+            "MATCH (c:Chunk {source_id: $source_id})-[:CONTAINS]->(i:Insight) "
+            "RETURN DISTINCT i.insight_id AS insight_id",
+            source_id=source_id,
+        )
+        insight_ids = [record["insight_id"] for record in records]
+
+    if not insight_ids:
+        return
+
+    existing_ids = {
+        str(row[0]) for row in conn.execute(
+            "SELECT id FROM insights WHERE id = ANY(%s::uuid[])",
+            (insight_ids,),
+        ).fetchall()
+    }
+    ghost_ids = [insight_id for insight_id in insight_ids if insight_id not in existing_ids]
+    if not ghost_ids:
+        return
+
+    with driver.session() as session:
+        session.run(
+            "MATCH (i:Insight) WHERE i.insight_id IN $ids DETACH DELETE i",
+            ids=ghost_ids,
+        )
+
+
 def _cleanup_insight_artifacts_for_job(
     conn: psycopg.Connection,
     driver,
     job_id: str,
+    source_id: str,
 ) -> None:
     conn.execute(
         "DELETE FROM chunk_insights "
@@ -245,6 +297,7 @@ def _cleanup_insight_artifacts_for_job(
         (job_id,),
     )
     _cleanup_orphan_insights(conn, driver)
+    _cleanup_ghost_memgraph_insights_for_source(conn, driver, source_id)
 
 
 def _cleanup_insight_artifacts_for_source(
@@ -258,6 +311,7 @@ def _cleanup_insight_artifacts_for_source(
         (source_id,),
     )
     _cleanup_orphan_insights(conn, driver)
+    _cleanup_ghost_memgraph_insights_for_source(conn, driver, source_id)
 
 
 def _cleanup_graph_artifacts(conn: psycopg.Connection, driver, source_id: str) -> None:
@@ -304,7 +358,7 @@ def cleanup_from_stage(
     insight_extraction_idx = STAGE_ORDER.index("insight_extraction")
 
     if idx <= insight_extraction_idx:
-        _cleanup_insight_artifacts_for_job(conn, driver, job_id)
+        _cleanup_insight_artifacts_for_job(conn, driver, job_id, source_id)
 
     if idx <= chunking_idx:
         conn.execute("DELETE FROM chunks WHERE job_id = %s", (job_id,))

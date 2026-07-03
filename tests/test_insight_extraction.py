@@ -1,17 +1,35 @@
 from unittest.mock import MagicMock, patch
 
 
+def _one_hot(index: int, dim: int = 4096) -> list[float]:
+    """An orthogonal-ish embedding for test fixtures: distinct indices
+    produce vectors with cosine similarity 0, unlike uniform vectors (e.g.
+    [0.1] * dim), which are always parallel (cosine similarity 1.0) to any
+    other uniform vector regardless of magnitude and would be wrongly
+    treated as within-batch duplicates by `_cosine_similarity`."""
+    vec = [0.0] * dim
+    vec[index % dim] = 1.0
+    return vec
+
+
 def test_extract_returns_empty_without_api_key(monkeypatch):
     monkeypatch.setattr("rag.insight_extraction.settings.OPENCODE_API_KEY", "")
     from rag.insight_extraction import extract_insights_from_chunk
     assert extract_insights_from_chunk("some text") == []
 
 
-def test_extract_returns_empty_on_api_error(monkeypatch):
+def test_extract_raises_on_api_error(monkeypatch):
+    """Contract change (R7/KTD6): a genuine LLM-call failure is no longer
+    swallowed into an empty list — it raises, so the parallel wrapper can
+    distinguish it from a chunk that legitimately extracted zero insights."""
     monkeypatch.setattr("rag.insight_extraction.settings.OPENCODE_API_KEY", "test-key")
     with patch("rag.insight_extraction.httpx.post", side_effect=Exception("connection error")):
         from rag.insight_extraction import extract_insights_from_chunk
-        assert extract_insights_from_chunk("some text") == []
+        try:
+            extract_insights_from_chunk("some text")
+            assert False, "expected extract_insights_from_chunk to raise"
+        except Exception as exc:
+            assert "connection error" in str(exc)
 
 
 def test_extract_parses_valid_response(monkeypatch):
@@ -154,18 +172,94 @@ def test_link_chunk_insight_executes_upsert_sql():
     assert "chunk_insights" in sql_called
 
 
-def test_store_insight_in_graph_merges_node_and_edge():
-    from rag.insight_extraction import store_insight_in_graph
+def test_store_insights_in_graph_batch_writes_two_unwind_calls():
+    """Replacement for the old per-insight store_insight_in_graph: a whole
+    source's chunk-insight pairs are written via exactly two UNWIND batches
+    (Insight node MERGEs, CONTAINS edge MERGEs), not one MERGE pair per pair."""
+    from rag.insight_extraction import store_insights_in_graph_batch
     driver = MagicMock()
     session = MagicMock()
     driver.session.return_value.__enter__ = lambda s: session
     driver.session.return_value.__exit__ = MagicMock(return_value=False)
-    store_insight_in_graph(driver, "chunk-1", "insight-1", "AI reduces costs", ["AI Adoption"])
+
+    store_insights_in_graph_batch(
+        driver,
+        [
+            ("chunk-1", "insight-1", "AI reduces costs", ["AI Adoption"]),
+            ("chunk-2", "insight-1", "AI reduces costs", ["AI Adoption"]),
+            ("chunk-2", "insight-2", "AI improves speed", ["Performance"]),
+        ],
+    )
+
     assert session.run.call_count == 2
-    first_call_cypher = session.run.call_args_list[0][0][0]
-    assert "MERGE" in first_call_cypher and "Insight" in first_call_cypher
-    second_call_cypher = session.run.call_args_list[1][0][0]
-    assert "CONTAINS" in second_call_cypher
+    node_call = session.run.call_args_list[0]
+    assert "UNWIND" in node_call.args[0] and "Insight" in node_call.args[0]
+    nodes = node_call.kwargs["nodes"]
+    assert len(nodes) == 2  # deduped by insight id despite insight-1 appearing twice
+
+    edge_call = session.run.call_args_list[1]
+    assert "CONTAINS" in edge_call.args[0]
+    edges = edge_call.kwargs["edges"]
+    assert len(edges) == 3
+
+
+def test_store_insights_in_graph_batch_dedupes_repeated_edge_pairs():
+    """The same (chunk_id, insight_id) pair appearing twice (e.g. two raw
+    insights from one chunk collapsing onto the same survivor) yields one
+    edge write, not two."""
+    from rag.insight_extraction import store_insights_in_graph_batch
+    driver = MagicMock()
+    session = MagicMock()
+    driver.session.return_value.__enter__ = lambda s: session
+    driver.session.return_value.__exit__ = MagicMock(return_value=False)
+
+    store_insights_in_graph_batch(
+        driver,
+        [
+            ("chunk-1", "insight-1", "AI reduces costs", ["AI Adoption"]),
+            ("chunk-1", "insight-1", "AI reduces costs", ["AI Adoption"]),
+        ],
+    )
+
+    edges = session.run.call_args_list[1].kwargs["edges"]
+    assert len(edges) == 1
+
+
+def test_store_insights_in_graph_batch_noop_without_driver_or_pairs():
+    from rag.insight_extraction import store_insights_in_graph_batch
+    store_insights_in_graph_batch(None, [("chunk-1", "insight-1", "content", [])])
+    driver = MagicMock()
+    store_insights_in_graph_batch(driver, [])
+    driver.session.assert_not_called()
+
+
+def test_link_chunk_insights_batch_uses_executemany():
+    from rag.insight_extraction import link_chunk_insights_batch
+    conn = MagicMock()
+    cursor = MagicMock()
+    conn.cursor.return_value.__enter__ = lambda s: cursor
+    conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+    link_chunk_insights_batch(
+        conn,
+        [
+            ("chunk-1", "insight-1", ["AI Adoption"]),
+            ("chunk-2", "insight-1", ["AI Adoption"]),
+        ],
+    )
+
+    cursor.executemany.assert_called_once()
+    sql = cursor.executemany.call_args[0][0]
+    params = cursor.executemany.call_args[0][1]
+    assert "ON CONFLICT" in sql
+    assert len(params) == 2
+
+
+def test_link_chunk_insights_batch_empty_is_noop():
+    from rag.insight_extraction import link_chunk_insights_batch
+    conn = MagicMock()
+    link_chunk_insights_batch(conn, [])
+    conn.cursor.assert_not_called()
 
 
 def _make_cursor_mock(conn):
@@ -337,7 +431,7 @@ def test_extract_chunk_insights_parallel_preserves_chunk_order(monkeypatch):
 
     monkeypatch.setattr("rag.insight_extraction.extract_insights_from_chunk", fake_extract)
 
-    result = _extract_chunk_insights_parallel(
+    result, failed_chunks = _extract_chunk_insights_parallel(
         [
             ("chunk-1", "alpha"),
             ("chunk-2", "beta"),
@@ -350,6 +444,7 @@ def test_extract_chunk_insights_parallel_preserves_chunk_order(monkeypatch):
         ("chunk-2", "beta", [{"insight": "insight beta", "topics": ["BETA"]}]),
         ("chunk-3", "gamma", [{"insight": "insight gamma", "topics": ["GAMMA"]}]),
     ]
+    assert failed_chunks == []
 
 
 def test_extract_chunk_insights_parallel_reports_progress(monkeypatch):
@@ -372,15 +467,68 @@ def test_extract_chunk_insights_parallel_reports_progress(monkeypatch):
     assert events[-1] == ("extract_done", {"total": 2})
 
 
+def test_extract_chunk_insights_parallel_records_failed_chunks(monkeypatch):
+    """A chunk whose extraction raises is recorded in failed_chunk_ids and
+    does not abort the rest of the batch (R7/KTD6) — distinct from a chunk
+    that succeeds with zero insights."""
+    from rag.insight_extraction import _extract_chunk_insights_parallel
+
+    monkeypatch.setattr("rag.insight_extraction.settings.INSIGHT_EXTRACTION_CONCURRENCY", 2)
+
+    def fake_extract(content):
+        if content == "beta":
+            raise RuntimeError("llm call failed")
+        return [{"insight": f"insight {content}", "topics": []}]
+
+    monkeypatch.setattr("rag.insight_extraction.extract_insights_from_chunk", fake_extract)
+    events = []
+
+    result, failed_chunks = _extract_chunk_insights_parallel(
+        [("chunk-1", "alpha"), ("chunk-2", "beta"), ("chunk-3", "gamma")],
+        progress_callback=lambda event, payload: events.append((event, payload)),
+    )
+
+    assert failed_chunks == ["chunk-2"]
+    assert [row[0] for row in result] == ["chunk-1", "chunk-3"]
+    error_events = [payload for event, payload in events if event == "extract_error"]
+    assert len(error_events) == 1
+    assert error_events[0]["chunk_id"] == "chunk-2"
+    assert error_events[0]["error"] == "llm call failed"
+    assert error_events[0]["total"] == 3
+
+
+def _patch_happy_path(monkeypatch, events=None):
+    """Common monkeypatches for extract_and_store_insights tests: a
+    configured API key plus stubbed collaborators."""
+    if events is None:
+        events = []
+    monkeypatch.setattr("rag.insight_extraction.settings.OPENCODE_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "rag.insight_extraction.upsert_insight",
+        lambda conn, content, emb: (events.append(("upsert", content)) or (f"{content}-id", True)),
+    )
+    monkeypatch.setattr(
+        "rag.insight_extraction.link_chunk_insights_batch",
+        lambda conn, pairs: events.append(("link_chunk_batch", pairs)),
+    )
+    monkeypatch.setattr(
+        "rag.insight_extraction.store_insights_in_graph_batch",
+        lambda driver, pairs: events.append(("graph_batch", pairs)),
+    )
+    monkeypatch.setattr(
+        "rag.insight_extraction.link_related_insights",
+        lambda conn, driver, source_id, new_insights: (
+            events.append(("related", source_id, new_insights)) or len(new_insights)
+        ),
+    )
+    return events
+
+
 def test_extract_and_store_insights_returns_counts(monkeypatch):
+    events = _patch_happy_path(monkeypatch)
     monkeypatch.setattr("rag.insight_extraction.extract_insights_from_chunk",
                         lambda content: [{"insight": "insight A", "topics": ["AI Adoption"]}])
-    monkeypatch.setattr("rag.insight_extraction.upsert_insight",
-                        lambda conn, content, emb: ("new-uuid", True))
-    monkeypatch.setattr("rag.insight_extraction.link_chunk_insight", lambda *a, **k: None)
-    monkeypatch.setattr("rag.insight_extraction.store_insight_in_graph", lambda *a, **k: None)
-    monkeypatch.setattr("rag.insight_extraction.link_related_insights", lambda *a, **k: None)
-    monkeypatch.setattr("rag.insight_extraction.get_embeddings", lambda texts: [[0.1]*4096])
+    monkeypatch.setattr("rag.insight_extraction.get_embeddings", lambda texts: [[0.1] * 4096])
 
     from rag.insight_extraction import extract_and_store_insights
     conn = MagicMock()
@@ -391,35 +539,26 @@ def test_extract_and_store_insights_returns_counts(monkeypatch):
     assert result["chunks_processed"] == 1
     assert result["insights_extracted"] == 1
     assert result["insights_reused"] == 0
+    assert result["failed_chunks"] == []
+    assert result["related_edges"] == 1
 
 
-def test_extract_and_store_insights_stores_parallel_results_serially(monkeypatch):
-    events = []
-
+def test_extract_and_store_insights_batches_embeddings_across_chunks(monkeypatch):
+    """Happy path: one get_embeddings call covers every insight text from
+    every chunk in the source, not one call per chunk."""
+    events = _patch_happy_path(monkeypatch)
     monkeypatch.setattr(
         "rag.insight_extraction._extract_chunk_insights_parallel",
-        lambda rows, progress_callback=None: [
-            ("chunk-1", "content 1", [{"insight": "insight A", "topics": ["AI Adoption"]}]),
-            ("chunk-2", "content 2", [{"insight": "insight B", "topics": ["Business Outcomes"]}]),
-        ],
+        lambda rows, progress_callback=None: (
+            [
+                ("chunk-1", "content 1", [{"insight": "insight A", "topics": ["AI Adoption"]}]),
+                ("chunk-2", "content 2", [{"insight": "insight B", "topics": ["Business Outcomes"]}]),
+            ],
+            [],
+        ),
     )
-    monkeypatch.setattr("rag.insight_extraction.get_embeddings", lambda texts: [[0.1] * 4096])
-    monkeypatch.setattr(
-        "rag.insight_extraction.upsert_insight",
-        lambda conn, content, emb: (events.append(("upsert", content)) or (f"{content}-id", True)),
-    )
-    monkeypatch.setattr(
-        "rag.insight_extraction.link_chunk_insight",
-        lambda conn, chunk_id, insight_id, topics: events.append(("link_chunk", chunk_id, insight_id)),
-    )
-    monkeypatch.setattr(
-        "rag.insight_extraction.store_insight_in_graph",
-        lambda driver, chunk_id, insight_id, content, topics: events.append(("graph", chunk_id, insight_id)),
-    )
-    monkeypatch.setattr(
-        "rag.insight_extraction.link_related_insights",
-        lambda conn, driver, source_id, insight_id, emb: events.append(("related", source_id, insight_id)),
-    )
+    mock_embeddings = MagicMock(return_value=[_one_hot(0), _one_hot(1)])
+    monkeypatch.setattr("rag.insight_extraction.get_embeddings", mock_embeddings)
 
     from rag.insight_extraction import extract_and_store_insights
     conn = MagicMock()
@@ -430,32 +569,190 @@ def test_extract_and_store_insights_stores_parallel_results_serially(monkeypatch
     )
 
     assert result["chunks_processed"] == 2
-    assert events == [
-        ("upsert", "insight A"),
-        ("link_chunk", "chunk-1", "insight A-id"),
-        ("graph", "chunk-1", "insight A-id"),
-        ("related", "source-1", "insight A-id"),
-        ("upsert", "insight B"),
-        ("link_chunk", "chunk-2", "insight B-id"),
-        ("graph", "chunk-2", "insight B-id"),
-        ("related", "source-1", "insight B-id"),
+    mock_embeddings.assert_called_once_with(["insight A", "insight B"])
+    assert [event for event, *_rest in events].count("upsert") == 2
+    # link/graph/related happen once each for the whole batch, not per chunk.
+    assert [event for event, *_rest in events].count("link_chunk_batch") == 1
+    assert [event for event, *_rest in events].count("graph_batch") == 1
+    assert [event for event, *_rest in events].count("related") == 1
+
+
+def test_extract_and_store_insights_within_batch_duplicate_pair(monkeypatch):
+    """AE2: two near-identical insights from two different chunks of the
+    same source -> one upsert_insight call (one insights row) and both
+    chunks link to the survivor via chunk_insights."""
+    events = _patch_happy_path(monkeypatch)
+    monkeypatch.setattr(
+        "rag.insight_extraction._extract_chunk_insights_parallel",
+        lambda rows, progress_callback=None: (
+            [
+                ("chunk-1", "content 1", [{"insight": "AI reduces costs", "topics": []}]),
+                ("chunk-2", "content 2", [{"insight": "AI reduces expenses", "topics": []}]),
+            ],
+            [],
+        ),
+    )
+    # Identical embeddings -> cosine similarity 1.0, above the dedup threshold.
+    monkeypatch.setattr(
+        "rag.insight_extraction.get_embeddings",
+        lambda texts: [[0.5] * 4096, [0.5] * 4096],
+    )
+
+    from rag.insight_extraction import extract_and_store_insights
+    conn = MagicMock()
+    driver = MagicMock()
+
+    result = extract_and_store_insights(
+        conn, driver, "source-1", [("chunk-1", "content 1"), ("chunk-2", "content 2")]
+    )
+
+    upsert_calls = [payload[0] for event, *payload in events if event == "upsert"]
+    assert upsert_calls == ["AI reduces costs"]  # only the first occurrence is upserted
+    assert result["insights_extracted"] == 1
+    assert result["insights_reused"] == 0
+
+    link_batch_pairs = next(pairs for event, pairs in events if event == "link_chunk_batch")
+    assert len(link_batch_pairs) == 2
+    chunk_ids = {chunk_id for chunk_id, _insight_id, _topics in link_batch_pairs}
+    insight_ids = {insight_id for _chunk_id, insight_id, _topics in link_batch_pairs}
+    assert chunk_ids == {"chunk-1", "chunk-2"}
+    assert len(insight_ids) == 1  # both chunks resolved onto the same survivor id
+
+
+def test_extract_and_store_insights_failure_gate_allows_below_threshold(monkeypatch):
+    """AE3: 2 of 12 chunks fail extraction with threshold 0.25 -> stage
+    returns normally, failed_chunks lists both ids, other chunks stored."""
+    monkeypatch.setattr("rag.insight_extraction.settings.OPENCODE_API_KEY", "test-key")
+    monkeypatch.setattr("rag.insight_extraction.settings.STAGE_FAILURE_RATE_THRESHOLD", 0.25)
+    chunk_rows = [(f"chunk-{i}", f"content {i}") for i in range(12)]
+    succeeded = [
+        (chunk_id, content, [{"insight": f"insight-{chunk_id}", "topics": []}])
+        for chunk_id, content in chunk_rows[2:]
     ]
+    monkeypatch.setattr(
+        "rag.insight_extraction._extract_chunk_insights_parallel",
+        lambda rows, progress_callback=None: (succeeded, ["chunk-0", "chunk-1"]),
+    )
+    monkeypatch.setattr(
+        "rag.insight_extraction.get_embeddings",
+        lambda texts: [_one_hot(i) for i in range(len(texts))],
+    )
+    monkeypatch.setattr("rag.insight_extraction.upsert_insight", lambda conn, content, emb: (f"{content}-id", True))
+    monkeypatch.setattr("rag.insight_extraction.link_chunk_insights_batch", lambda *a, **k: None)
+    monkeypatch.setattr("rag.insight_extraction.store_insights_in_graph_batch", lambda *a, **k: None)
+    monkeypatch.setattr("rag.insight_extraction.link_related_insights", lambda *a, **k: 0)
+
+    from rag.insight_extraction import extract_and_store_insights
+    conn = MagicMock()
+    driver = MagicMock()
+
+    result = extract_and_store_insights(conn, driver, "source-1", chunk_rows)
+
+    assert result["failed_chunks"] == ["chunk-0", "chunk-1"]
+    assert result["chunks_processed"] == 10
+    assert result["insights_extracted"] == 10
+
+
+def test_extract_and_store_insights_failure_gate_raises_above_threshold(monkeypatch):
+    """4 of 12 chunks fail with threshold 0.25 -> the stage raises so the
+    caller's _fail_stage path can record it."""
+    monkeypatch.setattr("rag.insight_extraction.settings.OPENCODE_API_KEY", "test-key")
+    monkeypatch.setattr("rag.insight_extraction.settings.STAGE_FAILURE_RATE_THRESHOLD", 0.25)
+    chunk_rows = [(f"chunk-{i}", f"content {i}") for i in range(12)]
+    failed = [f"chunk-{i}" for i in range(4)]
+    succeeded = [
+        (chunk_id, content, [])
+        for chunk_id, content in chunk_rows[4:]
+    ]
+    monkeypatch.setattr(
+        "rag.insight_extraction._extract_chunk_insights_parallel",
+        lambda rows, progress_callback=None: (succeeded, failed),
+    )
+
+    from rag.insight_extraction import extract_and_store_insights
+    conn = MagicMock()
+    driver = MagicMock()
+
+    try:
+        extract_and_store_insights(conn, driver, "source-1", chunk_rows)
+        assert False, "expected extract_and_store_insights to raise"
+    except RuntimeError as exc:
+        assert "4/12" in str(exc)
+
+
+def test_extract_and_store_insights_reuse_path_no_linking_contribution(monkeypatch):
+    """Reuse path: an insight matching an existing corpus row increments
+    insights_reused, and contributes nothing to link_related_insights'
+    new_insights argument (linking only runs for new insights)."""
+    events = _patch_happy_path(monkeypatch)
+    monkeypatch.setattr(
+        "rag.insight_extraction._extract_chunk_insights_parallel",
+        lambda rows, progress_callback=None: (
+            [("chunk-1", "content 1", [{"insight": "existing insight", "topics": []}])],
+            [],
+        ),
+    )
+    monkeypatch.setattr("rag.insight_extraction.get_embeddings", lambda texts: [[0.3] * 4096])
+    monkeypatch.setattr(
+        "rag.insight_extraction.upsert_insight",
+        lambda conn, content, emb: ("existing-uuid", False),
+    )
+
+    from rag.insight_extraction import extract_and_store_insights
+    conn = MagicMock()
+    driver = MagicMock()
+
+    result = extract_and_store_insights(
+        conn, driver, "source-1", [("chunk-1", "content 1")]
+    )
+
+    assert result["insights_reused"] == 1
+    assert result["insights_extracted"] == 0
+    related_call = next(payload for event, *payload in events if event == "related")
+    new_insights_arg = related_call[1]
+    assert new_insights_arg == []  # no new insights to link
+
+
+def test_extract_and_store_insights_missing_api_key_skips_gracefully(monkeypatch):
+    """KTD6b: an unset OPENCODE_API_KEY short-circuits before the extraction
+    fan-out with a skipped marker; zero chunks are marked failed and the
+    failure-rate gate is never invoked."""
+    monkeypatch.setattr("rag.insight_extraction.settings.OPENCODE_API_KEY", "")
+    parallel_mock = MagicMock()
+    monkeypatch.setattr("rag.insight_extraction._extract_chunk_insights_parallel", parallel_mock)
+
+    from rag.insight_extraction import extract_and_store_insights
+    conn = MagicMock()
+    driver = MagicMock()
+    events = []
+
+    result = extract_and_store_insights(
+        conn, driver, "source-1", [("chunk-1", "content 1")],
+        progress_callback=lambda event, payload: events.append((event, payload)),
+    )
+
+    assert result["skipped"] is True
+    assert result["failed_chunks"] == []
+    assert result["chunks_processed"] == 0
+    parallel_mock.assert_not_called()
+    assert ("store_start", {"total": 0}) in events
+    assert ("store_done", {"total": 0}) in events
 
 
 def test_extract_and_store_insights_reports_storage_progress(monkeypatch):
+    events = _patch_happy_path(monkeypatch)
     monkeypatch.setattr(
         "rag.insight_extraction._extract_chunk_insights_parallel",
-        lambda rows, progress_callback=None: [
-            ("chunk-1", "content 1", [{"insight": "insight A", "topics": []}]),
-            ("chunk-2", "content 2", []),
-        ],
+        lambda rows, progress_callback=None: (
+            [
+                ("chunk-1", "content 1", [{"insight": "insight A", "topics": []}]),
+                ("chunk-2", "content 2", []),
+            ],
+            [],
+        ),
     )
     monkeypatch.setattr("rag.insight_extraction.get_embeddings", lambda texts: [[0.1] * 4096])
-    monkeypatch.setattr("rag.insight_extraction.upsert_insight", lambda *a, **k: ("insight-1", True))
-    monkeypatch.setattr("rag.insight_extraction.link_chunk_insight", lambda *a, **k: None)
-    monkeypatch.setattr("rag.insight_extraction.store_insight_in_graph", lambda *a, **k: None)
-    monkeypatch.setattr("rag.insight_extraction.link_related_insights", lambda *a, **k: None)
-    events = []
+    progress_events = []
 
     from rag.insight_extraction import extract_and_store_insights
     result = extract_and_store_insights(
@@ -463,19 +760,16 @@ def test_extract_and_store_insights_reports_storage_progress(monkeypatch):
         MagicMock(),
         "source-1",
         [("chunk-1", "content 1"), ("chunk-2", "content 2")],
-        progress_callback=lambda event, payload: events.append((event, payload)),
+        progress_callback=lambda event, payload: progress_events.append((event, payload)),
     )
 
     assert result["chunks_processed"] == 2
-    assert events == [
-        ("store_start", {"total": 2}),
-        ("store_chunk", {"position": 1, "total": 2, "chunk_id": "chunk-1", "insights": 1}),
-        ("store_chunk", {"position": 2, "total": 2, "chunk_id": "chunk-2", "insights": 0}),
-        ("store_done", {"total": 2}),
-    ]
+    assert ("store_start", {"total": 2}) in progress_events
+    assert ("store_done", {"total": 2}) in progress_events
 
 
 def test_extract_and_store_insights_skips_blank_insight(monkeypatch):
+    monkeypatch.setattr("rag.insight_extraction.settings.OPENCODE_API_KEY", "test-key")
     monkeypatch.setattr(
         "rag.insight_extraction.extract_insights_from_chunk",
         lambda content: [
@@ -497,4 +791,5 @@ def test_extract_and_store_insights_skips_blank_insight(monkeypatch):
     assert result["chunks_processed"] == 1
     assert result["insights_extracted"] == 0
     assert result["insights_reused"] == 0
+    assert result["failed_chunks"] == []
     mock_embeddings.assert_not_called()
