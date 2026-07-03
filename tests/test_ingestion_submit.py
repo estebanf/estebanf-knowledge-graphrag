@@ -96,6 +96,47 @@ def test_submit_ingestion_job_copies_markdown_images(mock_md5, mock_dup, mock_st
     assert call_args.kwargs.get("version", call_args.args[2] if len(call_args.args) > 2 else None) == 1
 
 
+@patch("rag.ingestion.get_connection")
+@patch("rag.ingestion.store_file")
+@patch("rag.ingestion.check_duplicate")
+@patch("rag.ingestion.compute_md5")
+def test_submit_uses_original_md5_for_dedup_and_columns(mock_md5, mock_dup, mock_store, mock_conn, tmp_path):
+    # Prepared binary: submitted file is markdown, but dedup + provenance use the
+    # original binary hash and filename (R10, R11).
+    prepared = tmp_path / "prepared.md"
+    prepared.write_text("# prepared\n\ncontent", encoding="utf-8")
+    mock_md5.return_value = "markdown-hash"  # hash of the prepared markdown
+    mock_dup.return_value = None
+    mock_store.return_value = tmp_path / "stored.md"
+    conn = MagicMock()
+    mock_conn.return_value.__enter__.return_value = conn
+
+    submit_ingestion_job(
+        prepared,
+        metadata={"prepared_image_count": 2},
+        original_md5="pdf-hash",
+        original_file_name="report.pdf",
+        original_file_type="pdf",
+    )
+
+    # Dedup checks the original binary hash, not the markdown hash.
+    assert mock_dup.call_args.args[1] == "pdf-hash"
+    source_insert = next(
+        c for c in conn.execute.call_args_list if "INSERT INTO sources" in str(c[0][0])
+    )
+    params = source_insert.args[1]
+    # (id, name, file_name, file_type, storage_path, md5, metadata)
+    assert params[1] == "report"  # name derived from original filename stem
+    assert params[2] == "report.pdf"  # file_name column = original
+    assert params[3] == "pdf"  # file_type column = original
+    assert params[5] == "pdf-hash"  # stored md5 = original binary hash
+    stored_metadata = params[6].obj
+    assert stored_metadata["original_md5"] == "pdf-hash"
+    assert stored_metadata["original_filename"] == "report.pdf"
+    assert stored_metadata["original_extension"] == "pdf"
+    assert stored_metadata["prepared_image_count"] == 2
+
+
 @patch("rag.ingestion.store_markdown_images")
 @patch("rag.ingestion.get_connection")
 @patch("rag.ingestion.store_file")

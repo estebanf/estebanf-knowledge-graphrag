@@ -60,6 +60,41 @@ def test_ingest_multipart_rejects_unsupported_extension() -> None:
 
 
 @patch("rag.api.routes.ingest.submit_ingestion_job")
+def test_ingest_multipart_rejects_binary_documents(mock_submit) -> None:
+    # AE4: direct PDF/DOCX/PPTX upload is rejected with a clear prepare message
+    # and never reaches submit_ingestion_job.
+    client = _client()
+    for name in ("report.pdf", "deck.pptx", "memo.docx"):
+        resp = client.post("/api/ingest", files={"file": (name, b"binary", "application/octet-stream")})
+        assert resp.status_code == 415, resp.text
+        assert "prepare" in resp.json()["detail"].lower()
+    mock_submit.assert_not_called()
+
+
+@patch("rag.api.routes.ingest.submit_ingestion_job")
+def test_ingest_text_forwards_original_provenance(mock_submit) -> None:
+    mock_submit.return_value = {"source_id": "s", "job_id": "j", "status": "pending"}
+    client = _client()
+    resp = client.post(
+        "/api/ingest/text",
+        json={
+            "content": "# prepared\n\ncontent",
+            "name": "Report",
+            "metadata": {"prepared_image_count": 3},
+            "original_md5": "abc123",
+            "file_name": "report.pdf",
+            "file_type": "pdf",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    _, kwargs = mock_submit.call_args
+    assert kwargs["original_md5"] == "abc123"
+    assert kwargs["original_file_name"] == "report.pdf"
+    assert kwargs["original_file_type"] == "pdf"
+    assert kwargs["metadata"] == {"prepared_image_count": 3}
+
+
+@patch("rag.api.routes.ingest.submit_ingestion_job")
 def test_ingest_propagates_duplicate_error(mock_submit) -> None:
     mock_submit.side_effect = ValueError("Duplicate: file already ingested as source abc")
     client = _client()
@@ -72,7 +107,7 @@ def test_ingest_propagates_duplicate_error(mock_submit) -> None:
 def test_ingest_text_endpoint(mock_submit) -> None:
     captured: dict = {}
 
-    def fake_submit(path, name=None, metadata=None):
+    def fake_submit(path, name=None, metadata=None, **kwargs):
         captured["suffix"] = path.suffix
         captured["text"] = path.read_text()
         captured["kw"] = {"name": name, "metadata": metadata}

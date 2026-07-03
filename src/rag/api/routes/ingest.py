@@ -14,8 +14,12 @@ from rag.ingestion import submit_ingestion_job
 
 router = APIRouter(prefix="/api/ingest", tags=["ingest"])
 
-# Supported extensions mirror the CLI (`rag ingest`).
-SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".md", ".markdown", ".txt"}
+# The backend worker parses markdown/text only; binary documents are prepared on
+# the CLI into self-contained markdown before submission (see rag.prepare). Direct
+# multipart upload therefore accepts text formats only and rejects binaries with a
+# clear message (R12, AE4).
+TEXT_EXTENSIONS = {".md", ".markdown", ".txt"}
+BINARY_EXTENSIONS = {".pdf", ".docx", ".pptx"}
 
 
 class IngestResponse(BaseModel):
@@ -28,6 +32,9 @@ class IngestTextRequest(BaseModel):
     content: str
     name: Optional[str] = None
     metadata: Optional[dict] = None
+    original_md5: Optional[str] = None
+    file_name: Optional[str] = None
+    file_type: Optional[str] = None
 
 
 def _parse_metadata(raw: Optional[str]) -> Optional[dict]:
@@ -51,7 +58,16 @@ async def ingest_multipart(
     """Accept a multipart upload and submit an ingestion job."""
     filename = file.filename or "upload"
     suffix = Path(filename).suffix.lower()
-    if suffix not in SUPPORTED_EXTENSIONS:
+    if suffix in BINARY_EXTENSIONS:
+        raise HTTPException(
+            status_code=415,
+            detail=(
+                f"binary documents ({suffix}) cannot be uploaded directly: prepare "
+                "them on the CLI with `rag ingest` or `rag prepare`, which converts "
+                "them to markdown before submission."
+            ),
+        )
+    if suffix not in TEXT_EXTENSIONS:
         raise HTTPException(
             status_code=415,
             detail=f"unsupported file type: {suffix or 'unknown'}",
@@ -100,7 +116,14 @@ def ingest_text(payload: IngestTextRequest) -> IngestResponse:
         tmp.write(payload.content)
         tmp.close()
         try:
-            result = submit_ingestion_job(tmp_path, name=payload.name, metadata=payload.metadata)
+            result = submit_ingestion_job(
+                tmp_path,
+                name=payload.name,
+                metadata=payload.metadata,
+                original_md5=payload.original_md5,
+                original_file_name=payload.file_name,
+                original_file_type=payload.file_type,
+            )
         except ValueError as exc:
             message = str(exc)
             status = 409 if message.lower().startswith("duplicate") else 400

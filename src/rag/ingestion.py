@@ -333,16 +333,40 @@ def submit_ingestion_job(
     file_path: Path,
     name: str | None = None,
     metadata: dict | None = None,
+    *,
+    original_md5: str | None = None,
+    original_file_name: str | None = None,
+    original_file_type: str | None = None,
 ) -> dict:
+    """Queue an ingestion job for a stored file.
+
+    For prepared binary ingestion the ``file_path`` is the prepared markdown, but
+    the operator ingested an original PDF/DOCX/PPTX. The ``original_*`` arguments
+    let the caller record that provenance: ``original_md5`` becomes the source's
+    dedup key and stored ``md5`` (so re-ingesting the same binary is rejected even
+    though the markdown differs, R11), and ``original_file_name``/``_file_type``
+    are recorded as the source's file name/type. The same fields are mirrored into
+    metadata so source browsing surfaces the original provenance (R10).
+    """
     file_path = file_path.resolve()
     if not file_path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
 
-    md5 = compute_md5(file_path)
+    computed_md5 = compute_md5(file_path)
+    md5 = original_md5 or computed_md5
     source_id = str(uuid.uuid4())
     job_id = str(uuid.uuid4())
-    file_type = file_path.suffix.lstrip(".").lower()
-    source_name = name or file_path.stem
+    file_type = (original_file_type or file_path.suffix.lstrip(".")).lower()
+    file_name = original_file_name or file_path.name
+    source_name = name or (Path(original_file_name).stem if original_file_name else file_path.stem)
+
+    combined_metadata = dict(metadata or {})
+    if original_md5 is not None:
+        combined_metadata.setdefault("original_md5", original_md5)
+    if original_file_name is not None:
+        combined_metadata.setdefault("original_filename", original_file_name)
+    if original_file_type is not None:
+        combined_metadata.setdefault("original_extension", original_file_type.lower())
 
     with get_connection() as conn:
         existing = check_duplicate(conn, md5)
@@ -357,8 +381,8 @@ def submit_ingestion_job(
             conn.execute(
                 """INSERT INTO sources (id, name, file_name, file_type, storage_path, md5, version, metadata)
                 VALUES (%s, %s, %s, %s, %s, %s, 1, %s)""",
-                (source_id, source_name, file_path.name, file_type,
-                 str(stored_path), md5, psycopg.types.json.Jsonb(metadata or {})),
+                (source_id, source_name, file_name, file_type,
+                 str(stored_path), md5, psycopg.types.json.Jsonb(combined_metadata)),
             )
         except psycopg.errors.UniqueViolation:
             raise ValueError(f"Duplicate: file already ingested as source {source_id}")
