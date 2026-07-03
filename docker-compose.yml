@@ -6,10 +6,34 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-rag}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: ${POSTGRES_DB:-rag}
-      POSTGRES_SHARED_BUFFERS: ${POSTGRES_SHARED_BUFFERS:-512MB}
+      POSTGRES_SHARED_BUFFERS: ${POSTGRES_SHARED_BUFFERS:-1GB}
+      POSTGRES_EFFECTIVE_CACHE_SIZE: ${POSTGRES_EFFECTIVE_CACHE_SIZE:-3GB}
       POSTGRES_WORK_MEM: ${POSTGRES_WORK_MEM:-64MB}
       POSTGRES_MAINTENANCE_WORK_MEM: ${POSTGRES_MAINTENANCE_WORK_MEM:-256MB}
-      POSTGRES_MAX_CONNECTIONS: ${POSTGRES_MAX_CONNECTIONS:-50}
+      POSTGRES_MAX_CONNECTIONS: ${POSTGRES_MAX_CONNECTIONS:-100}
+    # The ParadeDB image ignores the POSTGRES_* env vars above for tuning
+    # (it bakes shared_buffers=128MB / max_connections=100 into its own
+    # postgresql.conf). Pass every tuned setting as a -c server argument so it
+    # actually applies; command-line args override postgresql.conf. The env
+    # vars remain the single override surface. shared_preload_libraries MUST
+    # keep ParadeDB's own libs (pg_search, pg_cron, pg_stat_statements) and
+    # only append pg_prewarm — dropping the others breaks the image.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-1GB}
+      - -c
+      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-3GB}
+      - -c
+      - work_mem=${POSTGRES_WORK_MEM:-64MB}
+      - -c
+      - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-256MB}
+      - -c
+      - max_connections=${POSTGRES_MAX_CONNECTIONS:-100}
+      - -c
+      - shared_preload_libraries=pg_search,pg_cron,pg_stat_statements,pg_prewarm
+      - -c
+      - pg_prewarm.autoprewarm=on
     volumes:
       - ./data/postgres:/var/lib/postgresql
       - ./scripts/init/postgres:/docker-entrypoint-initdb.d:ro
