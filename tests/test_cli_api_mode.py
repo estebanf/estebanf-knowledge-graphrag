@@ -113,6 +113,57 @@ def test_ingest_uses_api(runner: CliRunner, api_env, fake_client, tmp_path) -> N
     assert "j1" in result.output
 
 
+def test_ingest_pdf_api_prepares_and_submits_text(
+    runner: CliRunner, api_env, fake_client, tmp_path
+) -> None:
+    from rag.prepare import PreparedDocument
+
+    prepared = PreparedDocument(
+        markdown="# prepared\n\n<!-- image -->",
+        images=[],
+        original_filename="report.pdf",
+        original_extension="pdf",
+        original_md5="pdfhash",
+        image_count=1,
+    )
+    fake_client.submit_text.return_value = {"job_id": "j9", "status": "pending", "source_id": "s9"}
+    file = tmp_path / "report.pdf"
+    file.write_bytes(b"%PDF")
+
+    with patch.object(cli_module, "prepare_binary", return_value=prepared), patch.object(
+        cli_module, "finalize_markdown", return_value="# prepared\n\nA chart."
+    ):
+        result = runner.invoke(cli_module.app, ["ingest", str(file)])
+
+    assert result.exit_code == 0, result.output
+    assert "j9" in result.output
+    fake_client.submit_ingest.assert_not_called()
+    fake_client.submit_text.assert_called_once()
+    _, kwargs = fake_client.submit_text.call_args
+    assert kwargs["original_md5"] == "pdfhash"
+    assert kwargs["file_name"] == "report.pdf"
+    assert kwargs["file_type"] == "pdf"
+    assert kwargs["metadata"]["prepared_image_count"] == 1
+
+
+def test_ingest_pdf_api_describe_failure_queues_no_job(
+    runner: CliRunner, api_env, fake_client, tmp_path
+) -> None:
+    # Image description failure hard-fails preparation; no ingestion job is queued.
+    from rag.prepare import PrepareError
+
+    file = tmp_path / "report.pdf"
+    file.write_bytes(b"%PDF")
+
+    with patch.object(cli_module, "prepare_binary", side_effect=PrepareError("describe failed for report.pdf")):
+        result = runner.invoke(cli_module.app, ["ingest", str(file)])
+
+    assert result.exit_code != 0
+    assert "report.pdf" in result.output
+    fake_client.submit_text.assert_not_called()
+    fake_client.submit_ingest.assert_not_called()
+
+
 def test_configure_writes_config(runner: CliRunner, monkeypatch, tmp_path) -> None:
     from rag import cli_config
 

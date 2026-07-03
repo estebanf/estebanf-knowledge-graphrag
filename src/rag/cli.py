@@ -39,7 +39,12 @@ def retrieve(*args, **kwargs):
 
     return _fn(*args, **kwargs)
 
-SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".md", ".txt"}
+# Binary documents are converted to self-contained markdown on the CLI (rag.prepare)
+# before a job is queued; text formats are submitted as-is. The backend worker
+# parses markdown/text only.
+BINARY_EXTENSIONS = {".pdf", ".docx", ".pptx"}
+TEXT_EXTENSIONS = {".md", ".markdown", ".txt"}
+SUPPORTED_EXTENSIONS = BINARY_EXTENSIONS | TEXT_EXTENSIONS
 STAGE_ORDER = (
     "parsing",
     "profiling",
@@ -102,6 +107,24 @@ def submit_ingestion_job(*args, **kwargs):
     return _fn(*args, **kwargs)
 
 
+# Lazy wrappers for the heavy prepare path (Docling) and image description, kept
+# as module-level names so tests can patch rag.cli.<name> without importing
+# Docling. Only invoked for binary documents.
+def prepare_binary(*args, **kwargs):
+    from rag.prepare import prepare_binary as _fn
+    return _fn(*args, **kwargs)
+
+
+def finalize_markdown(*args, **kwargs):
+    from rag.prepare import finalize_markdown as _fn
+    return _fn(*args, **kwargs)
+
+
+def describe_image(*args, **kwargs):
+    from rag.image_description import describe_image as _fn
+    return _fn(*args, **kwargs)
+
+
 def retry_job(*args, **kwargs):
     from rag.ingestion import retry_job as _fn
     return _fn(*args, **kwargs)
@@ -142,6 +165,71 @@ def health() -> None:
         raise typer.Exit(1)
 
     console.print("[green]Ready: Postgres and Memgraph are reachable.[/green]")
+
+
+def _prepare_markdown(file: Path, describe):
+    """Convert a binary document to self-contained markdown, describing images.
+
+    ``describe`` turns image bytes into text (backend API in API mode, local call
+    in direct-DB mode). Raises RuntimeError with a "Preparation failed" prefix so
+    the caller reports a local-preparation error distinctly from a backend
+    submission error, and never queues a job when preparation fails.
+    """
+    from rag.prepare import PrepareError
+
+    try:
+        prepared = prepare_binary(file)
+        content = finalize_markdown(prepared, describe)
+    except PrepareError as exc:
+        raise RuntimeError(f"Preparation failed: {exc}") from exc
+    return content, prepared
+
+
+def _ingest_one_api(client, file: Path, name: Optional[str], metadata: dict):
+    """Ingest a single file in API mode: prepare binaries locally, submit markdown."""
+    if file.suffix.lower() in BINARY_EXTENSIONS:
+        content, prepared = _prepare_markdown(
+            file, lambda data, mime: client.describe_image(data, mime)
+        )
+        meta = {**metadata, "prepared_image_count": prepared.image_count}
+        return client.submit_text(
+            content,
+            name=name,
+            metadata=meta,
+            original_md5=prepared.original_md5,
+            file_name=prepared.original_filename,
+            file_type=prepared.original_extension,
+        )
+    return client.submit_ingest(file, name=name, metadata=metadata)
+
+
+def _ingest_one_direct(file: Path, name: Optional[str], metadata: dict):
+    """Ingest a single file in direct-DB mode: prepare binaries with a local caption."""
+    if file.suffix.lower() in BINARY_EXTENSIONS:
+        content, prepared = _prepare_markdown(
+            file, lambda data, mime: describe_image(data, mime)
+        )
+        import tempfile
+
+        tmp = tempfile.NamedTemporaryFile(
+            prefix="prepared-", suffix=".md", delete=False, mode="w", encoding="utf-8"
+        )
+        tmp_path = Path(tmp.name)
+        try:
+            tmp.write(content)
+            tmp.close()
+            meta = {**metadata, "prepared_image_count": prepared.image_count}
+            return submit_ingestion_job(
+                tmp_path,
+                name=name,
+                metadata=meta,
+                original_md5=prepared.original_md5,
+                original_file_name=prepared.original_filename,
+                original_file_type=prepared.original_extension,
+            )
+        finally:
+            tmp_path.unlink(missing_ok=True)
+    return submit_ingestion_job(file, name=name, metadata=metadata)
 
 
 @app.command()
@@ -185,32 +273,24 @@ def ingest(
     if _use_api():
         with _get_client() as client:
             for file in resolved_files:
+                per_file_name = name if len(resolved_files) == 1 else None
                 try:
-                    result = client.submit_ingest(
-                        file,
-                        name=name if len(resolved_files) == 1 else None,
-                        metadata=parsed_metadata,
-                    )
+                    result = _ingest_one_api(client, file, per_file_name, parsed_metadata)
                     results.append((file.name, result["job_id"], result["status"]))
                 except FileNotFoundError as e:
                     errors.append((file.name, str(e)))
                 except Exception as e:
-                    errors.append((file.name, f"Error: {e}"))
+                    errors.append((file.name, str(e)))
     else:
         for file in resolved_files:
+            per_file_name = name if len(resolved_files) == 1 else None
             try:
-                result = submit_ingestion_job(
-                    file,
-                    name=name if len(resolved_files) == 1 else None,
-                    metadata=parsed_metadata,
-                )
+                result = _ingest_one_direct(file, per_file_name, parsed_metadata)
                 results.append((file.name, result["job_id"], result["status"]))
             except FileNotFoundError as e:
                 errors.append((file.name, str(e)))
-            except ValueError as e:
-                errors.append((file.name, str(e)))
             except Exception as e:
-                errors.append((file.name, f"Error: {e}"))
+                errors.append((file.name, str(e)))
 
     # Output table
     table = Table(title="Submitted Jobs")
