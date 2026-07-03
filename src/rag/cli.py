@@ -8,9 +8,36 @@ from rich.panel import Panel
 from rich.table import Table
 
 from rag.config import settings
-from rag.db import get_connection
-from rag.graph_db import get_graph_driver
-from rag.retrieval import hybrid_search, retrieve
+
+
+# Heavy modules are imported lazily so API-mode CLI commands — which dispatch
+# through RagClient and never touch these — don't pay their import cost on every
+# invocation. rag.graph_db pulls in neo4j+pandas (~0.45s) and rag.retrieval the
+# embedding/graph stack (~0.2s); deferring both cuts CLI startup from ~0.75s to
+# ~0.1s. Kept as module-level names so tests can patch rag.cli.<name>, mirroring
+# the submit_ingestion_job wrapper below.
+def get_connection(*args, **kwargs):
+    from rag.db import get_connection as _fn
+
+    return _fn(*args, **kwargs)
+
+
+def get_graph_driver(*args, **kwargs):
+    from rag.graph_db import get_graph_driver as _fn
+
+    return _fn(*args, **kwargs)
+
+
+def hybrid_search(*args, **kwargs):
+    from rag.retrieval import hybrid_search as _fn
+
+    return _fn(*args, **kwargs)
+
+
+def retrieve(*args, **kwargs):
+    from rag.retrieval import retrieve as _fn
+
+    return _fn(*args, **kwargs)
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".md", ".txt"}
 STAGE_ORDER = (
