@@ -12,6 +12,31 @@ from rag.ingestion import cancel_job, retry_job
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
+# Bound on `--days`/`?days=` for the stage-stats/baseline routes (U6/R10):
+# an unbounded window risks an expensive jsonb_each aggregation scan over the
+# full jobs table (flagged in this plan's security-lens review).
+MAX_STAGE_STATS_DAYS = 365
+
+# NOTE: this is a per-stage *duration* aggregation (R8/R10), distinct from
+# `GET /stats` above (job *status* counts, consumed by `rag jobs list
+# --stats`). Do not merge these two concepts or their schemas.
+STAGE_STATS_SQL = """
+    SELECT stage,
+           count(*) AS job_count,
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms) AS p50_ms,
+           percentile_cont(0.9) WITHIN GROUP (ORDER BY duration_ms) AS p90_ms,
+           max(duration_ms) AS max_ms
+    FROM (
+        SELECT kv.key AS stage, (kv.value ->> 'duration_ms')::bigint AS duration_ms
+        FROM jobs j, jsonb_each(j.stage_log) kv
+        WHERE j.status = 'completed'
+          AND j.created_at >= now() - make_interval(days => %s)
+          AND kv.value ->> 'duration_ms' IS NOT NULL
+    ) sub
+    GROUP BY stage
+    ORDER BY stage
+"""
+
 
 class JobSummary(BaseModel):
     id: str
@@ -44,6 +69,30 @@ class RetryRequest(BaseModel):
     from_stage: Optional[str] = None
 
 
+class StageStatItem(BaseModel):
+    stage: str
+    job_count: int
+    p50_ms: Optional[float] = None
+    p90_ms: Optional[float] = None
+    max_ms: Optional[int] = None
+
+
+class StageStatsResponse(BaseModel):
+    days: int
+    stats: list[StageStatItem]
+
+
+class StageBaselineItem(BaseModel):
+    stage: str
+    baseline_ms: int
+    set_at: Optional[str] = None
+
+
+class StageBaselineResponse(BaseModel):
+    days: int
+    baselines: list[StageBaselineItem]
+
+
 def _row_to_summary(row: tuple) -> JobSummary:
     return JobSummary(
         id=str(row[0]),
@@ -72,6 +121,81 @@ def get_job_stats() -> JobStatsResponse:
                ORDER BY status_group"""
         ).fetchall()
     return JobStatsResponse(stats=[JobStatsItem(status=s, count=c) for s, c in rows])
+
+
+def _validate_days(days: int) -> None:
+    if days < 1 or days > MAX_STAGE_STATS_DAYS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"days must be between 1 and {MAX_STAGE_STATS_DAYS}",
+        )
+
+
+@router.get("/stage-stats", response_model=StageStatsResponse)
+def get_job_stage_stats(days: int = 14) -> StageStatsResponse:
+    """Per-stage duration_ms percentiles/job count over a time window (R8/R10).
+
+    Computed from completed jobs' `stage_log`; stage entries without a
+    `duration_ms` (legacy jobs predating this telemetry) are excluded from the
+    aggregation rather than crashing or being coerced to zero.
+    """
+    _validate_days(days)
+    with get_connection() as conn:
+        rows = conn.execute(STAGE_STATS_SQL, (days,)).fetchall()
+    return StageStatsResponse(
+        days=days,
+        stats=[
+            StageStatItem(stage=r[0], job_count=r[1], p50_ms=r[2], p90_ms=r[3], max_ms=r[4])
+            for r in rows
+        ],
+    )
+
+
+@router.post("/stage-stats/baseline", response_model=StageBaselineResponse)
+def post_stage_stats_baseline(days: int = 14) -> StageBaselineResponse:
+    """Snapshot the current window's per-stage median duration as the pinned
+    drift-guardrail baseline (R11).
+
+    This OVERWRITES any existing baseline for each stage seen in the window —
+    it is an explicit, operator-invoked snapshot (`rag jobs stats
+    --set-baseline`), not a value the worker recomputes automatically. Stages
+    with no data in the window are left untouched.
+    """
+    _validate_days(days)
+    with get_connection() as conn:
+        rows = conn.execute(STAGE_STATS_SQL, (days,)).fetchall()
+        stages_written: list[str] = []
+        for stage, _job_count, p50_ms, _p90_ms, _max_ms in rows:
+            if p50_ms is None:
+                continue
+            conn.execute(
+                """INSERT INTO stage_duration_baseline (stage, baseline_ms, set_at)
+                   VALUES (%s, %s, now())
+                   ON CONFLICT (stage) DO UPDATE
+                     SET baseline_ms = EXCLUDED.baseline_ms, set_at = now()""",
+                (stage, int(round(p50_ms))),
+            )
+            stages_written.append(stage)
+        conn.commit()
+        if stages_written:
+            baseline_rows = conn.execute(
+                "SELECT stage, baseline_ms, set_at FROM stage_duration_baseline "
+                "WHERE stage = ANY(%s) ORDER BY stage",
+                (stages_written,),
+            ).fetchall()
+        else:
+            baseline_rows = []
+    return StageBaselineResponse(
+        days=days,
+        baselines=[
+            StageBaselineItem(
+                stage=r[0],
+                baseline_ms=r[1],
+                set_at=r[2].isoformat() if hasattr(r[2], "isoformat") else r[2],
+            )
+            for r in baseline_rows
+        ],
+    )
 
 
 @router.get("", response_model=JobListResponse)

@@ -28,6 +28,8 @@ GATED_REQUESTS = [
     ("GET", "/api/auth/me", None),
     ("GET", "/api/jobs", None),
     ("GET", "/api/jobs/stats", None),
+    ("GET", "/api/jobs/stage-stats", None),
+    ("POST", "/api/jobs/stage-stats/baseline", None),
     ("GET", "/api/jobs/some-id", None),
     ("GET", "/api/workers", None),
     ("POST", "/api/workers/launch", None),

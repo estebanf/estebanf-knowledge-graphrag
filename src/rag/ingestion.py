@@ -43,6 +43,31 @@ def _now_iso() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
+def _parse_iso(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _duration_ms_since(started_at: str | None) -> int | None:
+    """Compute an elapsed-ms duration from an ISO `started_at` string.
+
+    Returns None when `started_at` is missing or unparsable (legacy stage_log
+    entries recorded before this field existed) rather than raising, so old
+    jobs keep rendering. Never derived from process-local state — callers pass
+    the `started_at` read back from the stage's own stage_log entry, so
+    retries and worker restarts still produce an honest duration (R8).
+    """
+    start = _parse_iso(started_at) if started_at else None
+    if start is None:
+        return None
+    return int((datetime.now(UTC) - start).total_seconds() * 1000)
+
+
 def _build_processing_stage_entry() -> dict:
     return {
         "status": "processing",
@@ -55,6 +80,7 @@ def _build_failed_stage_entry(
     exc: Exception | None = None,
     partial_output: dict | None = None,
     traceback_text: str | None = None,
+    duration_ms: int | None = None,
 ) -> dict:
     return {
         "status": "failed",
@@ -62,15 +88,17 @@ def _build_failed_stage_entry(
         "error": str(exc) if exc else "unknown",
         "traceback": traceback_text,
         "partial_output": partial_output,
+        "duration_ms": duration_ms,
     }
 
 
-def _build_completed_stage_entry(output: dict | None = None) -> dict:
+def _build_completed_stage_entry(output: dict | None = None, duration_ms: int | None = None) -> dict:
     return {
         "status": "completed",
         "completed_at": _now_iso(),
         "output": output or {},
         "error": None,
+        "duration_ms": duration_ms,
     }
 
 
@@ -101,13 +129,28 @@ def _update_stage(conn: psycopg.Connection, job_id: str, stage: str) -> None:
     conn.commit()
 
 
+def _get_stage_started_at(conn: psycopg.Connection, job_id: str, stage: str) -> str | None:
+    """Read back the `started_at` recorded for `stage` by `_update_stage`.
+
+    Read from the DB (not a process-local variable) so a retried or
+    worker-restarted stage still computes an honest duration_ms from its own
+    most recent `started_at`, rather than one captured earlier in this process.
+    """
+    row = conn.execute(
+        "SELECT stage_log -> %s ->> 'started_at' FROM jobs WHERE id = %s",
+        (stage, job_id),
+    ).fetchone()
+    return row[0] if row else None
+
+
 def _complete_stage(
     conn: psycopg.Connection,
     job_id: str,
     stage: str,
     output: dict | None = None,
 ) -> None:
-    stage_entry = _build_completed_stage_entry(output)
+    duration_ms = _duration_ms_since(_get_stage_started_at(conn, job_id, stage))
+    stage_entry = _build_completed_stage_entry(output, duration_ms)
     conn.execute(
         """UPDATE jobs
            SET stage_log = COALESCE(stage_log, '{}'::jsonb) || jsonb_build_object(%s::text, %s::jsonb),
@@ -151,10 +194,12 @@ def _fail_stage(
             "traceback": traceback_text,
             "partial_output": partial_output,
         })
+    duration_ms = _duration_ms_since(_get_stage_started_at(conn, job_id, stage))
     stage_entry = _build_failed_stage_entry(
         exc,
         partial_output=partial_output,
         traceback_text=traceback_text,
+        duration_ms=duration_ms,
     )
     conn.execute(
         """UPDATE jobs
@@ -481,6 +526,7 @@ def execute_ingestion_pipeline(job_id: str, source_id: str, start_stage: str = "
         structlog.contextvars.bind_contextvars(stage="parsing")
         t0 = time.perf_counter()
         if start_idx <= STAGE_ORDER.index("parsing"):
+            _update_stage(conn, job_id, "parsing")
             try:
                 parse_result = parse_document(stored_path)
                 markdown = parse_result.markdown

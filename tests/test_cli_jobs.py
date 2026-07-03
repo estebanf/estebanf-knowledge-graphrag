@@ -280,6 +280,94 @@ def test_jobs_status_shows_legacy_graph_linking_stage_log_without_crashing(mock_
     assert "job-uuid" in result.output
 
 
+def test_jobs_stats_direct_db_renders_percentiles():
+    with patch("rag.cli.get_connection") as mock_conn:
+        conn = MagicMock()
+        mock_conn.return_value.__enter__.return_value = conn
+        conn.execute.return_value.fetchall.return_value = [
+            ("chunking", 10, 500.0, 900.0, 1200),
+            ("insight_extraction", 10, 7000.0, 9000.0, 12000),
+        ]
+        from rag.cli import app
+        result = runner.invoke(app, ["jobs", "stats"])
+    assert result.exit_code == 0
+    assert "chunking" in result.output
+    assert "insight_extraction" in result.output
+    assert "500" in result.output
+
+
+def test_jobs_stats_direct_db_no_data():
+    with patch("rag.cli.get_connection") as mock_conn:
+        conn = MagicMock()
+        mock_conn.return_value.__enter__.return_value = conn
+        conn.execute.return_value.fetchall.return_value = []
+        from rag.cli import app
+        result = runner.invoke(app, ["jobs", "stats"])
+    assert result.exit_code == 0
+    assert "No stage duration data" in result.output
+
+
+def test_jobs_stats_rejects_oversized_days():
+    from rag.cli import app
+    result = runner.invoke(app, ["jobs", "stats", "--days", "9999"])
+    assert result.exit_code == 1
+    assert "--days must be between" in result.output
+
+
+def test_jobs_stats_set_baseline_direct_db_upserts():
+    with patch("rag.cli.get_connection") as mock_conn:
+        conn = MagicMock()
+        mock_conn.return_value.__enter__.return_value = conn
+        conn.execute.side_effect = [
+            MagicMock(fetchall=MagicMock(return_value=[("chunking", 10, 500.0, 900.0, 1200)])),
+            MagicMock(),  # INSERT ... ON CONFLICT
+            MagicMock(fetchall=MagicMock(return_value=[("chunking", 500, "2026-07-03 12:00:00")])),
+        ]
+        from rag.cli import app
+        result = runner.invoke(app, ["jobs", "stats", "--set-baseline"])
+    assert result.exit_code == 0
+    assert "chunking" in result.output
+    assert "500" in result.output
+    upsert_calls = [c for c in conn.execute.call_args_list if "stage_duration_baseline" in c.args[0]]
+    assert upsert_calls, "expected an INSERT into stage_duration_baseline"
+
+
+def test_jobs_stats_api_mode_renders_table():
+    with patch("rag.cli._use_api", return_value=True), \
+         patch("rag.cli._get_client") as mock_get_client:
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.job_stage_stats.return_value = {
+            "days": 14,
+            "stats": [
+                {"stage": "chunking", "job_count": 10, "p50_ms": 500.0, "p90_ms": 900.0, "max_ms": 1200},
+            ],
+        }
+        mock_get_client.return_value = client
+        from rag.cli import app
+        result = runner.invoke(app, ["jobs", "stats", "--days", "14"])
+    assert result.exit_code == 0
+    assert "chunking" in result.output
+    client.job_stage_stats.assert_called_once_with(days=14)
+
+
+def test_jobs_stats_api_mode_set_baseline():
+    with patch("rag.cli._use_api", return_value=True), \
+         patch("rag.cli._get_client") as mock_get_client:
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.set_stage_stats_baseline.return_value = {
+            "days": 14,
+            "baselines": [{"stage": "chunking", "baseline_ms": 500, "set_at": "2026-07-03T12:00:00"}],
+        }
+        mock_get_client.return_value = client
+        from rag.cli import app
+        result = runner.invoke(app, ["jobs", "stats", "--set-baseline"])
+    assert result.exit_code == 0
+    assert "chunking" in result.output
+    client.set_stage_stats_baseline.assert_called_once_with(days=14)
+
+
 def test_jobs_list_retry_continues_on_per_job_error():
     with patch("rag.cli.get_connection") as mock_conn, \
          patch("rag.cli.retry_job") as mock_retry:

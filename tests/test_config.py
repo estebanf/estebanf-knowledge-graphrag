@@ -107,3 +107,17 @@ def test_graph_extraction_concurrency_overridable_from_env(monkeypatch):
     from rag.config import Settings
     s = Settings(_env_file=None)
     assert s.GRAPH_EXTRACTION_CONCURRENCY == 4
+
+
+def test_stage_drift_warn_factor_default(monkeypatch):
+    monkeypatch.delenv("STAGE_DRIFT_WARN_FACTOR", raising=False)
+    from rag.config import Settings
+    s = Settings(_env_file=None)
+    assert s.STAGE_DRIFT_WARN_FACTOR == 3.0
+
+
+def test_stage_drift_warn_factor_overridable_from_env(monkeypatch):
+    monkeypatch.setenv("STAGE_DRIFT_WARN_FACTOR", "2.5")
+    from rag.config import Settings
+    s = Settings(_env_file=None)
+    assert s.STAGE_DRIFT_WARN_FACTOR == 2.5

@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -322,3 +323,114 @@ def test_ae4_retry_after_mid_insight_extraction_failure_cleans_up_before_rerun(
         if "DELETE FROM chunk_insights" in call.args[0]
     ]
     assert len(cleanup_sql_calls_after) == 1
+
+
+# --- U6: stage timing telemetry (R8) ---------------------------------------
+
+
+def test_complete_stage_computes_duration_ms_from_stored_started_at():
+    """`_complete_stage` reads the stage's own `started_at` back from the DB
+    (not process-local state) and stores an honest `duration_ms`."""
+    from rag.ingestion import _complete_stage
+
+    started_at = (datetime.now(UTC) - timedelta(seconds=5)).replace(microsecond=0).isoformat()
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = (started_at,)
+
+    _complete_stage(conn, "job-1", "chunking", {"chunk_count": 3})
+
+    update_call = conn.execute.call_args_list[-1]
+    stage_entry = update_call.args[1][1].obj  # psycopg.types.json.Jsonb wraps the dict
+    assert stage_entry["status"] == "completed"
+    assert stage_entry["duration_ms"] is not None
+    # Allow generous slack for test execution time.
+    assert 4000 <= stage_entry["duration_ms"] <= 10000
+
+
+def test_complete_stage_duration_ms_null_when_started_at_missing():
+    """Legacy stage_log entries (predating this telemetry) have no
+    `started_at` to compute from -- duration_ms is null, not a crash."""
+    from rag.ingestion import _complete_stage
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = (None,)
+
+    _complete_stage(conn, "job-1", "chunking", {})
+
+    update_call = conn.execute.call_args_list[-1]
+    stage_entry = update_call.args[1][1].obj
+    assert stage_entry["duration_ms"] is None
+
+
+@patch("rag.ingestion._write_audit_log")
+def test_fail_stage_computes_duration_ms_from_stored_started_at(mock_audit):
+    from rag.ingestion import _fail_stage
+
+    started_at = (datetime.now(UTC) - timedelta(seconds=2)).replace(microsecond=0).isoformat()
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = (started_at,)
+
+    _fail_stage(conn, "job-1", "embedding", RuntimeError("boom"))
+
+    update_call = next(
+        c for c in conn.execute.call_args_list
+        if "UPDATE jobs" in c.args[0] and "stage_log" in c.args[0]
+    )
+    params = update_call.args[1]
+    stage_entry = params[-2].obj
+    assert stage_entry["status"] == "failed"
+    assert stage_entry["duration_ms"] is not None
+    assert stage_entry["duration_ms"] >= 1000
+
+
+@patch("rag.ingestion._write_audit_log")
+@patch("rag.ingestion.get_connection")
+def test_parsing_stage_calls_update_stage_before_parsing(mock_conn, mock_audit):
+    """R8/U6: the parsing block previously had no `_update_stage` call, so it
+    never recorded a `started_at` and its `duration_ms` was always null. This
+    asserts the fix: `_update_stage(conn, job_id, "parsing")` runs before
+    `parse_document`."""
+    from rag.ingestion import execute_ingestion_pipeline
+
+    conn = MagicMock()
+    mock_conn.return_value.__enter__.return_value = conn
+
+    def _execute_side_effect(sql, params=None):
+        result = MagicMock()
+        if "SELECT s.storage_path" in sql:
+            result.fetchone.return_value = ("/tmp/source.md", None, None)
+        elif "SELECT metadata FROM sources" in sql:
+            result.fetchone.return_value = ({},)
+        elif "stage_log ->" in sql:
+            result.fetchone.return_value = (None,)
+        else:
+            result.fetchone.return_value = None
+            result.fetchall.return_value = []
+        return result
+
+    conn.execute.side_effect = _execute_side_effect
+
+    with patch("rag.ingestion.parse_document") as mock_parse, \
+         patch("rag.ingestion.extract_metadata", return_value={}), \
+         patch("rag.ingestion.profile_document") as mock_profile, \
+         patch("rag.ingestion.chunk_document", return_value=[]), \
+         patch("rag.ingestion.validate_chunks", return_value=True), \
+         patch("rag.ingestion.embed_and_store_chunks"), \
+         patch("rag.ingestion.get_graph_driver") as mock_driver, \
+         patch("rag.ingestion.extract_and_store_graph", return_value={}), \
+         patch("rag.ingestion.extract_and_store_insights", return_value={
+             "chunks_processed": 0, "insights_extracted": 0,
+             "insights_reused": 0, "failed_chunks": [], "related_edges": 0,
+         }):
+        mock_parse.return_value = MagicMock(markdown="# doc")
+        mock_profile.return_value = MagicMock(domain="general")
+        mock_driver.return_value.__enter__.return_value = MagicMock()
+
+        execute_ingestion_pipeline("job-1", "source-1", start_stage="parsing")
+
+    update_stage_calls = [
+        call for call in conn.execute.call_args_list
+        if "current_stage = %s" in call.args[0] and call.args[1][1] == "parsing"
+    ]
+    assert update_stage_calls, "expected an _update_stage(..., 'parsing') UPDATE before parse_document ran"
+    mock_parse.assert_called_once()

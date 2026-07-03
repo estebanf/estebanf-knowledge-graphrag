@@ -94,6 +94,80 @@ def test_get_job_status_404(mock_get_conn) -> None:
     assert resp.status_code == 404
 
 
+@patch("rag.api.routes.jobs.get_connection")
+def test_stage_stats_endpoint_returns_percentiles(mock_get_conn) -> None:
+    conn = MagicMock()
+    conn.__enter__.return_value = conn
+    conn.execute.return_value.fetchall.return_value = [
+        ("chunking", 10, 500.0, 900.0, 1200),
+        ("insight_extraction", 10, 7000.0, 9000.0, 12000),
+    ]
+    mock_get_conn.return_value = conn
+
+    resp = _client().get("/api/jobs/stage-stats?days=14")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["days"] == 14
+    assert body["stats"][0] == {
+        "stage": "chunking", "job_count": 10, "p50_ms": 500.0, "p90_ms": 900.0, "max_ms": 1200,
+    }
+    # The `days` window param must reach the query.
+    sql, params = conn.execute.call_args[0]
+    assert params == (14,)
+
+
+@patch("rag.api.routes.jobs.get_connection")
+def test_stage_stats_endpoint_defaults_days(mock_get_conn) -> None:
+    conn = MagicMock()
+    conn.__enter__.return_value = conn
+    conn.execute.return_value.fetchall.return_value = []
+    mock_get_conn.return_value = conn
+
+    resp = _client().get("/api/jobs/stage-stats")
+    assert resp.status_code == 200
+    assert resp.json() == {"days": 14, "stats": []}
+
+
+def test_stage_stats_endpoint_rejects_oversized_days() -> None:
+    resp = _client().get("/api/jobs/stage-stats?days=9999")
+    assert resp.status_code == 400
+
+
+def test_stage_stats_endpoint_rejects_non_positive_days() -> None:
+    resp = _client().get("/api/jobs/stage-stats?days=0")
+    assert resp.status_code == 400
+
+
+@patch("rag.api.routes.jobs.get_connection")
+def test_stage_stats_baseline_endpoint_snapshots_median(mock_get_conn) -> None:
+    conn = MagicMock()
+    conn.__enter__.return_value = conn
+    conn.execute.side_effect = [
+        MagicMock(fetchall=MagicMock(return_value=[
+            ("chunking", 10, 500.0, 900.0, 1200),
+            ("insight_extraction", 10, None, None, None),  # no duration_ms data -> skipped
+        ])),
+        MagicMock(),  # INSERT ... ON CONFLICT for "chunking"
+        MagicMock(fetchall=MagicMock(return_value=[
+            ("chunking", 500, datetime(2026, 7, 3, 12, 0, 0)),
+        ])),
+    ]
+    mock_get_conn.return_value = conn
+
+    resp = _client().post("/api/jobs/stage-stats/baseline?days=14")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["days"] == 14
+    assert body["baselines"] == [
+        {"stage": "chunking", "baseline_ms": 500, "set_at": "2026-07-03T12:00:00"},
+    ]
+
+
+def test_stage_stats_baseline_endpoint_rejects_oversized_days() -> None:
+    resp = _client().post("/api/jobs/stage-stats/baseline?days=9999")
+    assert resp.status_code == 400
+
+
 @patch("rag.api.routes.jobs.retry_job")
 def test_retry_job_endpoint(mock_retry) -> None:
     mock_retry.return_value = {"job_id": "new-job", "retry_from_stage": "chunking"}

@@ -55,6 +55,29 @@ STAGE_ORDER = (
     "insight_extraction",
 )
 
+# Direct-DB fallback for `rag jobs stats` (U6/R10). Mirrors the query in
+# src/rag/api/routes/jobs.py's `/api/jobs/stage-stats` route — kept in sync
+# manually, following this file's existing convention of duplicating
+# fallback SQL rather than importing route internals into the CLI's lazy
+# import path.
+STAGE_STATS_MAX_DAYS = 365
+_STAGE_STATS_SQL = """
+    SELECT stage,
+           count(*) AS job_count,
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms) AS p50_ms,
+           percentile_cont(0.9) WITHIN GROUP (ORDER BY duration_ms) AS p90_ms,
+           max(duration_ms) AS max_ms
+    FROM (
+        SELECT kv.key AS stage, (kv.value ->> 'duration_ms')::bigint AS duration_ms
+        FROM jobs j, jsonb_each(j.stage_log) kv
+        WHERE j.status = 'completed'
+          AND j.created_at >= now() - make_interval(days => %s)
+          AND kv.value ->> 'duration_ms' IS NOT NULL
+    ) sub
+    GROUP BY stage
+    ORDER BY stage
+"""
+
 app = typer.Typer(help="RAG CLI — document ingestion and management")
 sources_app = typer.Typer(help="Manage ingested sources")
 jobs_app = typer.Typer(help="Manage ingestion jobs")
@@ -1205,6 +1228,137 @@ def jobs_cancel(
         raise typer.Exit(1)
 
     console.print(f"[green]Job {result['job_id']} has been cancelled.[/green]")
+
+
+def _fmt_ms(value: object) -> str:
+    if value is None:
+        return ""
+    return str(int(round(value)))  # type: ignore[arg-type]
+
+
+def _render_stage_stats_table(data: dict, days: int) -> None:
+    rows = data.get("stats", [])
+    if not rows:
+        console.print(f"[dim]No stage duration data in the last {days} day(s).[/dim]")
+        return
+    table = Table(title=f"Stage Duration Stats (last {days}d)")
+    table.add_column("Stage")
+    table.add_column("Jobs", justify="right")
+    table.add_column("p50 (ms)", justify="right")
+    table.add_column("p90 (ms)", justify="right")
+    table.add_column("max (ms)", justify="right")
+    for r in rows:
+        table.add_row(
+            r["stage"],
+            str(r["job_count"]),
+            _fmt_ms(r.get("p50_ms")),
+            _fmt_ms(r.get("p90_ms")),
+            _fmt_ms(r.get("max_ms")),
+        )
+    console.print(table)
+
+
+def _render_baseline_table(data: dict, days: int) -> None:
+    rows = data.get("baselines", [])
+    if not rows:
+        console.print(f"[dim]No stage duration data in the last {days} day(s); baseline not set.[/dim]")
+        return
+    table = Table(title=f"Stage Drift Baseline Set (window: {days}d)")
+    table.add_column("Stage")
+    table.add_column("Baseline (ms)", justify="right")
+    table.add_column("Set At")
+    for r in rows:
+        table.add_row(r["stage"], str(r["baseline_ms"]), r.get("set_at") or "")
+    console.print(table)
+
+
+@jobs_app.command("stats")
+def jobs_stats(
+    days: Annotated[
+        int,
+        typer.Option("--days", help=f"Time window in days (1-{STAGE_STATS_MAX_DAYS})."),
+    ] = 14,
+    set_baseline: Annotated[
+        bool,
+        typer.Option(
+            "--set-baseline",
+            help=(
+                "Snapshot this window's per-stage median duration_ms as the pinned "
+                "drift-guardrail baseline (overwrites any existing baseline for "
+                "stages seen in the window). The baseline is a frozen snapshot, "
+                "NOT a moving/rolling window -- rerun this flag explicitly "
+                "whenever you want to update it (e.g. after a deliberate "
+                "performance change)."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Per-stage duration percentiles (p50/p90/max) and job count over a time window.
+
+    Computed from completed jobs' stage_log[stage].duration_ms. Jobs whose
+    stage_log entries predate duration_ms tracking (recorded before this
+    telemetry existed) are skipped in the aggregation -- this command reports
+    on new-format jobs only, rather than falling back to completed_at deltas.
+    """
+    if days < 1 or days > STAGE_STATS_MAX_DAYS:
+        console.print(f"[red]--days must be between 1 and {STAGE_STATS_MAX_DAYS}[/red]")
+        raise typer.Exit(1)
+
+    if _use_api():
+        from rag.api_client import ApiError
+        with _get_client() as client:
+            try:
+                if set_baseline:
+                    data = client.set_stage_stats_baseline(days=days)
+                    _render_baseline_table(data, days)
+                else:
+                    data = client.job_stage_stats(days=days)
+                    _render_stage_stats_table(data, days)
+            except ApiError as e:
+                console.print(f"[red]{e.detail}[/red]")
+                raise typer.Exit(1)
+        return
+
+    with _get_connection() as conn:
+        rows = conn.execute(_STAGE_STATS_SQL, (days,)).fetchall()
+        if set_baseline:
+            written: list[str] = []
+            for stage, _job_count, p50_ms, _p90_ms, _max_ms in rows:
+                if p50_ms is None:
+                    continue
+                conn.execute(
+                    """INSERT INTO stage_duration_baseline (stage, baseline_ms, set_at)
+                       VALUES (%s, %s, now())
+                       ON CONFLICT (stage) DO UPDATE
+                         SET baseline_ms = EXCLUDED.baseline_ms, set_at = now()""",
+                    (stage, int(round(p50_ms))),
+                )
+                written.append(stage)
+            conn.commit()
+            if written:
+                baseline_rows = conn.execute(
+                    "SELECT stage, baseline_ms, set_at FROM stage_duration_baseline "
+                    "WHERE stage = ANY(%s) ORDER BY stage",
+                    (written,),
+                ).fetchall()
+            else:
+                baseline_rows = []
+            data = {
+                "baselines": [
+                    {"stage": r[0], "baseline_ms": r[1], "set_at": str(r[2]) if r[2] else None}
+                    for r in baseline_rows
+                ]
+            }
+            _render_baseline_table(data, days)
+            return
+
+    data = {
+        "stats": [
+            {"stage": r[0], "job_count": r[1], "p50_ms": r[2], "p90_ms": r[3], "max_ms": r[4]}
+            for r in rows
+        ]
+    }
+    _render_stage_stats_table(data, days)
 
 
 @community_app.command("ids")

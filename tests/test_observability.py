@@ -25,6 +25,15 @@ def test_build_failed_stage_entry_includes_traceback_and_partial_output():
     assert entry["error"] == "boom"
     assert entry["traceback"] == "traceback..."
     assert entry["partial_output"] == {"chunks_written": 2}
+    # duration_ms is optional/backward compatible: absent when the caller
+    # doesn't pass one (e.g. no started_at could be read back), not a crash.
+    assert entry["duration_ms"] is None
+
+
+def test_build_failed_stage_entry_carries_duration_ms_when_given():
+    entry = _build_failed_stage_entry(RuntimeError("boom"), duration_ms=1234)
+
+    assert entry["duration_ms"] == 1234
 
 
 def test_build_completed_stage_entry_includes_output_summary():
@@ -33,6 +42,13 @@ def test_build_completed_stage_entry_includes_output_summary():
     assert entry["status"] == "completed"
     assert "completed_at" in entry
     assert entry["output"] == {"chunk_count": 4}
+    assert entry["duration_ms"] is None
+
+
+def test_build_completed_stage_entry_carries_duration_ms_when_given():
+    entry = _build_completed_stage_entry({"chunk_count": 4}, duration_ms=5678)
+
+    assert entry["duration_ms"] == 5678
 
 
 def test_add_event_defaults_populates_required_logging_fields():

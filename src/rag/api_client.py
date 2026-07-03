@@ -210,6 +210,17 @@ class RagClient:
     def job_stats(self) -> dict:
         return self._get_json("/api/jobs/stats")
 
+    def job_stage_stats(self, *, days: int = 14) -> dict:
+        """Per-stage duration_ms percentiles/job count over a time window
+        (R8/R10). Distinct from `job_stats()` above, which reports job
+        *status* counts, not stage *durations*."""
+        return self._get_json("/api/jobs/stage-stats", params={"days": days})
+
+    def set_stage_stats_baseline(self, *, days: int = 14) -> dict:
+        """Snapshot the current window's per-stage median duration as the
+        pinned drift-guardrail baseline (R11)."""
+        return self._post_json("/api/jobs/stage-stats/baseline", params={"days": days})
+
     def get_job(self, job_id: str) -> dict:
         return self._get_json(f"/api/jobs/{job_id}")
 

@@ -120,6 +120,15 @@ class Settings(BaseSettings):
     WORKER_POLL_INTERVAL: int = 5       # seconds between polls when queue is empty
     WORKER_STUCK_JOB_MINUTES: int = 30  # minutes before a processing job is declared stuck
 
+    # Stage timing drift guardrail (R11): a completed job's per-stage
+    # duration_ms is compared against a *pinned* baseline (see
+    # `stage_duration_baseline` table / `rag jobs stats --set-baseline`), not a
+    # moving/rolling median — a moving baseline would drift upward together
+    # with a gradual regression and never fire (the failure mode that produced
+    # the April->June intake slowdown this plan addresses). A warning is
+    # logged when a stage's duration exceeds `baseline_ms * STAGE_DRIFT_WARN_FACTOR`.
+    STAGE_DRIFT_WARN_FACTOR: Annotated[float, Field(gt=0)] = 3.0
+
     # Server / auth
     RAG_DATA_DIR: Path = Path("./data")
     RAG_API_KEYS_PATH: Path = Path("./data/api_keys.toml")

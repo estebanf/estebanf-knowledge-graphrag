@@ -45,6 +45,49 @@ def recover_stuck_jobs(conn: psycopg.Connection, stuck_minutes: int) -> int:
     return len(rows)
 
 
+def check_stage_drift(conn: psycopg.Connection, job_id: str) -> None:
+    """Compare a just-completed job's per-stage `duration_ms` against the
+    *pinned* baseline in `stage_duration_baseline` (R11).
+
+    Deliberately reads the frozen baseline row, not a recomputed recent-window
+    median: a moving baseline drifts upward together with a gradual
+    corpus-coupled regression and would never fire for the failure class this
+    guardrail exists to catch (the April->June intake slowdown in this plan's
+    Problem Frame). A stage with no baseline set yet is skipped — missing
+    baseline is not treated as drift.
+    """
+    row = conn.execute("SELECT stage_log FROM jobs WHERE id = %s", (job_id,)).fetchone()
+    if not row or not row[0]:
+        return
+    stage_log = row[0]
+
+    baseline_rows = conn.execute("SELECT stage, baseline_ms FROM stage_duration_baseline").fetchall()
+    baselines = {r[0]: r[1] for r in baseline_rows}
+    if not baselines:
+        return
+
+    factor = settings.STAGE_DRIFT_WARN_FACTOR
+    for stage, entry in stage_log.items():
+        if not isinstance(entry, dict):
+            continue
+        duration_ms = entry.get("duration_ms")
+        baseline_ms = baselines.get(stage)
+        if duration_ms is None or baseline_ms is None:
+            continue
+        threshold_ms = baseline_ms * factor
+        if duration_ms > threshold_ms:
+            log.warning(
+                "stage_duration_drift",
+                action="drift_check",
+                job_id=job_id,
+                stage=stage,
+                duration_ms=duration_ms,
+                baseline_ms=baseline_ms,
+                factor=factor,
+                threshold_ms=threshold_ms,
+            )
+
+
 def claim_next_job(conn: psycopg.Connection) -> tuple[str, str, str] | None:
     row = conn.execute(
         """
@@ -97,6 +140,12 @@ def run_worker(poll_interval: int | None = None, stuck_minutes: int | None = Non
                     execute_ingestion_pipeline(job_id, source_id, start_stage=start_stage)
                 except Exception as exc:
                     log.error("pipeline_error", action="pipeline_error", job_id=job_id, error=str(exc), exc_info=True)
+                else:
+                    try:
+                        with get_connection() as drift_conn:
+                            check_stage_drift(drift_conn, job_id)
+                    except Exception as exc:
+                        log.error("drift_check_error", action="drift_check_error", job_id=job_id, error=str(exc), exc_info=True)
             else:
                 time.sleep(poll_interval)
         except Exception as exc:
