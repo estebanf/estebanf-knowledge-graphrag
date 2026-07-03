@@ -55,3 +55,9 @@ The ingestion mode where binary source formats are converted to self-contained m
 
 ### Original-Source Provenance
 The original binary document's filename, extension, and content hash, carried alongside a Prepared Ingestion submission so duplicate detection and source metadata still reflect the document the operator actually ingested rather than the generated markdown. Duplicate detection keys on this hash, not on the submitted markdown's content.
+
+### Mutual Top-K Linking
+The rule for creating `RELATED_TO` edges between insights: an edge exists only when each insight appears in the other's top-K nearest neighbors, with candidates from the same source excluded. Computed during intake for newly created insights.
+
+### Weekly Maintenance Sweep
+The offline maintenance run that keeps corpus integrity high between ingests: merging duplicate entities and insights, removing orphaned insights, reconciling Postgres rows with Memgraph nodes, and refreshing table statistics and vector-index residency. Dry-run by default; a run with `--execute` applies changes.
