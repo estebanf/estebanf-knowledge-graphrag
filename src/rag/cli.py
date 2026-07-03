@@ -309,6 +309,55 @@ def ingest(
         raise typer.Exit(1)
 
 
+@app.command("prepare")
+def prepare_command(
+    path: Annotated[Path, typer.Argument(help="PDF/DOCX/PPTX document to convert to markdown")],
+    out: Annotated[Path, typer.Option("--out", help="Path to write the prepared markdown")],
+) -> None:
+    """Convert a binary document to self-contained markdown without ingesting it.
+
+    Image descriptions are backend-owned, so a document containing images requires
+    API configuration (`rag configure`). The output is ingestible with
+    `rag ingest <out>`.
+    """
+    from rag.prepare import PrepareError
+
+    suffix = path.suffix.lower()
+    if suffix not in BINARY_EXTENSIONS:
+        console.print(
+            f"[red]rag prepare supports {sorted(BINARY_EXTENSIONS)} only; got "
+            f"{suffix or 'unknown'}. Markdown/text need no preparation.[/red]"
+        )
+        raise typer.Exit(1)
+
+    try:
+        prepared = prepare_binary(path)
+    except PrepareError as e:
+        console.print(f"[red]Preparation failed: {e}[/red]")
+        raise typer.Exit(1)
+
+    try:
+        if prepared.images:
+            if not _use_api():
+                console.print(
+                    "[red]This document has images that need backend description. "
+                    "Configure API mode with `rag configure` and retry.[/red]"
+                )
+                raise typer.Exit(1)
+            with _get_client() as client:
+                content = finalize_markdown(
+                    prepared, lambda data, mime: client.describe_image(data, mime)
+                )
+        else:
+            content = finalize_markdown(prepared, lambda data, mime: "")
+    except PrepareError as e:
+        console.print(f"[red]Preparation failed: {e}[/red]")
+        raise typer.Exit(1)
+
+    out.write_text(content, encoding="utf-8")
+    console.print(f"[green]Wrote prepared markdown to {out}[/green]")
+
+
 @worker_app.command("launch")
 def worker_launch(
     n: Annotated[int, typer.Argument(help="Number of workers to launch")] = 1,
