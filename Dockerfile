@@ -11,21 +11,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml ./
 COPY src/ ./src/
 
-RUN pip install --no-cache-dir --prefix=/install -e .[ingest]
+# Base package only — no `prepare` extra. Binary-document parsing (Docling +
+# Torch/CUDA) runs on the CLI, not the backend, so the server image stays light.
+RUN pip install --no-cache-dir --prefix=/install -e .
 
 # ── runtime stage ─────────────────────────────────────────────────────────────
 FROM python:3.11-slim AS runtime
 
 WORKDIR /app
 
+# Only libpq5 (psycopg) is needed now. The X11/OpenGL libraries were required by
+# Docling's image pipeline, which no longer runs in the backend.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
-    libxcb1 \
-    libgl1 \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /install /usr/local

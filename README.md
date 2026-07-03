@@ -78,13 +78,19 @@ The frontend is now reachable on the host port mapped by `FRONTEND_PORT` (defaul
 
 ## CLI installation (laptop)
 
-1. Install the package (the laptop only needs the base extras, not `ingest`):
+1. Install the package. The base install covers search, retrieve, sources, and
+   ingesting markdown/text. To ingest **binary documents** (PDF/DOCX/PPTX), add
+   the `prepare` extra, which pulls in Docling for local conversion:
 
    ```bash
-   pip install -e .       # from a clone of this repo
+   pip install -e .            # base: markdown/text ingestion + search/retrieve
+   pip install -e .[prepare]   # add binary (PDF/DOCX/PPTX) conversion via Docling
    # or, when published:
    # pipx install knowledge-graphrag
    ```
+
+   The heavy Docling/Torch dependency lives only in the `prepare` extra on the
+   CLI machine — the backend server image never installs it.
 
 2. Point the CLI at your server:
 
@@ -372,18 +378,33 @@ The CLI submits ingestion jobs. The worker processes them asynchronously through
 
 ### What `rag ingest` does
 
-- stores the original file under `STORAGE_BASE_PATH/<source_id>/1/`
-- creates a `sources` row and a queued `jobs` row
-- copies local markdown image assets into the same source storage tree
-- when the worker runs, parses the document into markdown, extracts metadata, chunks it, embeds it, builds graph artifacts, and extracts chunk-level insights
+- **markdown/text** (`.md`, `.markdown`, `.txt`): submits the file as-is; the worker parses it into markdown, extracts metadata, chunks, embeds, builds graph artifacts, and extracts insights
+- **binary documents** (`.pdf`, `.docx`, `.pptx`): converts the document to self-contained markdown **on the CLI** (via the `prepare` extra), asks the backend to describe each embedded image, then submits the prepared markdown — so the backend worker only ever parses markdown/text and never needs Docling
+- creates a `sources` row and a queued `jobs` row; for prepared binaries, the source records the original filename, extension, and MD5 (duplicate detection keys on the original binary hash)
+
+Binary preparation happens on the CLI machine, which must have the `prepare`
+extra installed (`pip install -e .[prepare]`). Image descriptions are made by the
+backend through `POST /api/prepare/describe-image` (requires the `ingest` scope),
+so the CLI never holds the `OPENROUTER_API_KEY`. Direct upload of a PDF/DOCX/PPTX
+to `/api/ingest` is rejected with a message pointing to `rag ingest`/`rag prepare`.
 
 ### Supported file types
 
-- `PDF`
-- `DOCX`
-- `PPTX`
-- `MD`
-- `TXT`
+- `PDF`, `DOCX`, `PPTX` — converted to markdown on the CLI (needs the `prepare` extra)
+- `MD`, `MARKDOWN`, `TXT` — submitted directly
+
+### Preparing without ingesting
+
+`rag prepare` converts a binary document to markdown and writes it to a file
+without queuing a job. The output is ingestible with `rag ingest <out>`:
+
+```bash
+venv/bin/rag prepare deck.pptx --out deck.md
+venv/bin/rag ingest deck.md
+```
+
+Documents that contain images require API configuration (`rag configure`) so the
+backend can describe them.
 
 ### CLI syntax
 
@@ -425,12 +446,14 @@ Image handling depends on the file type:
   - remote URLs and `data:` URLs are left unchanged
   - missing local files are left unchanged
 - PDF, DOCX, and PPTX:
-  - the parser exports markdown
-  - embedded pictures are extracted and each `<!-- image -->` placeholder is replaced with an LLM-generated description
+  - the CLI converts the document to markdown (Docling) during preparation
+  - embedded pictures are extracted and each `<!-- image -->` placeholder is replaced with a description the **backend** generates via `POST /api/prepare/describe-image`
+  - preparation hard-fails (no job is queued) if any image cannot be described, so submitted markdown never contains unresolved placeholders
 - TXT:
   - treated as plain text, with no image handling
 
-Image descriptions use `MODEL_IMAGE_DESCRIPTION`.
+Image descriptions use the backend's `MODEL_IMAGE_DESCRIPTION` and
+`OPENROUTER_API_KEY` — the CLI never calls the image model directly.
 
 ### Worker
 

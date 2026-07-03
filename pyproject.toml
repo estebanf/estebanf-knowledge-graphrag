@@ -32,7 +32,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ingest = [
+# Heavy, CLI-only capability: converting binary documents (PDF/DOCX/PPTX) into
+# markdown. Docling pulls in Torch/CUDA, so it is deliberately kept out of the
+# base (server) install — the backend image installs the base package only.
+prepare = [
     "docling>=2.0",
 ]
 

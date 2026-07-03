@@ -76,8 +76,9 @@ The repo is split into a few main areas:
 
 ## Packaging Note
 
-- Base package installs support API/search/retrieval/community flows.
-- Local parsing and ingestion require the optional `ingest` extra: `pip install -e .[ingest]`.
+- Base package installs support API/search/retrieval/community flows **and the backend worker** (which parses markdown/text only). The backend Docker image installs the base package only — no Docling, Torch, or CUDA.
+- Converting binary documents (PDF/DOCX/PPTX) to markdown happens on the **CLI** and requires the optional `prepare` extra (Docling): `pip install -e .[prepare]`.
+- Ingestion responsibility split: `rag ingest`/`rag prepare` convert binaries locally (`src/rag/prepare.py`), then submit self-contained markdown. Image descriptions are backend-owned via `POST /api/prepare/describe-image` (ingest scope) so the CLI never holds the OpenRouter key. Direct PDF/DOCX/PPTX upload to `/api/ingest` is rejected; markdown/text upload remains supported. Prepared submissions preserve original-binary provenance (filename, extension, md5) — dedup keys on the original binary hash stored in `sources.md5`.
 
 ## Auth and server invariants
 
