@@ -124,10 +124,11 @@ All runtime settings are env-backed. The CLI, backend, worker, and Docker servic
 | `POSTGRES_DB` | `rag` | Postgres database name created by the container. |
 | `POSTGRES_PORT` | `5432` | Host port mapped to the Postgres container. |
 | `POSTGRES_URL` | `postgresql://rag:${POSTGRES_PASSWORD}@localhost:5432/rag` | Connection string used by the Python app outside Docker. |
-| `POSTGRES_SHARED_BUFFERS` | `512MB` | Postgres shared buffer tuning for the container. |
-| `POSTGRES_WORK_MEM` | `64MB` | Postgres per-operation working memory. |
-| `POSTGRES_MAINTENANCE_WORK_MEM` | `256MB` | Postgres maintenance memory for operations like indexing. |
-| `POSTGRES_MAX_CONNECTIONS` | `50` | Postgres connection limit in the container. |
+| `POSTGRES_SHARED_BUFFERS` | `1GB` | Postgres shared buffers. Sized to keep the binary-quantized HNSW vector indexes (~186MB) resident so dense retrieval stays fast; raise it if you have more RAM. Applied as a `postgres -c` server arg in `docker-compose.yml` — the paradedb image ignores this env var for tuning (it bakes `shared_buffers=128MB` into its own `postgresql.conf`), so the value is passed on the command line where it actually takes effect. |
+| `POSTGRES_EFFECTIVE_CACHE_SIZE` | `3GB` | Planner hint for total cache (shared buffers + OS). Also applied via `-c`. |
+| `POSTGRES_WORK_MEM` | `64MB` | Postgres per-operation working memory (applied via `-c`). |
+| `POSTGRES_MAINTENANCE_WORK_MEM` | `256MB` | Postgres maintenance memory for operations like indexing (applied via `-c`). |
+| `POSTGRES_MAX_CONNECTIONS` | `100` | Postgres connection limit (applied via `-c`; matches the paradedb image default, which previously ignored the compose-declared `50`). |
 | `MEMGRAPH_URL` | `bolt://localhost:7687` | Bolt connection string used by the Python app outside Docker. |
 | `MEMGRAPH_BOLT_PORT` | `7687` | Host port mapped to Memgraph Bolt. |
 | `MEMGRAPH_LAB_PORT` | `3000` | Host port mapped to Memgraph Lab. |
@@ -243,6 +244,25 @@ All runtime settings are env-backed. The CLI, backend, worker, and Docker servic
 | `RETRIEVAL_EXPANSION_MAX_TOKENS` | `600` | Upper bound when trimming related chunk text used in expansion. |
 | `RETRIEVAL_TRACE_MAX_CANDIDATES` | `5` | Max candidates shown per trace step. |
 | `RETRIEVAL_TRACE_MAX_ENTITIES` | `5` | Max entities shown per trace step. |
+
+### Search and retrieve latency
+
+Search and retrieve latency depends on three things beyond the tuning knobs above:
+
+- **Warm vector-index buffers.** Every dense query walks the binary-quantized HNSW indexes (`chunks_embedding_binary_hnsw_idx`, `insights_embedding_binary_hnsw_idx`, ~186MB combined). They must stay resident in `shared_buffers` (see `POSTGRES_SHARED_BUFFERS`, sized for this). To survive restarts, `docker-compose.yml` preloads `pg_prewarm` with `pg_prewarm.autoprewarm=on` (Postgres re-warms its own buffers after any restart, including a Postgres-only restart or a post-`VACUUM FULL` flush), and the backend's FastAPI lifespan also calls `pg_prewarm()` on startup via a non-blocking retry (immediate warmth on backend start / fresh install). A cold, un-prewarmed index page-in adds ~20s to the first query — this is what the prewarm layer eliminates.
+- **Parallel first-stage queries.** `rag search` runs its chunk dense, chunk sparse, and insight legs concurrently (one connection each) rather than serially.
+- **Fast CLI startup.** The `rag` CLI lazy-imports the heavy retrieval/graph stack, so API-mode commands start in ~0.2s instead of ~0.75s.
+
+Live measurements on the reference corpus (~126k chunks / ~112k insights, `rag search`/`rag retrieve "insurance triage"`, median of repeated runs):
+
+| Metric | Before this work | After |
+|---|---|---|
+| First `rag search` after a full restart (cold) | ~22.6s | ~1.9s |
+| Warm `rag search` (CLI wall time) | ~3.3s (server) + ~0.75s CLI | ~1.9s |
+| First `rag search` after a Postgres-only restart | (cold page-in) | ~1.6s |
+| `rag retrieve` (CLI wall time) | ~30–80s | ~24s |
+
+`rag search` wall time has ~0.5s of inherent remote embedding-API latency with no tail bound, so an occasional single run lands slightly above 2s; the median stays under. If you need more margin without reducing retrieval depth elsewhere, a lower `RETRIEVAL_DENSE_PREFETCH_COUNT` for search would trade some rerank-pool width for speed.
 
 ### Community and worker settings
 
