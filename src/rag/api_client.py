@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -156,6 +157,49 @@ class RagClient:
                 detail = resp.text
             raise ApiError(resp.status_code, str(detail))
         return resp.json()
+
+    def describe_image(self, image_bytes: bytes, mime_type: str) -> str:
+        """Ask the backend to describe an extracted image (prepared ingestion).
+
+        Keeps LLM credentials on the server: the CLI sends transient base64 image
+        bytes and receives a text description.
+        """
+        b64 = base64.b64encode(image_bytes).decode()
+        payload = self._post_json(
+            "/api/prepare/describe-image",
+            {"image_base64": b64, "mime_type": mime_type},
+        )
+        return payload["description"]
+
+    def submit_text(
+        self,
+        content: str,
+        *,
+        name: str | None = None,
+        metadata: dict | None = None,
+        original_md5: str | None = None,
+        file_name: str | None = None,
+        file_type: str | None = None,
+    ) -> dict:
+        """Submit prepared markdown/text as an ingestion job.
+
+        ``original_md5``/``file_name``/``file_type`` carry original-source
+        provenance for prepared binary documents so duplicate detection keys on
+        the original binary hash and the source row records what the operator
+        actually ingested (R9, R10, R11).
+        """
+        payload: dict = {"content": content}
+        if name is not None:
+            payload["name"] = name
+        if metadata is not None:
+            payload["metadata"] = metadata
+        if original_md5 is not None:
+            payload["original_md5"] = original_md5
+        if file_name is not None:
+            payload["file_name"] = file_name
+        if file_type is not None:
+            payload["file_type"] = file_type
+        return self._post_json("/api/ingest/text", payload)
 
     # --- jobs ------------------------------------------------------------------
 

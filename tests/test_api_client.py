@@ -99,6 +99,78 @@ def test_submit_ingest_sends_multipart(tmp_path: Path) -> None:
     assert result == {"source_id": "s", "job_id": "j", "status": "pending"}
 
 
+def test_describe_image_posts_base64() -> None:
+    import base64
+
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["path"] = req.url.path
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json={"description": "A chart."})
+
+    with _mock(handler) as client:
+        result = client.describe_image(b"rawbytes", "image/png")
+    assert result == "A chart."
+    assert seen["path"] == "/api/prepare/describe-image"
+    assert seen["body"] == {
+        "image_base64": base64.b64encode(b"rawbytes").decode(),
+        "mime_type": "image/png",
+    }
+
+
+def test_submit_text_preserves_original_provenance() -> None:
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["path"] = req.url.path
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json={"source_id": "s", "job_id": "j", "status": "pending"})
+
+    with _mock(handler) as client:
+        result = client.submit_text(
+            "# prepared\n\ncontent",
+            name="Report",
+            metadata={"k": "v"},
+            original_md5="abc123",
+            file_name="report.pdf",
+            file_type="pdf",
+        )
+    assert seen["path"] == "/api/ingest/text"
+    assert seen["body"] == {
+        "content": "# prepared\n\ncontent",
+        "name": "Report",
+        "metadata": {"k": "v"},
+        "original_md5": "abc123",
+        "file_name": "report.pdf",
+        "file_type": "pdf",
+    }
+    assert result == {"source_id": "s", "job_id": "j", "status": "pending"}
+
+
+def test_submit_text_omits_none_fields() -> None:
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json={"source_id": "s", "job_id": "j", "status": "pending"})
+
+    with _mock(handler) as client:
+        client.submit_text("# md")
+    assert seen["body"] == {"content": "# md"}
+
+
+def test_submit_text_raises_on_error() -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(409, json={"detail": "Duplicate: already ingested"})
+
+    with _mock(handler) as client:
+        with pytest.raises(ApiError) as info:
+            client.submit_text("# md", original_md5="dup")
+    assert info.value.status == 409
+    assert "Duplicate" in info.value.detail
+
+
 def test_list_jobs_status_param() -> None:
     seen = {}
 
