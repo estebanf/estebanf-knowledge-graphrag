@@ -168,82 +168,162 @@ def test_store_insight_in_graph_merges_node_and_edge():
     assert "CONTAINS" in second_call_cypher
 
 
-def test_link_related_insights_creates_mutual_edges():
-    from rag.insight_extraction import link_related_insights
-    conn = MagicMock()
-    driver = MagicMock()
+def _make_cursor_mock(conn):
+    cursor = MagicMock()
+    conn.cursor.return_value.__enter__ = lambda s: cursor
+    conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+    return cursor
+
+
+def _make_session_mock(driver):
     session = MagicMock()
     driver.session.return_value.__enter__ = lambda s: session
     driver.session.return_value.__exit__ = MagicMock(return_value=False)
-    cursor = MagicMock()
-    b_emb = [0.2] * 4096
-    cursor.fetchall.side_effect = [
-        [("b-id", 0.88, b_emb)],            # A's neighbors
-        [("a-id", 0.88, [0.1]*4096)],       # B's neighbors — includes A, so mutual
-    ]
-    conn.cursor.return_value.__enter__ = lambda s: cursor
-    conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
-    link_related_insights(conn, driver, "source-a", "a-id", [0.1] * 4096)
-    assert session.run.call_count == 1
-    cypher = session.run.call_args[0][0]
-    assert "RELATED_TO" in cypher
+    return session
 
 
-def test_link_related_insights_excludes_current_source_candidates():
+def test_link_related_insights_creates_mutual_edge_with_forward_similarity():
+    """Two insights mutually in each other's top-K, different sources ->
+    one bidirectional RELATED_TO pair written with the forward similarity."""
     from rag.insight_extraction import link_related_insights
     conn = MagicMock()
     driver = MagicMock()
-    cursor = MagicMock()
-    cursor.fetchall.return_value = []
-    conn.cursor.return_value.__enter__ = lambda s: cursor
-    conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+    session = _make_session_mock(driver)
+    cursor = _make_cursor_mock(conn)
+    b_emb = [0.2] * 4096
+    cursor.fetchall.side_effect = [
+        [("b-id", 0.88, b_emb)],   # forward pass: A's top-K -> B
+        [("a-id",)],               # reverse pass: B's top-K -> includes A, mutual
+    ]
 
-    link_related_insights(conn, driver, "source-a", "a-id", [0.1] * 4096)
+    link_related_insights(conn, driver, "source-a", [("a-id", [0.1] * 4096)])
 
-    sql = cursor.execute.call_args.args[0]
-    params = cursor.execute.call_args.args[1]
-    assert "NOT EXISTS" in sql
-    assert "c.source_id = %s" in sql
-    assert params[1] == "a-id"
-    assert params[2] == "source-a"
+    assert session.run.call_count == 1
+    call = session.run.call_args
+    cypher = call.args[0]
+    assert "RELATED_TO" in cypher
+    edges = call.kwargs["edges"]
+    assert len(edges) == 1
+    assert {edges[0]["a_id"], edges[0]["b_id"]} == {"a-id", "b-id"}
+    assert edges[0]["sim"] == 0.88
 
 
 def test_link_related_insights_skips_non_mutual():
+    """A has B in its top-K but B does not have A in its top-K -> no edge."""
     from rag.insight_extraction import link_related_insights
     conn = MagicMock()
     driver = MagicMock()
-    session = MagicMock()
-    driver.session.return_value.__enter__ = lambda s: session
-    driver.session.return_value.__exit__ = MagicMock(return_value=False)
-    cursor = MagicMock()
+    session = _make_session_mock(driver)
+    cursor = _make_cursor_mock(conn)
     cursor.fetchall.side_effect = [
-        [("b-id", 0.88, [0.2]*4096)],   # A's neighbors: B
-        [("c-id", 0.90, [0.3]*4096)],   # B's neighbors: C (not A) — not mutual
+        [("b-id", 0.88, [0.2] * 4096)],   # forward pass: A's top-K -> B
+        [("c-id",)],                        # reverse pass: B's top-K -> C, not A
     ]
-    conn.cursor.return_value.__enter__ = lambda s: cursor
-    conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
-    link_related_insights(conn, driver, "source-a", "a-id", [0.1] * 4096)
+
+    link_related_insights(conn, driver, "source-a", [("a-id", [0.1] * 4096)])
+
     session.run.assert_not_called()
+
+
+def test_link_related_insights_excludes_current_source_candidates():
+    """A same-source candidate is never linked, even at the highest
+    similarity — the exclusion runs inside the forward-pass SQL itself."""
+    from rag.insight_extraction import link_related_insights
+    conn = MagicMock()
+    driver = MagicMock()
+    _make_session_mock(driver)
+    cursor = _make_cursor_mock(conn)
+    cursor.fetchall.return_value = []
+
+    link_related_insights(conn, driver, "source-a", [("a-id", [0.1] * 4096)])
+
+    sql = cursor.execute.call_args_list[0].args[0]
+    params = cursor.execute.call_args_list[0].args[1]
+    assert "NOT EXISTS" in sql
+    assert "c.source_id = %s" in sql
+    assert params[0] == "a-id"
+    assert params[4] == "source-a"
+
+
+def test_link_related_insights_writes_batch_edges_in_one_memgraph_call():
+    """Three new insights each produce a mutual edge -> all edges written
+    via a single Memgraph session.run call, not one per pair."""
+    from rag.insight_extraction import link_related_insights
+    conn = MagicMock()
+    driver = MagicMock()
+    session = _make_session_mock(driver)
+    cursor = _make_cursor_mock(conn)
+    cursor.fetchall.side_effect = [
+        [("b1-id", 0.81, [0.21] * 4096)],  # forward: a1 -> b1
+        [("b2-id", 0.82, [0.22] * 4096)],  # forward: a2 -> b2
+        [("b3-id", 0.83, [0.23] * 4096)],  # forward: a3 -> b3
+        [("a1-id",)],                        # reverse: b1 -> a1 (mutual)
+        [("a2-id",)],                        # reverse: b2 -> a2 (mutual)
+        [("a3-id",)],                        # reverse: b3 -> a3 (mutual)
+    ]
+
+    link_related_insights(
+        conn,
+        driver,
+        "source-a",
+        [
+            ("a1-id", [0.1] * 4096),
+            ("a2-id", [0.1] * 4096),
+            ("a3-id", [0.1] * 4096),
+        ],
+    )
+
+    assert session.run.call_count == 1
+    edges = session.run.call_args.kwargs["edges"]
+    assert len(edges) == 3
+    pairs = {frozenset((e["a_id"], e["b_id"])) for e in edges}
+    assert pairs == {
+        frozenset(("a1-id", "b1-id")),
+        frozenset(("a2-id", "b2-id")),
+        frozenset(("a3-id", "b3-id")),
+    }
+
+
+def test_link_related_insights_no_candidates_makes_no_memgraph_call():
+    """A batch of new insights with zero qualifying candidates -> no
+    Memgraph call is made, and nothing raises."""
+    from rag.insight_extraction import link_related_insights
+    conn = MagicMock()
+    driver = MagicMock()
+    cursor = _make_cursor_mock(conn)
+    cursor.fetchall.return_value = []
+
+    link_related_insights(conn, driver, "source-a", [("a-id", [0.1] * 4096)])
+
+    driver.session.assert_not_called()
+
+
+def test_link_related_insights_empty_batch_is_a_noop():
+    from rag.insight_extraction import link_related_insights
+    conn = MagicMock()
+    driver = MagicMock()
+
+    link_related_insights(conn, driver, "source-a", [])
+
+    conn.cursor.assert_not_called()
+    driver.session.assert_not_called()
 
 
 def test_link_related_insights_accepts_database_vector_strings():
     from rag.insight_extraction import link_related_insights
     conn = MagicMock()
     driver = MagicMock()
-    session = MagicMock()
-    driver.session.return_value.__enter__ = lambda s: session
-    driver.session.return_value.__exit__ = MagicMock(return_value=False)
-    cursor = MagicMock()
+    session = _make_session_mock(driver)
+    cursor = _make_cursor_mock(conn)
     cursor.fetchall.side_effect = [
         [("b-id", 0.88, "[0.2,0.2]")],
         [("a-id",)],
     ]
-    conn.cursor.return_value.__enter__ = lambda s: cursor
-    conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-    link_related_insights(conn, driver, "source-a", "a-id", [0.1] * 2)
+    link_related_insights(conn, driver, "source-a", [("a-id", [0.1] * 2)])
 
-    assert cursor.execute.call_args_list[1].args[1][2] == "[0.2,0.2]"
+    reverse_call_params = cursor.execute.call_args_list[1].args[1]
+    assert reverse_call_params[1] == "[0.2,0.2]"
     assert session.run.call_count == 1
 
 
