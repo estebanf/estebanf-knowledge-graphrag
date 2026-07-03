@@ -237,6 +237,49 @@ def test_jobs_list_retry_no_failed_jobs():
     mock_retry.assert_not_called()
 
 
+def test_jobs_list_shows_legacy_graph_linking_stage_log_without_crashing():
+    """A pre-U5 job whose stage_log/current_stage still names the removed
+    `graph_linking` stage must render fine in `rag jobs list` — listing is
+    read-only over stage_log keys and STAGE_ORDER no longer needs to contain
+    the name for rendering to work."""
+    row = _make_job_row(
+        status="completed",
+        stage="graph_linking",
+        stage_log={
+            "graph_extraction": "2026-04-17T00:00:00",
+            "graph_linking": "2026-04-17T00:00:01",
+        },
+    )
+    with patch("rag.cli.get_connection") as mock_conn:
+        mock_conn.return_value.__enter__.return_value.execute.return_value.fetchall.return_value = [row]
+        from rag.cli import app
+        result = runner.invoke(app, ["jobs", "list"])
+    assert result.exit_code == 0
+    assert "job-1" in result.output
+
+
+@patch("rag.cli.get_connection")
+def test_jobs_status_shows_legacy_graph_linking_stage_log_without_crashing(mock_conn):
+    """Same guarantee for `rag jobs status`: a legacy-shaped stage_log
+    containing the removed stage name renders without error."""
+    conn = MagicMock()
+    mock_conn.return_value.__enter__.return_value = conn
+    conn.execute.return_value.fetchone.return_value = (
+        "job-uuid", "src-uuid", "completed", "completed",
+        {
+            "graph_extraction": "2026-04-18T10:00:00",
+            "graph_linking": "2026-04-18T10:00:01",
+            "insight_extraction": "2026-04-18T10:00:02",
+        },
+        "2026-04-18 10:00:00", "2026-04-18 10:01:00",
+        None,
+    )
+    from rag.cli import app
+    result = runner.invoke(app, ["jobs", "status", "job-uuid"])
+    assert result.exit_code == 0
+    assert "job-uuid" in result.output
+
+
 def test_jobs_list_retry_continues_on_per_job_error():
     with patch("rag.cli.get_connection") as mock_conn, \
          patch("rag.cli.retry_job") as mock_retry:

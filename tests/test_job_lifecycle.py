@@ -51,13 +51,11 @@ def test_cancel_job_processing_cleans_up_current_stage(mock_conn, mock_driver, m
 
 @patch("rag.ingestion._write_audit_log")
 @patch("rag.ingestion.extract_and_store_insights")
-@patch("rag.ingestion.link_graph")
 @patch("rag.ingestion.get_graph_driver")
 @patch("rag.ingestion.get_connection")
-def test_execute_pipeline_from_insight_stage_skips_graph_linking(
+def test_execute_pipeline_from_insight_stage_skips_graph_extraction(
     mock_conn,
     mock_driver,
-    mock_link_graph,
     mock_extract_insights,
     mock_audit,
 ):
@@ -80,11 +78,117 @@ def test_execute_pipeline_from_insight_stage_skips_graph_linking(
     result = execute_ingestion_pipeline("job-1", "source-1", start_stage="insight_extraction")
 
     assert result == {"source_id": "source-1", "job_id": "job-1", "status": "completed"}
-    mock_link_graph.assert_not_called()
     mock_extract_insights.assert_called_once_with(conn, driver, "source-1", [("chunk-1", "chunk text")])
     stage_updates = [call.args for call in conn.execute.call_args_list if "UPDATE jobs SET status = %s" in call.args[0]]
     assert any(args[1][0] == "processing:insight_extraction" for args in stage_updates)
     mock_audit.assert_called()
+
+
+def test_stage_order_has_no_graph_linking():
+    """R14/KTD8: the no-op graph_linking stage is fully removed from the
+    registry so newly created jobs never record it in stage_log."""
+    from rag.ingestion import STAGE_ORDER
+
+    assert "graph_linking" not in STAGE_ORDER
+    assert STAGE_ORDER == [
+        "parsing", "profiling", "chunking", "validation",
+        "embedding", "graph_extraction", "insight_extraction",
+    ]
+
+
+@patch("rag.ingestion._write_audit_log")
+@patch("rag.ingestion.get_graph_driver")
+@patch("rag.ingestion.cleanup_from_stage")
+@patch("rag.ingestion.get_connection")
+def test_retry_job_remaps_legacy_graph_linking_stage_to_insight_extraction(
+    mock_conn, mock_cleanup, mock_driver, mock_audit,
+):
+    """KTD8/R14: a legacy job whose failed status (or explicit --from-stage)
+    names the removed `graph_linking` stage retries at `insight_extraction`
+    instead of raising ValueError for an unknown stage."""
+    from rag.ingestion import retry_job
+
+    conn = MagicMock()
+    mock_conn.return_value.__enter__.return_value = conn
+    conn.execute.return_value.fetchone.return_value = ("job-1", "source-1", "failed:graph_linking")
+    mock_driver.return_value.__enter__.return_value = "driver"
+
+    result = retry_job("job-1")
+
+    assert result == {"job_id": "job-1", "status": "pending", "retry_from_stage": "insight_extraction"}
+    mock_cleanup.assert_called_once_with(conn, "driver", "job-1", "source-1", "insight_extraction")
+
+
+@patch("rag.ingestion._write_audit_log")
+@patch("rag.ingestion.get_graph_driver")
+@patch("rag.ingestion.cleanup_from_stage")
+@patch("rag.ingestion.get_connection")
+def test_retry_job_explicit_graph_linking_from_stage_remaps(
+    mock_conn, mock_cleanup, mock_driver, mock_audit,
+):
+    """Same remap, but via an explicit `--from-stage graph_linking` request
+    rather than a legacy failed-status string."""
+    from rag.ingestion import retry_job
+
+    conn = MagicMock()
+    mock_conn.return_value.__enter__.return_value = conn
+    conn.execute.return_value.fetchone.return_value = ("job-1", "source-1", "failed:embedding")
+    mock_driver.return_value.__enter__.return_value = "driver"
+
+    result = retry_job("job-1", from_stage="graph_linking")
+
+    assert result == {"job_id": "job-1", "status": "pending", "retry_from_stage": "insight_extraction"}
+    mock_cleanup.assert_called_once_with(conn, "driver", "job-1", "source-1", "insight_extraction")
+
+
+def test_execute_ingestion_pipeline_remaps_legacy_graph_linking_start_stage():
+    """A worker that reads an old row's retry_from_stage = 'graph_linking'
+    (persisted before this stage was removed) must resume at
+    insight_extraction rather than raising 'Unknown stage'."""
+    with patch("rag.ingestion.get_connection") as mock_conn, \
+         patch("rag.ingestion.get_graph_driver") as mock_driver, \
+         patch("rag.ingestion.extract_and_store_insights") as mock_extract_insights, \
+         patch("rag.ingestion._write_audit_log"):
+        from rag.ingestion import execute_ingestion_pipeline
+
+        conn = MagicMock()
+        mock_conn.return_value.__enter__.return_value = conn
+        conn.execute.return_value.fetchone.return_value = ("/tmp/source.md", None, "# Existing")
+        conn.execute.return_value.fetchall.return_value = [("chunk-1", "chunk text")]
+        driver = MagicMock()
+        mock_driver.return_value.__enter__.return_value = driver
+        mock_extract_insights.return_value = {
+            "chunks_processed": 1,
+            "insights_extracted": 1,
+            "insights_reused": 0,
+            "failed_chunks": [],
+            "related_edges": 0,
+        }
+
+        result = execute_ingestion_pipeline("job-1", "source-1", start_stage="graph_linking")
+
+        assert result == {"source_id": "source-1", "job_id": "job-1", "status": "completed"}
+        mock_extract_insights.assert_called_once()
+
+
+def test_cleanup_from_stage_legacy_graph_linking_matches_insight_extraction():
+    """cleanup_from_stage("graph_linking") (legacy name) and
+    cleanup_from_stage("insight_extraction") (its remap target) must behave
+    identically — the remap doesn't change insight_extraction's own cleanup."""
+    from rag.ingestion import cleanup_from_stage
+
+    def _run(from_stage):
+        conn = MagicMock()
+        driver = MagicMock()
+        session = MagicMock()
+        driver.session.return_value.__enter__ = lambda s: session
+        driver.session.return_value.__exit__ = MagicMock(return_value=False)
+        cleanup_from_stage(conn, driver, "job-1", "source-1", from_stage)
+        return [call.args[0] for call in conn.execute.call_args_list]
+
+    legacy_sql = _run("graph_linking")
+    canonical_sql = _run("insight_extraction")
+    assert legacy_sql == canonical_sql
 
 
 def test_cleanup_from_insight_stage_removes_insight_artifacts():
@@ -159,13 +263,11 @@ def test_cleanup_from_insight_stage_leaves_live_insight_nodes_alone():
 
 @patch("rag.ingestion._write_audit_log")
 @patch("rag.ingestion.extract_and_store_insights")
-@patch("rag.ingestion.link_graph")
 @patch("rag.ingestion.get_graph_driver")
 @patch("rag.ingestion.get_connection")
 def test_ae4_retry_after_mid_insight_extraction_failure_cleans_up_before_rerun(
     mock_conn,
     mock_driver,
-    mock_link_graph,
     mock_extract_insights,
     mock_audit,
 ):

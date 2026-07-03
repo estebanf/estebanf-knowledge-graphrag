@@ -14,7 +14,6 @@ from rag.db import get_connection
 from rag.embedding import embed_and_store_chunks
 from rag.graph_db import get_graph_driver
 from rag.graph_extraction import extract_and_store_graph
-from rag.graph_linking import link_graph
 from rag.insight_extraction import extract_and_store_insights
 from rag.metadata_extraction import extract_metadata
 from rag.parser import ParseError, parse_document
@@ -23,8 +22,21 @@ from rag.storage import store_file, store_markdown_images
 
 STAGE_ORDER = [
     "parsing", "profiling", "chunking", "validation",
-    "embedding", "graph_extraction", "graph_linking", "insight_extraction",
+    "embedding", "graph_extraction", "insight_extraction",
 ]
+
+# Stages that were removed from STAGE_ORDER but may still be referenced by
+# already-queued/retried jobs' `retry_from_stage` or `current_stage` columns.
+# Map them to the nearest surviving downstream stage so old jobs keep working
+# instead of hitting "Unknown stage" errors (R14/KTD8).
+_LEGACY_STAGE_ALIASES = {
+    "graph_linking": "insight_extraction",
+}
+
+
+def _canonical_stage(stage: str) -> str:
+    """Map a legacy/removed stage name to its nearest surviving stage."""
+    return _LEGACY_STAGE_ALIASES.get(stage, stage)
 
 
 def _now_iso() -> str:
@@ -350,11 +362,11 @@ def cleanup_from_stage(
     source_id: str,
     from_stage: str,
 ) -> None:
+    from_stage = _canonical_stage(from_stage)
     idx = STAGE_ORDER.index(from_stage)
     chunking_idx = STAGE_ORDER.index("chunking")
     embedding_idx = STAGE_ORDER.index("embedding")
     graph_extraction_idx = STAGE_ORDER.index("graph_extraction")
-    graph_linking_idx = STAGE_ORDER.index("graph_linking")
     insight_extraction_idx = STAGE_ORDER.index("insight_extraction")
 
     if idx <= insight_extraction_idx:
@@ -368,18 +380,6 @@ def cleanup_from_stage(
         _cleanup_graph_artifacts(conn, driver, source_id)
     elif idx <= graph_extraction_idx:
         _cleanup_graph_artifacts(conn, driver, source_id)
-    elif idx <= graph_linking_idx:
-        entity_ids = [
-            str(r[0]) for r in conn.execute(
-                "SELECT id FROM entities WHERE source_id = %s", (source_id,)
-            ).fetchall()
-        ]
-        if entity_ids and driver:
-            with driver.session() as session:
-                session.run(
-                    "MATCH (e:Entity)-[r:MENTIONED_IN]->() WHERE e.entity_id IN $ids DELETE r",
-                    ids=entity_ids,
-                )
     conn.commit()
 
 
@@ -466,6 +466,7 @@ def execute_ingestion_pipeline(job_id: str, source_id: str, start_stage: str = "
         api_key_name = row[1]
         existing_markdown = row[2]
 
+    start_stage = _canonical_stage(start_stage)
     if start_stage not in STAGE_ORDER:
         raise ValueError(f"Unknown stage: {start_stage}")
     start_idx = STAGE_ORDER.index(start_stage)
@@ -608,19 +609,6 @@ def execute_ingestion_pipeline(job_id: str, source_id: str, start_stage: str = "
                 _complete_stage(conn, job_id, "graph_extraction", stage_output)
                 log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
 
-            # --- Graph Linking ---
-            if start_idx <= STAGE_ORDER.index("graph_linking"):
-                _update_stage(conn, job_id, "graph_linking")
-                structlog.contextvars.bind_contextvars(stage="graph_linking")
-                t0 = time.perf_counter()
-                try:
-                    link_graph(conn, driver, source_id, job_id)
-                except Exception as exc:
-                    _fail_stage(conn, job_id, "graph_linking", exc)
-                    raise
-                _complete_stage(conn, job_id, "graph_linking")
-                log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
-
             # --- Insight Extraction ---
             if start_idx <= STAGE_ORDER.index("insight_extraction"):
                 _update_stage(conn, job_id, "insight_extraction")
@@ -695,7 +683,7 @@ def retry_job(job_id: str, from_stage: str | None = None) -> dict:
             raise ValueError(f"Job {job_id} is not in a failed state (status: {status})")
 
         failed_stage = status.split(":", 1)[1]
-        start_stage = from_stage or failed_stage
+        start_stage = _canonical_stage(from_stage or failed_stage)
 
         if start_stage not in STAGE_ORDER:
             raise ValueError(f"Unknown stage: {start_stage}")
@@ -731,7 +719,7 @@ def cancel_job(job_id: str) -> dict:
         if status != "pending" and not status.startswith("processing:"):
             raise ValueError(f"Job {job_id} cannot be cancelled (status: {status})")
 
-        if current_stage in STAGE_ORDER:
+        if current_stage is not None and _canonical_stage(current_stage) in STAGE_ORDER:
             with get_graph_driver() as driver:
                 cleanup_from_stage(conn, driver, job_id, source_id, current_stage)
 

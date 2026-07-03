@@ -52,7 +52,6 @@ STAGE_ORDER = (
     "validation",
     "embedding",
     "graph_extraction",
-    "graph_linking",
     "insight_extraction",
 )
 

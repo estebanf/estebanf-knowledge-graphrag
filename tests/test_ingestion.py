@@ -82,14 +82,13 @@ def ingested(request):
         cleanup(result["source_id"])
 
 
-@patch("rag.ingestion.link_graph")
 @patch("rag.ingestion.extract_and_store_graph")
 @patch("rag.ingestion.get_graph_driver")
 @patch("rag.ingestion.embed_and_store_chunks")
 @patch("rag.ingestion.validate_chunks")
 @patch("rag.ingestion.chunk_document")
 @patch("rag.ingestion.profile_document")
-def test_ingest_markdown(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, mock_link, ingested):
+def test_ingest_markdown(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, ingested):
     mock_profile.return_value = _DEFAULT_PROFILE
     mock_chunk.return_value = []
     mock_validate.return_value = True
@@ -131,14 +130,13 @@ def _prepare_to_markdown(binary_path: Path, tmp_path: Path) -> tuple[Path, "obje
     return md_path, prepared
 
 
-@patch("rag.ingestion.link_graph")
 @patch("rag.ingestion.extract_and_store_graph")
 @patch("rag.ingestion.get_graph_driver")
 @patch("rag.ingestion.embed_and_store_chunks")
 @patch("rag.ingestion.validate_chunks")
 @patch("rag.ingestion.chunk_document")
 @patch("rag.ingestion.profile_document")
-def test_ingest_prepared_pdf_markdown(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, mock_link, ingested, tmp_path):
+def test_ingest_prepared_pdf_markdown(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, ingested, tmp_path):
     # New contract: the CLI prepares the PDF into markdown; the worker ingests the
     # markdown and the source records original PDF provenance (R9-R11).
     mock_profile.return_value = _DEFAULT_PROFILE
@@ -177,14 +175,13 @@ def test_ingest_prepared_pdf_markdown(mock_profile, mock_chunk, mock_validate, m
     assert row[3]["original_filename"] == prepared.original_filename
 
 
-@patch("rag.ingestion.link_graph")
 @patch("rag.ingestion.extract_and_store_graph")
 @patch("rag.ingestion.get_graph_driver")
 @patch("rag.ingestion.embed_and_store_chunks")
 @patch("rag.ingestion.validate_chunks")
 @patch("rag.ingestion.chunk_document")
 @patch("rag.ingestion.profile_document")
-def test_ingest_prepared_docx_markdown(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, mock_link, ingested, tmp_path):
+def test_ingest_prepared_docx_markdown(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, ingested, tmp_path):
     mock_profile.return_value = _DEFAULT_PROFILE
     mock_chunk.return_value = []
     mock_validate.return_value = True
@@ -219,14 +216,13 @@ def test_ingest_prepared_docx_markdown(mock_profile, mock_chunk, mock_validate, 
     assert row[1] and len(row[1]) > 0
 
 
-@patch("rag.ingestion.link_graph")
 @patch("rag.ingestion.extract_and_store_graph")
 @patch("rag.ingestion.get_graph_driver")
 @patch("rag.ingestion.embed_and_store_chunks")
 @patch("rag.ingestion.validate_chunks")
 @patch("rag.ingestion.chunk_document")
 @patch("rag.ingestion.profile_document")
-def test_ingest_txt(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, mock_link, ingested, tmp_path):
+def test_ingest_txt(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, ingested, tmp_path):
     mock_profile.return_value = _DEFAULT_PROFILE
     mock_chunk.return_value = []
     mock_validate.return_value = True
@@ -256,14 +252,13 @@ def test_ingest_txt(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd
     assert row[1] and len(row[1]) > 0
 
 
-@patch("rag.ingestion.link_graph")
 @patch("rag.ingestion.extract_and_store_graph")
 @patch("rag.ingestion.get_graph_driver")
 @patch("rag.ingestion.embed_and_store_chunks")
 @patch("rag.ingestion.validate_chunks")
 @patch("rag.ingestion.chunk_document")
 @patch("rag.ingestion.profile_document")
-def test_duplicate_rejected(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, mock_link, ingested):
+def test_duplicate_rejected(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, ingested):
     mock_profile.return_value = _DEFAULT_PROFILE
     mock_chunk.return_value = []
     mock_validate.return_value = True
@@ -281,14 +276,13 @@ def test_duplicate_rejected(mock_profile, mock_chunk, mock_validate, mock_embed,
         ingest_file(file, name="test-dedup-again")
 
 
-@patch("rag.ingestion.link_graph")
 @patch("rag.ingestion.extract_and_store_graph")
 @patch("rag.ingestion.get_graph_driver")
 @patch("rag.ingestion.embed_and_store_chunks")
 @patch("rag.ingestion.validate_chunks")
 @patch("rag.ingestion.chunk_document")
 @patch("rag.ingestion.profile_document")
-def test_file_stored_on_disk(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, mock_link, ingested):
+def test_file_stored_on_disk(mock_profile, mock_chunk, mock_validate, mock_embed, mock_gd, mock_extract, ingested):
     mock_profile.return_value = _DEFAULT_PROFILE
     mock_chunk.return_value = []
     mock_validate.return_value = True
