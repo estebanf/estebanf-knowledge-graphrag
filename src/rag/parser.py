@@ -1,4 +1,3 @@
-import io
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,31 +31,6 @@ class ParseResult:
 
 _TXT_EXTENSIONS = {".txt", ".text"}
 _MARKDOWN_EXTENSIONS = {".md", ".markdown"}
-
-_converter = None
-
-
-def _get_docling_converter():
-    global _converter
-    if _converter is not None:
-        return _converter
-
-    from docling.datamodel.base_models import InputFormat
-    from docling.datamodel.pipeline_options import PdfPipelineOptions
-    from docling.document_converter import DocumentConverter, PdfFormatOption
-
-    pdf_options = PdfPipelineOptions()
-    pdf_options.do_ocr = True
-    pdf_options.do_table_structure = True
-    pdf_options.generate_page_images = False
-    pdf_options.generate_picture_images = True
-
-    _converter = DocumentConverter(
-        format_options={
-            InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_options),
-        }
-    )
-    return _converter
 
 
 def _plaintext_to_element_tree(text: str) -> str:
@@ -97,40 +71,30 @@ def _describe_markdown_images(text: str, base_dir: Path) -> str:
     return _IMAGE_REF_RE.sub(_replace, text)
 
 
-def _describe_docling_pictures(result, markdown: str) -> str:
-    for picture in result.document.pictures:
-        img = picture.get_image(result.document)
-        if img is None:
-            continue
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        try:
-            description = describe_image(buf.getvalue(), "image/png")
-        except Exception as exc:
-            log.warning("image_description_skipped", error=str(exc))
-            continue
-        markdown = markdown.replace("<!-- image -->", description, 1)
-    return markdown
-
-
 def parse_document(file_path: Path) -> ParseResult:
-    try:
-        suffix = file_path.suffix.lower()
-        if suffix in _TXT_EXTENSIONS | _MARKDOWN_EXTENSIONS:
+    """Parse a stored source into markdown.
+
+    Backend-safe by construction: only markdown/text are handled here, so the
+    backend worker never needs Docling. Binary documents (PDF/DOCX/PPTX) are
+    prepared into self-contained markdown on the CLI (see ``rag.prepare``) before
+    a job is queued; if one ever reaches the worker, this raises a clear error
+    rather than attempting a Docling conversion the backend cannot perform.
+    """
+    suffix = file_path.suffix.lower()
+    if suffix in _TXT_EXTENSIONS | _MARKDOWN_EXTENSIONS:
+        try:
             text = file_path.read_text(encoding="utf-8", errors="replace")
             if suffix in _MARKDOWN_EXTENSIONS:
                 text = _describe_markdown_images(text, file_path.parent)
             return ParseResult(markdown=text, element_tree=_plaintext_to_element_tree(text))
+        except Exception as exc:
+            raise ParseError(f"Failed to parse {file_path.name}: {exc}") from exc
 
-        result = _get_docling_converter().convert(str(file_path))
-        markdown = result.document.export_to_markdown()
-        markdown = _describe_docling_pictures(result, markdown)
-        return ParseResult(
-            markdown=markdown,
-            element_tree=result.document.export_to_element_tree(),
-        )
-    except Exception as exc:
-        raise ParseError(f"Failed to parse {file_path.name}: {exc}") from exc
+    raise ParseError(
+        f"Unsupported binary document '{file_path.name}' ({suffix or 'unknown'}): "
+        "backend workers parse markdown/text only. Prepare binary documents on the "
+        "CLI with `rag prepare` or `rag ingest` before submitting them."
+    )
 
 
 def parse_to_markdown(file_path: Path) -> str:
