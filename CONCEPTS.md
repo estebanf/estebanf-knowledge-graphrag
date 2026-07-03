@@ -42,3 +42,8 @@ The retrieval stage that expands selected chunk seeds through entity mentions, s
 
 ### Entity Mention
 The graph relationship that connects a chunk to an entity it discusses. Retrieval treats this as the authoritative edge for chunk graph expansion.
+
+## Storage
+
+### Schema Reconciliation
+The startup-time process that idempotently re-applies the graph store's declared index and constraint statements against the live instance, so a schema declaration can't silently drift out of sync with what the running database actually has applied.

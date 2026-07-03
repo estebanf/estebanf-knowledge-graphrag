@@ -1,6 +1,7 @@
 ---
 title: RAG Retrieval Vector Prefilter and Query Fanout
 date: 2026-07-02
+last_refreshed: 2026-07-02
 category: performance-issues
 module: retrieval
 problem_type: performance_issue
@@ -189,11 +190,14 @@ RETRIEVAL_USE_LLM_SECOND_HOP_SELECTION=false
 
 For containerized deployments, avoid Dockerfile layer ordering that causes dependency reinstall after source-only changes. In this project, the heavy ingest/Torch dependency layer made full rebuilds impractical during a performance incident, so future Dockerfile work should separate dependency installation from application source copies.
 
+A valid dense index is necessary but not sufficient: pgvector's `hnsw.ef_search` GUC defaults to 40 and silently caps how many candidates an HNSW index scan returns, *regardless of the SQL `LIMIT` requested*. A follow-up fix found `dense_retrieve`'s prefilter CTE materializing only 40 rows despite `LIMIT 1000` (`RETRIEVAL_DENSE_PREFETCH_COUNT`) — the index in this doc was valid and in use, but the runtime candidate pool still didn't match what the config implied. See `docs/solutions/database-issues/postgres-toast-bloat-memgraph-schema-drift-and-hnsw-ef-search-cap.md` for the fix (a `SET hnsw.ef_search` call sized to the prefetch count) and confirm any future prefetch-count tuning also verifies `ef_search` via `EXPLAIN (ANALYZE, BUFFERS)`, not just `pg_index.indisvalid`.
+
 ## Related Issues
 
 - `docs/plans/2026-07-02-001-refactor-retrieval-performance-plan.md` was the direct implementation plan, but it is a historical plan rather than a durable solution record.
 - `docs/plans/2026-04-27-cross-source-communities-pgvector.md` is a related pgvector performance plan for community detection, not this retrieval/search path.
 - `docs/plans/2026-05-05-insight-retrieval.md` explains why retrieve contains insight second-hop LLM subqueries; current defaults preserve the feature but make slow graph-expansion behavior explicit.
+- `docs/solutions/database-issues/postgres-toast-bloat-memgraph-schema-drift-and-hnsw-ef-search-cap.md` — adjacent, not a duplicate: that doc addresses the `hnsw.ef_search` runtime parameter governing how much of this doc's HNSW prefilter actually gets searched, one layer below index existence.
 - `vector(4096)` embeddings cannot use standard pgvector HNSW/IVFFlat indexes directly, so future embedding model changes must be checked against index support.
 - Concurrent index failures can leave invalid index shells; remediation should include dropping invalid indexes before recreating them.
 - Retrieval performance depends on both database indexing and expansion fanout. Treat them as separate axes during profiling.
