@@ -48,6 +48,12 @@ def test_prepare_binary_returns_markdown_and_metadata_for_pptx():
     assert len(prepared.original_md5) == 32
     assert prepared.image_count == len(prepared.images)
 
+    # AE2 end-to-end against real Docling output: the extracted-image count must
+    # match the placeholder count so finalize leaves no unresolved markers and
+    # does not hard-fail. This is the one seam every other test mocks.
+    final = finalize_markdown(prepared, lambda data, mime: "[image description]")
+    assert "<!-- image -->" not in final
+
 
 def test_finalize_markdown_replaces_placeholders_in_order():
     # AE2: descriptions are consumed in order, no unresolved placeholders remain.
