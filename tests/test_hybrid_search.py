@@ -134,6 +134,25 @@ def test_hybrid_search_returns_insights(mock_expand, mock_conn, mock_dense, mock
     assert results.insights[0].topics == ["economics"]
 
 
+@patch("rag.retrieval.insight_hybrid_search")
+@patch("rag.retrieval.sparse_retrieve")
+@patch("rag.retrieval.dense_retrieve")
+@patch("rag.retrieval.get_connection")
+@patch("rag.retrieval._expand_chunk_texts", return_value={})
+def test_hybrid_search_surfaces_leg_exception(mock_expand, mock_conn, mock_dense, mock_sparse, mock_insight):
+    # A failing leg must propagate, not silently return partial results.
+    conn = MagicMock()
+    mock_conn.return_value.__enter__.return_value = conn
+    mock_dense.side_effect = RuntimeError("dense query failed")
+    mock_sparse.return_value = []
+    mock_insight.return_value = _empty_insights()
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="dense query failed"):
+        hybrid_search("test query", limit=10, min_score=0.0)
+
+
 def test_sparse_retrieve_uses_indexable_english_tsvector_expression():
     conn = MagicMock()
     conn.execute.return_value.fetchall.return_value = []

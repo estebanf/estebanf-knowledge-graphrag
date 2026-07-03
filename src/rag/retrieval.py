@@ -493,10 +493,30 @@ def hybrid_search(
 ) -> HybridSearchResults:
     vector = get_embeddings([query])[0]
     top_n = max(limit * 3, 20)
-    with get_connection() as conn:
-        dense = dense_retrieve(conn, query, source_ids=[], filters={}, top_n=top_n, vector=vector)
-        sparse = sparse_retrieve(conn, query, source_ids=[], filters={}, top_n=top_n)
-        insights = insight_hybrid_search(query, vector=vector, limit=limit, min_score=min_score, conn=conn)
+
+    # The three first-stage legs are independent, so run them concurrently, each
+    # on its own connection (psycopg connections are not thread-safe to share).
+    # Mirrors the per-thread get_connection() pattern in run_first_stage_retrieval.
+    def _run_dense() -> list[RetrievalCandidate]:
+        with get_connection() as conn:
+            return dense_retrieve(conn, query, source_ids=[], filters={}, top_n=top_n, vector=vector)
+
+    def _run_sparse() -> list[RetrievalCandidate]:
+        with get_connection() as conn:
+            return sparse_retrieve(conn, query, source_ids=[], filters={}, top_n=top_n)
+
+    def _run_insights() -> list[InsightSearchResult]:
+        with get_connection() as conn:
+            return insight_hybrid_search(query, vector=vector, limit=limit, min_score=min_score, conn=conn)
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        dense_future = executor.submit(_run_dense)
+        sparse_future = executor.submit(_run_sparse)
+        insights_future = executor.submit(_run_insights)
+        # .result() re-raises any leg's exception, preserving fail-fast behavior.
+        dense = dense_future.result()
+        sparse = sparse_future.result()
+        insights = insights_future.result()
 
     # RRF for deduplication and ordering; scores are unintuitive (~0.01-0.04)
     # so we replace them with the original cosine similarity (dense preferred over sparse)
