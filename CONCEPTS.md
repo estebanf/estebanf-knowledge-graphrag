@@ -47,3 +47,11 @@ The graph relationship that connects a chunk to an entity it discusses. Retrieva
 
 ### Schema Reconciliation
 The startup-time process that idempotently re-applies the graph store's declared index and constraint statements against the live instance, so a schema declaration can't silently drift out of sync with what the running database actually has applied.
+
+## Ingestion
+
+### Prepared Ingestion
+The ingestion mode where binary source formats are converted to self-contained markdown before a backend job is queued. The CLI owns document conversion for heavy formats such as PDF, DOCX, and PPTX, while the backend still owns authenticated image description, job submission, worker execution, and storage of the resulting markdown corpus.
+
+### Original-Source Provenance
+The original binary document's filename, extension, and content hash, carried alongside a Prepared Ingestion submission so duplicate detection and source metadata still reflect the document the operator actually ingested rather than the generated markdown. Duplicate detection keys on this hash, not on the submitted markdown's content.
