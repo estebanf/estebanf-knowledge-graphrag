@@ -61,3 +61,11 @@ The rule for creating `RELATED_TO` edges between insights: an edge exists only w
 
 ### Weekly Maintenance Sweep
 The offline maintenance run that keeps corpus integrity high between ingests: merging duplicate entities and insights, removing orphaned insights, reconciling Postgres rows with Memgraph nodes, and refreshing table statistics and vector-index residency. Dry-run by default; a run with `--execute` applies changes.
+
+By default, insight-merge candidate detection only compares recently-created insights against the corpus rather than sweeping every insight against every other insight each run — an occasional full-corpus pass is available but is an explicit, opt-in exception, not the routine weekly behavior. `--execute` refuses to run while intake is actively processing a source, so the sweep and live ingestion never race over the same rows.
+
+### Stage Failure-Rate Threshold
+The audit policy governing per-chunk extraction failures during intake: an individual chunk's extraction failure is recorded rather than silently dropped, and the owning stage still completes as long as the fraction of failed chunks stays at or below a configured threshold. Above the threshold, the stage fails outright instead of completing with an elevated share of silently missing entities or insights.
+
+### Stage Duration Baseline
+A frozen, explicitly-snapshotted reference duration for a pipeline stage, used to detect performance drift. Deliberately not a moving or rolling average: a moving baseline rises together with a gradual regression and would never register as drift, so the baseline is only updated when someone explicitly re-snapshots it, not automatically from recent runs.
