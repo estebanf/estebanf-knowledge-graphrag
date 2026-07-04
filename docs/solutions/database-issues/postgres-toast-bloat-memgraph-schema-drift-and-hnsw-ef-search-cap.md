@@ -1,6 +1,7 @@
 ---
 title: "Postgres TOAST Bloat, Memgraph Schema Drift, and Silent hnsw.ef_search Capping"
 date: 2026-07-02
+last_refreshed: 2026-07-03
 category: database-issues
 module: rag storage layer (postgres entities/vector retrieval + memgraph schema)
 problem_type: database_issue
@@ -133,8 +134,8 @@ async def lifespan(app: FastAPI):
 **3. pgvector `hnsw.ef_search` silently capping dense-retrieval prefetch.**
 
 ```python
-def _set_hnsw_ef_search(conn, prefetch_count: int) -> None:
-    """Widen the HNSW candidate search so the binary prefilter actually
+def set_hnsw_ef_search(conn, prefetch_count: int) -> None:
+    """Widen the HNSW candidate search so a binary prefilter query actually
     returns ``prefetch_count`` rows.
 
     pgvector's ``hnsw.ef_search`` GUC defaults to 40 and silently caps the
@@ -142,12 +143,12 @@ def _set_hnsw_ef_search(conn, prefetch_count: int) -> None:
     index -- the prefilter query returns at most ``ef_search`` rows
     regardless of the SQL ``LIMIT``. Session-scoped ``SET`` (not
     ``SET LOCAL``) is fine here: each call site holds its own short-lived
-    connection for a single retrieval query.
+    connection for a single query.
     """
     conn.execute(f"SET hnsw.ef_search = {int(prefetch_count)}")
 ```
 
-Called at the top of the `if prefetch_count > top_n:` branch in both `dense_retrieve` and `insight_dense_retrieve`, right before the prefilter CTE query, sized to `RETRIEVAL_DENSE_PREFETCH_COUNT` rather than a hardcoded constant. Measured latency tradeoff on `rag retrieve "insurance triage"` (`rag search` unaffected — it doesn't use the multi-variant fanout path):
+Originally a private helper local to `retrieval.py`; later extracted into `src/rag/db.py` as a shared, public `set_hnsw_ef_search()` when a second call site needed the identical fix (see Related Issues) — both `retrieval.py` and `insight_extraction.py` now import it from `db.py` rather than each keeping their own copy. Called at the top of the `if prefetch_count > top_n:` branch in both `dense_retrieve` and `insight_dense_retrieve`, right before the prefilter CTE query, sized to `RETRIEVAL_DENSE_PREFETCH_COUNT` rather than a hardcoded constant. Measured latency tradeoff on `rag retrieve "insurance triage"` (`rag search` unaffected — it doesn't use the multi-variant fanout path):
 
 | Config | rag retrieve wall time | Dense-retrieve candidate pool |
 |---|---|---|
@@ -177,3 +178,4 @@ All three fixes close the gap between "what the code/config claims" and "what th
 
 - Implementation plan: `docs/plans/2026-07-02-002-fix-storage-vacuum-and-index-fixes-plan.md` — full details, code references, and the Verification Contract/Definition of Done for this change.
 - Adjacent (not duplicate) to `docs/solutions/performance-issues/rag-retrieval-vector-prefilter-and-query-fanout.md`, which built the binary-quantized HNSW prefilter that the `ef_search` bug in this fix sits underneath. That prior doc addressed index *existence* (building the prefilter/fanout mechanism); this fix addresses the runtime GUC (`hnsw.ef_search`) that governs how much of that existing index's candidate pool actually gets searched — a distinct failure mode one layer below the one that doc solved, worth distinguishing explicitly since the two will surface as related but are not the same bug.
+- `docs/solutions/performance-issues/intake-insight-extraction-vector-prefilter-and-batched-storage.md` — reused the `set_hnsw_ef_search` fix from item 3 above for the intake/ingestion path (insight dedup and linking), which is what prompted extracting it from a `retrieval.py`-local private helper into the shared public helper in `src/rag/db.py` described above.
