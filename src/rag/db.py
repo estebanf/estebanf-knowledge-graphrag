@@ -86,3 +86,25 @@ def vacuum_analyze_entities() -> None:
         conn.execute("VACUUM (ANALYZE) entities")
     finally:
         conn.close()
+
+
+def vacuum_analyze_insights() -> None:
+    """Sibling of `vacuum_analyze_entities` for `insights` — reclaims dead
+    rows left by `scripts/weekly_maintenance.py`'s insight-merge phase.
+    """
+    conn = psycopg.connect(settings.POSTGRES_URL, autocommit=True)
+    try:
+        conn.execute("VACUUM (ANALYZE) insights")
+    finally:
+        conn.close()
+
+
+def vacuum_analyze_chunks() -> None:
+    """Sibling of `vacuum_analyze_entities` for `chunks` — part of
+    `scripts/weekly_maintenance.py`'s index/stats health phase.
+    """
+    conn = psycopg.connect(settings.POSTGRES_URL, autocommit=True)
+    try:
+        conn.execute("VACUUM (ANALYZE) chunks")
+    finally:
+        conn.close()

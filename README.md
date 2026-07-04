@@ -1189,6 +1189,19 @@ docker compose exec -T postgres psql -U rag -d rag -c "VACUUM FULL VERBOSE entit
 
 Prefer `pg_repack -t entities` over `VACUUM FULL` if the exclusive lock is too disruptive for your deployment; it avoids the lock at the cost of needing roughly 1x extra disk headroom during the run.
 
+### Weekly corpus maintenance
+
+`scripts/weekly_maintenance.py` runs the full maintenance sweep in one command: entity duplicate merge (reuses `scripts/merge_semantic_duplicates.py`), insight duplicate merge, an orphan/consistency sweep, and index/stats health (`VACUUM ANALYZE` + vector-index prewarm). Run it weekly:
+
+```bash
+uv run python scripts/weekly_maintenance.py --dry-run   # safe default: reports counts, writes nothing
+uv run python scripts/weekly_maintenance.py --execute    # applies merges/cleanup/vacuum
+```
+
+Each phase is independently skippable (`--skip-entities`, `--skip-insights`, `--skip-consistency`, `--skip-health`). The insight-merge phase is scoped by default to insights created in the last `--since` days (default 7) probed against the full corpus via the same binary-HNSW prefilter + full-precision rerank pattern intake uses (U1) — this keeps a weekly run index-assisted and fast even at 100k+ insights. Pass `--full` for an occasional whole-corpus sweep; it is slower and not meant for the routine weekly cadence.
+
+**Concurrency guard:** `--execute` refuses to run while any `jobs` row is non-terminal (`status = 'pending'` or `status LIKE 'processing:%'`) and holds a fixed Postgres advisory lock for the duration of the run, so it can never race an in-flight intake job (which could otherwise hold or re-create an insight id the maintenance run is merging away) or another concurrent `--execute` run. `--dry-run` performs no writes and skips this check entirely.
+
 ### Memgraph schema reconciliation
 
 The backend re-applies `src/rag/graph_db.py`'s `SCHEMA_STATEMENTS` (the same index/constraint statements as `scripts/init/memgraph_init.cypher`) idempotently on every startup, so a live instance can't silently drift out of sync with statements added after its initial setup (this is how the `Insight(insight_id)` index/constraint gap was found and fixed). No manual migration step is needed for future schema additions to that list — just add the statement and restart the backend.

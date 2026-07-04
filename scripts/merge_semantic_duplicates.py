@@ -241,18 +241,22 @@ def merge_cluster(conn, session, cluster_members: list[dict], dry_run: bool) -> 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Merge semantic duplicate entities.")
-    mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--dry-run", action="store_true")
-    mode.add_argument("--execute", action="store_true")
-    parser.add_argument("--fuzzy-threshold", type=float, default=0.82)
-    parser.add_argument("--person-fuzzy-threshold", type=float, default=0.90)
-    parser.add_argument("--cosine-threshold", type=float, default=0.93)
-    parser.add_argument("--prefix-len", type=int, default=3)
-    args = parser.parse_args()
-    dry_run = args.dry_run
+def run_entity_merge(
+    dry_run: bool,
+    fuzzy_threshold: float = 0.82,
+    person_fuzzy_threshold: float = 0.90,
+    cosine_threshold: float = 0.93,
+    prefix_len: int = 3,
+) -> int:
+    """Find and merge semantic-duplicate entity clusters. Returns total merged count.
 
+    Extracted from `main()` so `scripts/weekly_maintenance.py` can invoke the
+    exact same code path as this script's own CLI entry point (U7) — both
+    call this function; neither re-implements the candidate-detection/merge
+    logic. Vacuums `entities` (via `vacuum_analyze_entities`) only when at
+    least one merge actually happened; a dry run or a zero-cluster run never
+    vacuums.
+    """
     prefix = "[DRY RUN] " if dry_run else ""
 
     with get_connection() as conn:
@@ -281,7 +285,7 @@ def main() -> int:
 
         print(f"{prefix}Loaded {len(entities)} entities. Running fuzzy matching...", flush=True)
         fuzzy_pairs = find_candidate_pairs(
-            entities, args.fuzzy_threshold, args.person_fuzzy_threshold, args.prefix_len
+            entities, fuzzy_threshold, person_fuzzy_threshold, prefix_len
         )
         print(f"{prefix}Fuzzy candidates: {len(fuzzy_pairs)}. Fetching embeddings...", flush=True)
 
@@ -296,7 +300,7 @@ def main() -> int:
         if emb_a is None or emb_b is None:
             continue
         cosine = float(np.dot(emb_a, emb_b))
-        if cosine >= args.cosine_threshold:
+        if cosine >= cosine_threshold:
             uf.union(id_a, id_b)
 
     clusters = uf.groups()
@@ -318,6 +322,28 @@ def main() -> int:
     if total_merged > 0:
         print(f"Reclaiming space from {total_merged} merged row(s)...", flush=True)
         vacuum_analyze_entities()
+
+    return total_merged
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Merge semantic duplicate entities.")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--execute", action="store_true")
+    parser.add_argument("--fuzzy-threshold", type=float, default=0.82)
+    parser.add_argument("--person-fuzzy-threshold", type=float, default=0.90)
+    parser.add_argument("--cosine-threshold", type=float, default=0.93)
+    parser.add_argument("--prefix-len", type=int, default=3)
+    args = parser.parse_args()
+
+    run_entity_merge(
+        dry_run=args.dry_run,
+        fuzzy_threshold=args.fuzzy_threshold,
+        person_fuzzy_threshold=args.person_fuzzy_threshold,
+        cosine_threshold=args.cosine_threshold,
+        prefix_len=args.prefix_len,
+    )
 
     print("Done.")
     return 0
