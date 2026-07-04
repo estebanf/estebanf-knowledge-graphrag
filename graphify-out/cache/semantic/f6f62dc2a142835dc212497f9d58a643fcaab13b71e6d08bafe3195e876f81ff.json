@@ -1,0 +1,1 @@
+{"nodes": [{"id": "scripts_init_postgres_02_schema", "label": "02_schema.sql", "file_type": "code", "source_file": "scripts/init/postgres/02_schema.sql", "source_location": null, "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}

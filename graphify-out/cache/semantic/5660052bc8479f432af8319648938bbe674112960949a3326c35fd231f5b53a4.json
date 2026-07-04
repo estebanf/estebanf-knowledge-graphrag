@@ -1,0 +1,1 @@
+{"nodes": [{"id": "api_auth_requires_scope", "label": "requires_scope", "file_type": "code", "source_file": "src/rag/api/auth.py", "source_location": null, "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}
