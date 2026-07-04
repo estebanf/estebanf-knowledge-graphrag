@@ -192,6 +192,9 @@ All runtime settings are env-backed. The CLI, backend, worker, and Docker servic
 | `CHUNK_VALIDATION_SAMPLE_RATE_HIGH_STAKES` | `0.25` | Higher validation sampling rate for high-stakes domains. |
 | `RELATIONSHIP_CONFIDENCE_THRESHOLD` | `0.75` | Minimum relationship confidence kept during graph extraction. |
 | `ENTITY_DEDUP_COSINE_THRESHOLD` | `0.92` | Similarity threshold used when deduplicating entities. |
+| `GRAPH_EXTRACTION_CONCURRENCY` | `8` | Number of concurrent entity-extraction LLM calls per ingestion job; Memgraph/Postgres writes are batched afterward, not threaded. |
+| `STAGE_FAILURE_RATE_THRESHOLD` | `0.25` | Fraction of per-chunk LLM extraction failures (graph or insight extraction) tolerated before the stage fails outright instead of completing with recorded `failed_chunks`. |
+| `STAGE_DRIFT_WARN_FACTOR` | `3.0` | Multiplier over the pinned `stage_duration_baseline` (see `rag jobs stats --set-baseline`) above which a stage's duration triggers a drift warning log. |
 
 **Entity quality at insert time:** The extraction prompt instructs the LLM to correct misspellings and transcript noise before extracting. Responses are validated against a JSON schema — items with `entity_type` values outside the 7 defined types are dropped. `canonical_name` and aliases are normalised (HTML unescaping, whitespace collapse, punctuation trim) before insert. If a `canonical_name` already exists in the `entities` table, the existing row is reused rather than creating a duplicate. Residual semantic duplicates across ingestion runs are resolved offline using `scripts/merge_semantic_duplicates.py`.
 
@@ -202,7 +205,10 @@ All runtime settings are env-backed. The CLI, backend, worker, and Docker servic
 | `OPENCODE_API_KEY` | empty | API key for OpenCode service used in insight extraction. |
 | `INSIGHT_DEDUP_COSINE_THRESHOLD` | `0.95` | Minimum cosine similarity to reuse an existing insight instead of creating a new one. |
 | `INSIGHT_LINK_TOP_K` | `10` | Number of nearest insight neighbors used for mutual top-K `RELATED_TO` edge creation. |
-| `INSIGHT_EXTRACTION_CONCURRENCY` | `3` | Number of concurrent OpenCode chunk extraction calls per ingestion job; storage remains serial. |
+| `INSIGHT_EXTRACTION_CONCURRENCY` | `12` | Number of concurrent OpenCode chunk extraction calls per ingestion job. Batched dedup/storage (below) means the LLM fan-out is the remaining serial bottleneck, so this can run wider than when storage was per-insight. |
+| `INSIGHT_PREFILTER_CANDIDATES` | `100` | Candidate pool size pulled from the binary-quantized HNSW prefilter index before full-precision rerank, for both dedup and `RELATED_TO` linking. |
+
+**Insight dedup and linking at scale:** Insight storage no longer loops per-insight. It runs as phased, set-based batch passes per ingestion job: batch-embed all newly extracted insights, dedup them against both the existing corpus and each other within the same batch using the same binary-quantized-HNSW-prefilter + full-precision-rerank pattern retrieval already used for search (`scripts/migrate/009_binary_vector_prefilter_indexes.sql`), then compute mutual top-K `RELATED_TO` edges over the prefiltered candidate pool and write them to Memgraph in batches. This keeps every stage's cost bounded by the size of the incoming source rather than the total corpus size — the earlier per-insight full-precision KNN scan over the whole `insights` table (the root cause of intake regressing from ~55s to tens of minutes as the corpus grew) is gone.
 
 ### Search defaults
 
@@ -373,8 +379,9 @@ The CLI submits ingestion jobs. The worker processes them asynchronously through
 4. `validation`
 5. `embedding`
 6. `graph_extraction`
-7. `graph_linking`
-8. `insight_extraction`
+7. `insight_extraction`
+
+(The former `graph_linking` stage was a no-op compatibility stub and has been removed from the pipeline. Already-queued or retried jobs that still reference it by name are transparently remapped to `insight_extraction`.)
 
 ### What `rag ingest` does
 
@@ -508,7 +515,7 @@ venv/bin/rag jobs retry <job_id> --from-stage chunking
 
 Options:
 
-- `--from-stage TEXT`: restart from one of `parsing`, `profiling`, `chunking`, `validation`, `embedding`, `graph_extraction`, `graph_linking`, or `insight_extraction`
+- `--from-stage TEXT`: restart from one of `parsing`, `profiling`, `chunking`, `validation`, `embedding`, `graph_extraction`, or `insight_extraction`. `graph_linking` (the former no-op stage, removed) is still accepted on old jobs and remapped transparently to `insight_extraction`.
 
 Retry cleanup is stage-aware. Earlier stage retries remove downstream artifacts before the job is re-queued.
 
@@ -517,6 +524,24 @@ Retry cleanup is stage-aware. Earlier stage retries remove downstream artifacts 
 ```bash
 venv/bin/rag jobs cancel <job_id>
 ```
+
+### Stage timing stats and drift baseline
+
+```bash
+venv/bin/rag jobs stats
+venv/bin/rag jobs stats --days 30
+venv/bin/rag jobs stats --set-baseline
+```
+
+`rag jobs stats` reports per-stage p50/p90/max `duration_ms` and job count over a time window (`--days`, default 14, max 365), computed from completed jobs' `stage_log.<stage>.duration_ms`. Jobs recorded before stage-duration telemetry existed have no `duration_ms` in `stage_log` and are skipped, not zero-filled.
+
+`--set-baseline` snapshots the current window's per-stage p50 as the pinned drift-guardrail baseline, stored in the `stage_duration_baseline` table (migration `scripts/migrate/012_stage_duration_baseline.sql`). This baseline is a frozen snapshot, not a rolling average — a rolling baseline would drift upward together with a gradual regression and never fire, which is exactly the failure mode that let intake degrade silently from ~55s to ~86 minutes before this was measured. Re-run `--set-baseline` explicitly after any deliberate performance change; otherwise the baseline stays pinned until you update it.
+
+At the end of every job, the worker compares each stage's actual `duration_ms` against `baseline_ms * STAGE_DRIFT_WARN_FACTOR` (default `3.0`) and logs a warning if exceeded. This is a log-only guardrail — it does not fail the job — intended to surface a regression long before it silently compounds across weeks.
+
+### Per-chunk extraction failure auditing
+
+`graph_extraction` and `insight_extraction` each run per-chunk LLM calls concurrently. A failure on one chunk no longer silently drops that chunk's entities/insights: failed chunk ids are recorded under `stage_log.<stage>.output.failed_chunks`, and the stage still completes as long as the failure rate stays at or below `STAGE_FAILURE_RATE_THRESHOLD` (default `0.25`). If the failure rate exceeds the threshold, the stage fails outright instead of completing with silent data loss. Check `rag jobs status <job_id>` (stage log panel) to see whether a completed job had any recorded chunk failures.
 
 ## Source Operations
 
@@ -616,7 +641,7 @@ python scripts/remediate_insights.py --source-id <source_id>
 python scripts/remediate_insights.py --source-id <source_id> --force
 ```
 
-The remediation script runs insight extraction directly in the script process; it does not create or rerun ingestion jobs and does not require `rag worker`. With `--source-id`, the script skips the source if it already has insight links. Add `--force` to delete that source's existing insight links, remove orphan insights, and rebuild insights from its chunks. The script prints source counts, chunk counts, cleanup steps, extraction progress, and serial storage progress as it runs.
+The remediation script runs insight extraction directly in the script process; it does not create or rerun ingestion jobs and does not require `rag worker`. With `--source-id`, the script skips the source if it already has insight links. Add `--force` to delete that source's existing insight links, remove orphan insights, and rebuild insights from its chunks. The script prints source counts, chunk counts, cleanup steps, extraction progress, and storage progress as it runs. It calls the same `extract_and_store_insights` path the ingestion pipeline uses, so storage runs as the same phased, set-based batch passes (batch dedup, then batch mutual top-K linking), not per-insight.
 
 ## Search
 
@@ -1163,6 +1188,7 @@ The migrations most likely to matter for current code are:
 - `scripts/migrate/007_insights.sql`
 - `scripts/migrate/009_binary_vector_prefilter_indexes.sql`
 - `scripts/migrate/010_entities_autovacuum_tuning.sql`
+- `scripts/migrate/012_stage_duration_baseline.sql`
 
 Example:
 
@@ -1172,6 +1198,7 @@ docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/006_search
 docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/007_insights.sql
 docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/009_binary_vector_prefilter_indexes.sql
 docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/010_entities_autovacuum_tuning.sql
+docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/012_stage_duration_baseline.sql
 ```
 
 ### Storage maintenance

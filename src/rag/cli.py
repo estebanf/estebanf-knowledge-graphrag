@@ -1165,11 +1165,9 @@ def jobs_status(
     console.print(Panel(table, title=f"[bold]Job {job_id}[/bold]"))
 
     if row[4]:
-        import json
         console.print(Panel(json.dumps(row[4], indent=2), title="Stage Log"))
 
     if row[7]:
-        import json
         console.print(Panel(json.dumps(row[7], indent=2), title="[red]Error Detail[/red]"))
 
 
