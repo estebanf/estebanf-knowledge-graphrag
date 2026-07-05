@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
+import threading
 import requests
 
 from rag import prompts
@@ -8,29 +9,42 @@ from rag.db import get_connection
 
 
 def _call_llm(prompt_text: str, model: str) -> str:
-    if not settings.OPENROUTER_API_KEY:
-        return ""
+    api_key = settings.OPENCODE_API_KEY or settings.OPENROUTER_API_KEY
+    if not api_key:
+        raise RuntimeError("No LLM API key configured (set OPENCODE_API_KEY or OPENROUTER_API_KEY)")
+    if settings.OPENCODE_API_KEY:
+        url = "https://opencode.ai/zen/go/v1/chat/completions"
+    else:
+        url = "https://openrouter.ai/api/v1/chat/completions"
     response = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
+        url,
         headers={
-            "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
         json={
             "model": model,
             "messages": [{"role": "user", "content": prompt_text}],
-            "response_format": {"type": "json_object"},
         },
-        timeout=60,
+        timeout=120,
     )
     response.raise_for_status()
     return response.json()["choices"][0]["message"]["content"].strip()
 
 
-def generate_theme_report(run_id: str, model: str | None = None) -> str:
-    model = model or settings.THEME_REPORT_MODEL or "google/gemma-3-4b-it"
-    prompt_override = settings.THEME_REPORT_PROMPT
+def _parse_json(raw: str) -> dict:
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.removeprefix("```json").removeprefix("```").strip()
+        if text.endswith("```"):
+            text = text[:-3].strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {}
 
+
+def _create_report_row(run_id: str, model: str, placeholder_status: str) -> tuple[str, list[dict]]:
     with get_connection() as conn:
         row = conn.execute(
             "SELECT id, status, result FROM community_runs WHERE id = %s",
@@ -51,13 +65,16 @@ def generate_theme_report(run_id: str, model: str | None = None) -> str:
     with get_connection() as conn:
         report_row = conn.execute(
             """INSERT INTO theme_reports (run_id, status, model)
-               VALUES (%s, 'completed', %s)
+               VALUES (%s, %s, %s)
                RETURNING id""",
-            (run_id, model),
+            (run_id, placeholder_status, model),
         ).fetchone()
-    report_id = str(report_row[0])
+        conn.commit()
+    return str(report_row[0]), communities
 
-    analyses: dict[int, dict] = {}
+
+def _run_analysis(report_id: str, communities: list[dict], model: str) -> None:
+    prompt_override = settings.THEME_REPORT_PROMPT
     failed_ids: list[int] = []
     max_workers = settings.COMMUNITY_SUMMARY_MAX_WORKERS
 
@@ -65,7 +82,8 @@ def generate_theme_report(run_id: str, model: str | None = None) -> str:
         try:
             entities_json = json.dumps([e.get("canonical_name", "") for e in community.get("entities", [])])
             sources_json = json.dumps([s.get("source_name", "") for s in community.get("contributing_sources", [])])
-            chunks_json = json.dumps([c.get("content", "") for c in community.get("chunks", [])])
+            chunks = [{"content": c.get("content", ""), "source": c.get("source_name", "")} for c in community.get("chunks", [])]
+            chunks_json = json.dumps(chunks)
             is_cross = community.get("is_cross_source", False)
 
             analysis_prompt = prompt_override or prompts.THEME_COMMUNITY_ANALYSIS
@@ -76,7 +94,9 @@ def generate_theme_report(run_id: str, model: str | None = None) -> str:
                 cross_source=str(is_cross),
             )
             raw = _call_llm(text, model)
-            result = json.loads(raw)
+            result = _parse_json(raw)
+            result["evidence_chunks"] = chunks
+            result["all_entities"] = [e.get("canonical_name", "") for e in community.get("entities", [])]
             return i, result
         except Exception:
             raise
@@ -102,7 +122,7 @@ def generate_theme_report(run_id: str, model: str | None = None) -> str:
                 _, analysis = analyze_one(i, community)
                 successful[i] = analysis
             except Exception:
-                failed_ids.append(idx)
+                failed_ids.append(i)
 
     if failed_ids and not successful:
         status = "failed"
@@ -113,14 +133,13 @@ def generate_theme_report(run_id: str, model: str | None = None) -> str:
 
     ordered = [successful[i] for i in sorted(successful)]
 
-    synthesis_text = "{}"
     if ordered:
         try:
             synthesis_prompt = prompts.THEME_SYNTHESIS.format(
                 analyses=json.dumps(ordered),
             )
             raw = _call_llm(synthesis_prompt, model)
-            synthesis = json.loads(raw)
+            synthesis = _parse_json(raw)
         except Exception:
             synthesis = {"buckets": [], "narrative": "", "cleanup_recommendations": []}
             if status == "completed":
@@ -144,7 +163,23 @@ def generate_theme_report(run_id: str, model: str | None = None) -> str:
                WHERE id = %s""",
             (status, json.dumps(failed_ids), json.dumps(report), report_id),
         )
+        conn.commit()
 
+
+def generate_theme_report(run_id: str, model: str | None = None) -> str:
+    """Generate a theme report synchronously, blocking until complete. Used by the CLI and MCP server."""
+    model = model or settings.THEME_REPORT_MODEL or "deepseek-v4-pro"
+    report_id, communities = _create_report_row(run_id, model, placeholder_status="completed")
+    _run_analysis(report_id, communities, model)
+    return report_id
+
+
+def start_theme_report(run_id: str, model: str | None = None) -> str:
+    """Create a theme report and run analysis in a background thread, returning immediately."""
+    model = model or settings.THEME_REPORT_MODEL or "deepseek-v4-pro"
+    report_id, communities = _create_report_row(run_id, model, placeholder_status="generating")
+    thread = threading.Thread(target=_run_analysis, args=(report_id, communities, model), daemon=True)
+    thread.start()
     return report_id
 
 
@@ -179,7 +214,7 @@ def list_reports(limit: int = 20, offset: int = 0) -> dict:
     }
 
 
-def regenerate_report(report_id: str, model: str | None = None) -> str:
+def _resolve_regenerate(report_id: str, model: str | None) -> tuple[str, str]:
     with get_connection() as conn:
         row = conn.execute(
             "SELECT run_id, failed_community_ids, model FROM theme_reports WHERE id = %s",
@@ -188,8 +223,20 @@ def regenerate_report(report_id: str, model: str | None = None) -> str:
     if row is None:
         raise ValueError("Report not found")
     run_id = str(row[0])
-    model = model or row[2] or settings.THEME_REPORT_MODEL or "google/gemma-3-4b-it"
-    return generate_theme_report(run_id, model)
+    model = model or row[2] or settings.THEME_REPORT_MODEL or "deepseek-v4-pro"
+    return run_id, model
+
+
+def regenerate_report(report_id: str, model: str | None = None) -> str:
+    """Regenerate a theme report synchronously, blocking until complete. Used by the CLI and MCP server."""
+    run_id, resolved_model = _resolve_regenerate(report_id, model)
+    return generate_theme_report(run_id, resolved_model)
+
+
+def start_regenerate_report(report_id: str, model: str | None = None) -> str:
+    """Regenerate a theme report in a background thread, returning immediately."""
+    run_id, resolved_model = _resolve_regenerate(report_id, model)
+    return start_theme_report(run_id, resolved_model)
 
 
 def _report_row_to_dict(row) -> dict:

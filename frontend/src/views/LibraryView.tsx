@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 
 import type {
   EvidenceItem,
   SavedAnswer,
+  ThemeReportCommunity,
   ThemeReportDetail,
   ThemeReportSummary,
 } from "../lib/api";
@@ -18,6 +19,7 @@ import {
 
 type LibraryViewProps = {
   onView: (sourceId: string) => void;
+  initialThemeId?: string;
 };
 
 type Tab = "themes" | "answers";
@@ -31,7 +33,52 @@ function statusBadgeClass(status: string): string {
   return `badge run-status-badge run-status-badge--${status}`;
 }
 
-export default function LibraryView({ onView }: LibraryViewProps) {
+function renderCommunityCard(c: ThemeReportCommunity, key: string) {
+  return (
+    <div className="community-card" key={key}>
+      <div className="community-card__header">
+        <span className="badge">{c.label}</span>
+        {c.community_type ? <span className="badge">{c.community_type}</span> : null}
+        {c.cross_source ? <span className="badge">Cross-source</span> : null}
+      </div>
+      <div className="community-card__confidence">{confidenceStars(c.confidence)}</div>
+      {c.summary ? <p className="community-card__summary">{c.summary}</p> : null}
+      {c.key_entities?.length ? (
+        <div className="community-card__entities">
+          <strong>Key entities:</strong> {c.key_entities.join(", ")}
+        </div>
+      ) : null}
+      {c.key_sources?.length ? (
+        <div className="community-card__sources">
+          <strong>Key sources:</strong> {c.key_sources.join(", ")}
+        </div>
+      ) : null}
+      {c.evidence_chunks?.length ? (
+        <details className="community-card__evidence">
+          <summary>Evidence ({c.evidence_chunks.length} chunk{c.evidence_chunks.length === 1 ? "" : "s"})</summary>
+          <div className="community-card__evidence-list">
+            {c.evidence_chunks.map((chunk, ei) => (
+              <div className="community-card__evidence-chunk" key={`${key}-evidence-${ei}`}>
+                <div className="community-card__evidence-source">{chunk.source}</div>
+                <p>{chunk.content}</p>
+              </div>
+            ))}
+          </div>
+        </details>
+      ) : null}
+      <button
+        className="ghost-button"
+        type="button"
+        style={{ marginTop: "0.5rem" }}
+        onClick={() => navigator.clipboard.writeText(JSON.stringify(c, null, 2))}
+      >
+        Copy JSON
+      </button>
+    </div>
+  );
+}
+
+export default function LibraryView({ onView, initialThemeId }: LibraryViewProps) {
   const [tab, setTab] = useState<Tab>("themes");
 
   const [themes, setThemes] = useState<ThemeReportSummary[]>([]);
@@ -50,6 +97,30 @@ export default function LibraryView({ onView }: LibraryViewProps) {
   const [sourceStatuses, setSourceStatuses] = useState<Record<string, "available" | "unavailable">>({});
 
   const [regenerating, setRegenerating] = useState(false);
+
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  async function pollUntilDone(id: string) {
+    while (mountedRef.current) {
+      await new Promise((resolve) => window.setTimeout(resolve, 2000));
+      if (!mountedRef.current) return;
+      let report: ThemeReportDetail;
+      try {
+        report = await getTheme(id);
+      } catch (e) {
+        if (mountedRef.current) setThemesError(e instanceof Error ? e.message : "Failed to check report status");
+        return;
+      }
+      if (!mountedRef.current) return;
+      setSelectedTheme(report);
+      if (report.status !== "generating") return;
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -89,12 +160,20 @@ export default function LibraryView({ onView }: LibraryViewProps) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!initialThemeId) return;
+    setTab("themes");
+    void openTheme(initialThemeId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialThemeId]);
+
   async function openTheme(id: string) {
     setThemeDetailLoading(true);
     setSelectedTheme(null);
     try {
       const report = await getTheme(id);
       setSelectedTheme(report);
+      if (report.status === "generating") void pollUntilDone(id);
     } catch (e) {
       setThemesError(e instanceof Error ? e.message : "Failed to load report");
     } finally {
@@ -135,6 +214,7 @@ export default function LibraryView({ onView }: LibraryViewProps) {
       setSelectedTheme(null);
       const report = await getTheme(resp.id);
       setSelectedTheme(report);
+      if (report.status === "generating") void pollUntilDone(resp.id);
     } catch (e) {
       setThemesError(e instanceof Error ? e.message : "Failed to regenerate");
     } finally {
@@ -196,6 +276,10 @@ export default function LibraryView({ onView }: LibraryViewProps) {
                   </span>
                 </div>
 
+                {selectedTheme.status === "generating" ? (
+                  <p className="panel-state">Generating report… this page updates automatically.</p>
+                ) : null}
+
                 {(selectedTheme.status === "partial" || selectedTheme.status === "failed") &&
                 selectedTheme.failed_community_ids?.length ? (
                   <div className="theme-report-failed">
@@ -217,42 +301,19 @@ export default function LibraryView({ onView }: LibraryViewProps) {
                   <div className="theme-buckets">
                     {selectedTheme.report.buckets.map((bucket, bi) => (
                       <div className="theme-bucket" key={`bucket-${bi}`}>
-                        <h4 className="theme-bucket__label">{bucket.label}</h4>
+                        <h4 className="theme-bucket__label">{bucket.name}</h4>
+                        {bucket.why ? <p className="theme-bucket__why">{bucket.why}</p> : null}
                         <div className="community-cards">
-                          {bucket.communities.map((c, ci) => (
-                            <div className="community-card" key={`comm-${bi}-${ci}`}>
-                              <div className="community-card__header">
-                                <span className="badge">{c.label}</span>
-                                {c.type ? (
-                                  <span className="badge">{c.type}</span>
-                                ) : null}
-                                {c.cross_source ? (
-                                  <span className="badge">Cross-source</span>
-                                ) : null}
-                              </div>
-                              <div className="community-card__confidence">
-                                {confidenceStars(c.confidence)}
-                              </div>
-                              {c.summary ? (
-                                <p className="community-card__summary">{c.summary}</p>
-                              ) : null}
-                              {c.key_entities?.length ? (
-                                <div className="community-card__entities">
-                                  <strong>Key entities:</strong>{" "}
-                                  {c.key_entities.join(", ")}
-                                </div>
-                              ) : null}
-                              {c.key_sources?.length ? (
-                                <div className="community-card__sources">
-                                  <strong>Key sources:</strong>{" "}
-                                  {c.key_sources.join(", ")}
-                                </div>
-                              ) : null}
-                            </div>
-                          ))}
+                          {selectedTheme.report.communities
+                            ?.filter((c) => bucket.member_community_labels.includes(c.label))
+                            .map((c, ci) => renderCommunityCard(c, `comm-${bi}-${ci}`))}
                         </div>
                       </div>
                     ))}
+                  </div>
+                ) : selectedTheme.report.communities?.length ? (
+                  <div className="community-cards">
+                    {selectedTheme.report.communities.map((c, ci) => renderCommunityCard(c, `comm-${ci}`))}
                   </div>
                 ) : null}
 
@@ -293,20 +354,18 @@ export default function LibraryView({ onView }: LibraryViewProps) {
                     <span className={statusBadgeClass(theme.status)}>
                       {theme.status}
                     </span>
-                    <span className="run-history-item__id">
-                      {theme.run_id.slice(0, 8)}
-                    </span>
-                    <span>{theme.model}</span>
+                    <span className="run-history-item__id">{theme.run_id.slice(0, 8)}</span>
+                    <span className="run-history-item__meta">{theme.model}</span>
                     <span className="run-history-item__date">
                       {new Date(theme.created_at).toLocaleString()}
                     </span>
                   </div>
                   <button
-                    className="ghost-button"
+                    className="primary-button"
                     type="button"
                     onClick={() => openTheme(theme.id)}
                   >
-                    View
+                    View Report
                   </button>
                 </div>
               ))}

@@ -1,872 +1,982 @@
 {
-  "/Users/estebanf/development/knowledge-graphrag/frontend/package.json": {
+  "frontend/package.json": {
     "mtime": 1776957706.1783047,
     "ast_hash": "4d6ee4af0a8ac2c95b71fc3f1d33f1bb",
     "semantic_hash": "4d6ee4af0a8ac2c95b71fc3f1d33f1bb"
   },
-  "/Users/estebanf/development/knowledge-graphrag/frontend/src/App.test.tsx": {
-    "mtime": 1779454977.2093468,
-    "ast_hash": "aa039031fbc3d30a1faa77f5184ea3a8",
-    "semantic_hash": "aa039031fbc3d30a1faa77f5184ea3a8"
+  "frontend/src/App.test.tsx": {
+    "mtime": 1783252869.1293037,
+    "ast_hash": "1cfe0f208d230e5746b51e1f1faaa331",
+    "semantic_hash": "1cfe0f208d230e5746b51e1f1faaa331"
   },
-  "/Users/estebanf/development/knowledge-graphrag/frontend/src/App.tsx": {
-    "mtime": 1779454977.209933,
-    "ast_hash": "33f79dc9c549ee50d1df9d6ee097a388",
-    "semantic_hash": "33f79dc9c549ee50d1df9d6ee097a388"
+  "frontend/src/App.tsx": {
+    "mtime": 1783252828.5180209,
+    "ast_hash": "8a42d02841486fca73bfd6481686b287",
+    "semantic_hash": "8a42d02841486fca73bfd6481686b287"
   },
-  "/Users/estebanf/development/knowledge-graphrag/frontend/src/auth/AuthContext.tsx": {
-    "mtime": 1779454977.210306,
-    "ast_hash": "ca3e0d99bd6211a887e01eac00e6196b",
-    "semantic_hash": "ca3e0d99bd6211a887e01eac00e6196b"
+  "frontend/src/auth/AuthContext.tsx": {
+    "mtime": 1783239946.8054662,
+    "ast_hash": "ebeff49777fea8c615c12cee076859dd",
+    "semantic_hash": "ebeff49777fea8c615c12cee076859dd"
   },
-  "/Users/estebanf/development/knowledge-graphrag/frontend/src/auth/Login.tsx": {
-    "mtime": 1779454977.210556,
-    "ast_hash": "69db81d0b2cc22332f82d25b9dbc4a03",
-    "semantic_hash": "69db81d0b2cc22332f82d25b9dbc4a03"
+  "frontend/src/auth/Login.tsx": {
+    "mtime": 1783239964.9019723,
+    "ast_hash": "7d4b6f4aa41c14e9077c080373bdcdd8",
+    "semantic_hash": "7d4b6f4aa41c14e9077c080373bdcdd8"
   },
-  "/Users/estebanf/development/knowledge-graphrag/frontend/src/components/BucketPopover.tsx": {
+  "frontend/src/components/BucketPopover.tsx": {
     "mtime": 1777060700.6924827,
     "ast_hash": "669e0ac6ec1ee9aa085eeab8bca69e47",
     "semantic_hash": "669e0ac6ec1ee9aa085eeab8bca69e47"
   },
-  "/Users/estebanf/development/knowledge-graphrag/frontend/src/components/InsightCard.tsx": {
-    "mtime": 1777974932.273901,
-    "ast_hash": "740ea92ece9f84826184290b7efb8c8c",
-    "semantic_hash": "740ea92ece9f84826184290b7efb8c8c"
+  "frontend/src/components/InsightCard.tsx": {
+    "mtime": 1783252799.697469,
+    "ast_hash": "04cb9b84f4eb0f837dd3a42437412403",
+    "semantic_hash": "04cb9b84f4eb0f837dd3a42437412403"
   },
-  "/Users/estebanf/development/knowledge-graphrag/frontend/src/components/ResultCard.tsx": {
-    "mtime": 1777060700.6927803,
-    "ast_hash": "0f677c64bfd8ab410acb5a3fad26711f",
-    "semantic_hash": "0f677c64bfd8ab410acb5a3fad26711f"
+  "frontend/src/components/ResultCard.tsx": {
+    "mtime": 1783252784.7878828,
+    "ast_hash": "487859374c53275b1474bc51d70195cd",
+    "semantic_hash": "487859374c53275b1474bc51d70195cd"
   },
-  "/Users/estebanf/development/knowledge-graphrag/frontend/src/components/SourcePanel.tsx": {
-    "mtime": 1776843503.8541877,
-    "ast_hash": "1f6151cc0d6b8993eb3e85eee736d204",
-    "semantic_hash": "1f6151cc0d6b8993eb3e85eee736d204"
+  "frontend/src/components/SourcePanel.tsx": {
+    "mtime": 1783257313.2013195,
+    "ast_hash": "97fa9c6d3d502ba39066bec0674f5e37",
+    "semantic_hash": "97fa9c6d3d502ba39066bec0674f5e37"
   },
-  "/Users/estebanf/development/knowledge-graphrag/frontend/src/components/SourcesExplorer.tsx": {
-    "mtime": 1778234153.9044318,
-    "ast_hash": "7b9a62eecb1fa11e913c213ff45c252a",
-    "semantic_hash": "7b9a62eecb1fa11e913c213ff45c252a"
+  "frontend/src/lib/api.ts": {
+    "mtime": 1783257369.9755623,
+    "ast_hash": "eb0321f2c4f4cb306cc45c97cabbf796",
+    "semantic_hash": "eb0321f2c4f4cb306cc45c97cabbf796"
   },
-  "/Users/estebanf/development/knowledge-graphrag/frontend/src/lib/api.ts": {
-    "mtime": 1779454977.210926,
-    "ast_hash": "4f0cd8165b8a9a48ec73e0a2da99b78d",
-    "semantic_hash": "4f0cd8165b8a9a48ec73e0a2da99b78d"
-  },
-  "/Users/estebanf/development/knowledge-graphrag/frontend/src/lib/auth.ts": {
+  "frontend/src/lib/auth.ts": {
     "mtime": 1779454977.2112772,
     "ast_hash": "dde502e8573f93c067eceba4d3940ea1",
     "semantic_hash": "dde502e8573f93c067eceba4d3940ea1"
   },
-  "/Users/estebanf/development/knowledge-graphrag/frontend/src/main.tsx": {
+  "frontend/src/main.tsx": {
     "mtime": 1779454977.2114744,
     "ast_hash": "238ab1421f717084a6f6842cc8134b2d",
     "semantic_hash": "238ab1421f717084a6f6842cc8134b2d"
   },
-  "/Users/estebanf/development/knowledge-graphrag/frontend/src/test/setup.ts": {
+  "frontend/src/test/setup.ts": {
     "mtime": 1776843503.855326,
     "ast_hash": "522e3714e0d342c9b24b23367d8a85b2",
     "semantic_hash": "522e3714e0d342c9b24b23367d8a85b2"
   },
-  "/Users/estebanf/development/knowledge-graphrag/frontend/tsconfig.json": {
+  "frontend/tsconfig.json": {
     "mtime": 1776843503.8555353,
     "ast_hash": "477be7fd1ecef1acc1856477fe38944b",
     "semantic_hash": "477be7fd1ecef1acc1856477fe38944b"
   },
-  "/Users/estebanf/development/knowledge-graphrag/frontend/vite.config.ts": {
+  "frontend/vite.config.ts": {
     "mtime": 1776957706.1790512,
     "ast_hash": "83d4d84f12e76b345b323fb9a009fbf6",
     "semantic_hash": "83d4d84f12e76b345b323fb9a009fbf6"
   },
-  "/Users/estebanf/development/knowledge-graphrag/opencode.json": {
+  "opencode.json": {
     "mtime": 1777974932.2752392,
     "ast_hash": "f81eb770ac1b5aa8475c261e68994b42",
     "semantic_hash": "f81eb770ac1b5aa8475c261e68994b42"
   },
-  "/Users/estebanf/development/knowledge-graphrag/pyproject.toml": {
+  "pyproject.toml": {
     "mtime": 1783101798.304982,
     "ast_hash": "46200bfca8ef2f8e3a4246467a25e8e1",
     "semantic_hash": "46200bfca8ef2f8e3a4246467a25e8e1"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/__init__.py": {
+  "scripts/__init__.py": {
     "mtime": 1776879239.2033317,
     "ast_hash": "653869037fd0c2801c50279b31d14358",
     "semantic_hash": "653869037fd0c2801c50279b31d14358"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/assess_embedding_duplicates.py": {
+  "scripts/assess_embedding_duplicates.py": {
     "mtime": 1779055230.9525638,
     "ast_hash": "fffc40998949d3329bc62a64163255e4",
     "semantic_hash": "fffc40998949d3329bc62a64163255e4"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/assess_fuzzy_duplicates.py": {
+  "scripts/assess_fuzzy_duplicates.py": {
     "mtime": 1779055230.9528491,
     "ast_hash": "10354af8c34c073666acc8aac091c3ec",
     "semantic_hash": "10354af8c34c073666acc8aac091c3ec"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/assess_semantic_duplicates.py": {
+  "scripts/assess_semantic_duplicates.py": {
     "mtime": 1779055230.9533706,
     "ast_hash": "bb9811fd1df401c2041bcd84352a3a2c",
     "semantic_hash": "bb9811fd1df401c2041bcd84352a3a2c"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/backfill_entity_embeddings.py": {
+  "scripts/backfill_entity_embeddings.py": {
     "mtime": 1776700730.1130419,
     "ast_hash": "0c6ba93d5178d8910362c0615daccd7c",
     "semantic_hash": "0c6ba93d5178d8910362c0615daccd7c"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/backup.sh": {
+  "scripts/backup.sh": {
     "mtime": 1776447385.175356,
     "ast_hash": "b142a8d3e35940a80da0ce1a37dc0353",
     "semantic_hash": "b142a8d3e35940a80da0ce1a37dc0353"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/create_user.py": {
+  "scripts/create_user.py": {
     "mtime": 1779454977.2118273,
     "ast_hash": "9fc14282c72754ab49aa42b0084bc3ba",
     "semantic_hash": "9fc14282c72754ab49aa42b0084bc3ba"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/delete_legacy_graph_edges.py": {
+  "scripts/delete_legacy_graph_edges.py": {
     "mtime": 1776879239.203624,
     "ast_hash": "49a4463b9e3ebc6508056388ce9162aa",
     "semantic_hash": "49a4463b9e3ebc6508056388ce9162aa"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/delete_youtube_sources.py": {
+  "scripts/delete_youtube_sources.py": {
     "mtime": 1777060700.6933284,
     "ast_hash": "8398638e25fe99f17be909151a772b7e",
     "semantic_hash": "8398638e25fe99f17be909151a772b7e"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/init/postgres/01_extensions.sql": {
+  "scripts/init/postgres/01_extensions.sql": {
     "mtime": 1783069716.7703786,
     "ast_hash": "cde09395b130670c4d7ea1a1aa89885d",
     "semantic_hash": "cde09395b130670c4d7ea1a1aa89885d"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/init/postgres/02_schema.sql": {
-    "mtime": 1783069716.7706933,
-    "ast_hash": "6c3184bfb601c626327b270ffb25e3e7",
-    "semantic_hash": "6c3184bfb601c626327b270ffb25e3e7"
+  "scripts/init/postgres/02_schema.sql": {
+    "mtime": 1783237537.90703,
+    "ast_hash": "96f3a8fdd1961d61b3b1f9c67350c5b9",
+    "semantic_hash": "96f3a8fdd1961d61b3b1f9c67350c5b9"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/mcp_probe.py": {
+  "scripts/mcp_probe.py": {
     "mtime": 1779454977.2119794,
     "ast_hash": "f71a63558c603e2130d556ea8e89464f",
     "semantic_hash": "f71a63558c603e2130d556ea8e89464f"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/merge_duplicate_entities.py": {
+  "scripts/merge_duplicate_entities.py": {
     "mtime": 1783069716.77097,
     "ast_hash": "1143b2cf0bd6abc393232dfd542349e5",
     "semantic_hash": "1143b2cf0bd6abc393232dfd542349e5"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/merge_semantic_duplicates.py": {
-    "mtime": 1783123338.9310102,
-    "ast_hash": "42ce12aadd267f301f1ff7e6eb3f8f61",
-    "semantic_hash": "42ce12aadd267f301f1ff7e6eb3f8f61"
+  "scripts/merge_semantic_duplicates.py": {
+    "mtime": 1783238764.5843318,
+    "ast_hash": "1a7cd5b8339f25e00dddb69cab43c950",
+    "semantic_hash": "1a7cd5b8339f25e00dddb69cab43c950"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/migrate/001_add_markdown_content.sql": {
+  "scripts/migrate/001_add_markdown_content.sql": {
     "mtime": 1776453965.6413317,
     "ast_hash": "c4e1a2397032dc47feca4dd9d782bd81",
     "semantic_hash": "c4e1a2397032dc47feca4dd9d782bd81"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/migrate/002_update_vector_dimensions.sql": {
+  "scripts/migrate/002_update_vector_dimensions.sql": {
     "mtime": 1776468117.9262161,
     "ast_hash": "b7d39bc05bf28b7073e7502feea76c3a",
     "semantic_hash": "b7d39bc05bf28b7073e7502feea76c3a"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/migrate/003_add_entity_source_tracking.sql": {
+  "scripts/migrate/003_add_entity_source_tracking.sql": {
     "mtime": 1776507201.0611851,
     "ast_hash": "a021264f1cb07aad39d2740ba6673707",
     "semantic_hash": "a021264f1cb07aad39d2740ba6673707"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/migrate/004_job_improvements.sql": {
+  "scripts/migrate/004_job_improvements.sql": {
     "mtime": 1776559605.2662272,
     "ast_hash": "3c19ec61190f4cc1fa1cd03195da6a04",
     "semantic_hash": "3c19ec61190f4cc1fa1cd03195da6a04"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/migrate/005_entity_embeddings.sql": {
+  "scripts/migrate/005_entity_embeddings.sql": {
     "mtime": 1776699548.4705007,
     "ast_hash": "537e5112bb6f253d5fbc68fcb32ea5a6",
     "semantic_hash": "537e5112bb6f253d5fbc68fcb32ea5a6"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/migrate/006_search_performance_indexes.sql": {
+  "scripts/migrate/006_search_performance_indexes.sql": {
     "mtime": 1777111481.415538,
     "ast_hash": "d7ecc3d2f56eec1e523e5d819d13653a",
     "semantic_hash": "d7ecc3d2f56eec1e523e5d819d13653a"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/migrate/007_insights.sql": {
+  "scripts/migrate/007_insights.sql": {
     "mtime": 1777974932.2758167,
     "ast_hash": "3e457f149077ddf50f64c78f575ae8b7",
     "semantic_hash": "3e457f149077ddf50f64c78f575ae8b7"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/migrate/008_auth_and_workers.sql": {
+  "scripts/migrate/008_auth_and_workers.sql": {
     "mtime": 1779454977.2121449,
     "ast_hash": "f69ee06c17cb04a9a2e1ebf25106c53b",
     "semantic_hash": "f69ee06c17cb04a9a2e1ebf25106c53b"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/migrate/009_binary_vector_prefilter_indexes.sql": {
+  "scripts/migrate/009_binary_vector_prefilter_indexes.sql": {
     "mtime": 1783069716.7713509,
     "ast_hash": "f9cb8f61efeb2db4a03cc8cbf78783e0",
     "semantic_hash": "f9cb8f61efeb2db4a03cc8cbf78783e0"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/profile_retrieve.py": {
+  "scripts/profile_retrieve.py": {
     "mtime": 1783069716.7720327,
     "ast_hash": "d4f2222087823165ae15df542de9ec3b",
     "semantic_hash": "d4f2222087823165ae15df542de9ec3b"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/remediate_heading_chunks.py": {
+  "scripts/remediate_heading_chunks.py": {
     "mtime": 1776978244.3038886,
     "ast_hash": "2673a8f496503ddf4f27a69b6dd00999",
     "semantic_hash": "2673a8f496503ddf4f27a69b6dd00999"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/remediate_image_placeholders.py": {
+  "scripts/remediate_image_placeholders.py": {
     "mtime": 1777106655.946293,
     "ast_hash": "b227956d6b1064391fdab019a7c712ef",
     "semantic_hash": "b227956d6b1064391fdab019a7c712ef"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/remediate_insights.py": {
+  "scripts/remediate_insights.py": {
     "mtime": 1777974932.2760763,
     "ast_hash": "39e87a0b8014320f37266efb0f118440",
     "semantic_hash": "39e87a0b8014320f37266efb0f118440"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/reset.sh": {
+  "scripts/reset.sh": {
     "mtime": 1776446805.5378108,
     "ast_hash": "5122235bdab23bbf19a170b84cc607fb",
     "semantic_hash": "5122235bdab23bbf19a170b84cc607fb"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/smoke_e2e.sh": {
+  "scripts/smoke_e2e.sh": {
     "mtime": 1779454977.2122896,
     "ast_hash": "ad767b07bd4b111e2a8a65e217064be0",
     "semantic_hash": "ad767b07bd4b111e2a8a65e217064be0"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/start.sh": {
+  "scripts/start.sh": {
     "mtime": 1776446252.225304,
     "ast_hash": "2b3b69a37cadaa38fb313619535eccaa",
     "semantic_hash": "2b3b69a37cadaa38fb313619535eccaa"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/stop.sh": {
+  "scripts/stop.sh": {
     "mtime": 1776446400.9046884,
     "ast_hash": "54fda1391f338921b69faec765bf3c20",
     "semantic_hash": "54fda1391f338921b69faec765bf3c20"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/__init__.py": {
+  "src/rag/__init__.py": {
     "mtime": 1776453965.6413734,
     "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
     "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/answer_models.py": {
+  "src/rag/answer_models.py": {
     "mtime": 1777974932.276334,
     "ast_hash": "4c8776fe81d4c9cc1c032b6f5ef52d05",
     "semantic_hash": "4c8776fe81d4c9cc1c032b6f5ef52d05"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/answering.py": {
+  "src/rag/answering.py": {
     "mtime": 1777974932.2765949,
     "ast_hash": "cf46aa8289ac8cec12dcad9c2fe1595c",
     "semantic_hash": "cf46aa8289ac8cec12dcad9c2fe1595c"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/api/__init__.py": {
+  "src/rag/api/__init__.py": {
     "mtime": 1776843503.8568852,
     "ast_hash": "3d04efa7759db50f695307d0d34e4932",
     "semantic_hash": "3d04efa7759db50f695307d0d34e4932"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/api/auth.py": {
+  "src/rag/api/auth.py": {
     "mtime": 1783101798.3057058,
     "ast_hash": "e24a69657b0bc3d03c11baca0335b6ec",
     "semantic_hash": "e24a69657b0bc3d03c11baca0335b6ec"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/api/main.py": {
-    "mtime": 1783101798.306267,
-    "ast_hash": "8b5fb9b61ffd2685ad4d8a4ab7400033",
-    "semantic_hash": "8b5fb9b61ffd2685ad4d8a4ab7400033"
+  "src/rag/api/main.py": {
+    "mtime": 1783238628.13583,
+    "ast_hash": "a190753a3114503df94efa5f53de43cf",
+    "semantic_hash": "a190753a3114503df94efa5f53de43cf"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/api/routes/__init__.py": {
+  "src/rag/api/routes/__init__.py": {
     "mtime": 1776843503.8579736,
     "ast_hash": "5c32ca7b379a63c2e9f240e9aeab113e",
     "semantic_hash": "5c32ca7b379a63c2e9f240e9aeab113e"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/api/routes/answer.py": {
+  "src/rag/api/routes/answer.py": {
     "mtime": 1776843503.8582788,
     "ast_hash": "c2551a0bb098f186b16f3e7bd0da6fdc",
     "semantic_hash": "c2551a0bb098f186b16f3e7bd0da6fdc"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/api/routes/auth.py": {
+  "src/rag/api/routes/auth.py": {
     "mtime": 1779454977.2128477,
     "ast_hash": "64eaa7499505a0910fc215de1778ff65",
     "semantic_hash": "64eaa7499505a0910fc215de1778ff65"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/api/routes/community.py": {
-    "mtime": 1777366103.6165895,
-    "ast_hash": "ea92007472921144bfe11a9afcd3583a",
-    "semantic_hash": "ea92007472921144bfe11a9afcd3583a"
+  "src/rag/api/routes/community.py": {
+    "mtime": 1783257025.125349,
+    "ast_hash": "99c4e4218c96541d21a55749070c4e5d",
+    "semantic_hash": "99c4e4218c96541d21a55749070c4e5d"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/api/routes/ingest.py": {
+  "src/rag/api/routes/ingest.py": {
     "mtime": 1783101798.3072147,
     "ast_hash": "4b4a2171cfa18d7848c9af2107c69951",
     "semantic_hash": "4b4a2171cfa18d7848c9af2107c69951"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/api/routes/jobs.py": {
-    "mtime": 1783122434.7043502,
+  "src/rag/api/routes/jobs.py": {
+    "mtime": 1783157279.5269246,
     "ast_hash": "75bac1c1474c10bd9b2ddf3680e58004",
     "semantic_hash": "75bac1c1474c10bd9b2ddf3680e58004"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/api/routes/retrieve.py": {
+  "src/rag/api/routes/retrieve.py": {
     "mtime": 1776957706.1796393,
     "ast_hash": "79300bc407bd3a0cc3243e51d8cd0308",
     "semantic_hash": "79300bc407bd3a0cc3243e51d8cd0308"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/api/routes/search.py": {
+  "src/rag/api/routes/search.py": {
     "mtime": 1777974932.2768264,
     "ast_hash": "3ed6fc6546cda1ed840b965fe90f9226",
     "semantic_hash": "3ed6fc6546cda1ed840b965fe90f9226"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/api/routes/sources.py": {
-    "mtime": 1779454977.2133267,
-    "ast_hash": "21bb9a2f2cdd1cfa5be64547b6efc496",
-    "semantic_hash": "21bb9a2f2cdd1cfa5be64547b6efc496"
+  "src/rag/api/routes/sources.py": {
+    "mtime": 1783238491.3908901,
+    "ast_hash": "43091f9fecb29a56959c9c05bb136220",
+    "semantic_hash": "43091f9fecb29a56959c9c05bb136220"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/api/routes/workers.py": {
+  "src/rag/api/routes/workers.py": {
     "mtime": 1779454977.2134628,
     "ast_hash": "756469ba57b467f5a43fee2d1b810ee9",
     "semantic_hash": "756469ba57b467f5a43fee2d1b810ee9"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/api/schemas.py": {
-    "mtime": 1783101798.308133,
-    "ast_hash": "39d4f126dde03fb3d481f86dcea975c7",
-    "semantic_hash": "39d4f126dde03fb3d481f86dcea975c7"
+  "src/rag/api/schemas.py": {
+    "mtime": 1783256997.0131996,
+    "ast_hash": "2701a2732885fee62e1885ae417e4526",
+    "semantic_hash": "2701a2732885fee62e1885ae417e4526"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/api_client.py": {
-    "mtime": 1783122450.217597,
-    "ast_hash": "ed64dab822eade1db3ab4f71f823ba5f",
-    "semantic_hash": "ed64dab822eade1db3ab4f71f823ba5f"
+  "src/rag/api_client.py": {
+    "mtime": 1783239053.3736346,
+    "ast_hash": "5a2e1bd84364f465fe2cd0c29441a316",
+    "semantic_hash": "5a2e1bd84364f465fe2cd0c29441a316"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/chunk_validation.py": {
+  "src/rag/chunk_validation.py": {
     "mtime": 1777111481.4161053,
     "ast_hash": "ffc6820311a75ab426e0ade3e545bc7d",
     "semantic_hash": "ffc6820311a75ab426e0ade3e545bc7d"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/chunking.py": {
+  "src/rag/chunking.py": {
     "mtime": 1777111481.4165041,
     "ast_hash": "2394a824d1e89fa612873c8c0acb4f4f",
     "semantic_hash": "2394a824d1e89fa612873c8c0acb4f4f"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/cli.py": {
-    "mtime": 1783125993.3203857,
-    "ast_hash": "7d98e4a266d0705c0e18862baa47815b",
-    "semantic_hash": "7d98e4a266d0705c0e18862baa47815b"
+  "src/rag/cli.py": {
+    "mtime": 1783239188.1561086,
+    "ast_hash": "ed66e7fe1618c78fdadc0e93f7282920",
+    "semantic_hash": "ed66e7fe1618c78fdadc0e93f7282920"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/cli_config.py": {
+  "src/rag/cli_config.py": {
     "mtime": 1779454977.2141387,
     "ast_hash": "b86fa30779e47e0c0c786e7ec324dfcf",
     "semantic_hash": "b86fa30779e47e0c0c786e7ec324dfcf"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/community.py": {
-    "mtime": 1777974932.2782178,
-    "ast_hash": "18141b3f2dbfb4ed1e035e41a0501d4e",
-    "semantic_hash": "18141b3f2dbfb4ed1e035e41a0501d4e"
+  "src/rag/community.py": {
+    "mtime": 1783248374.6700757,
+    "ast_hash": "0b4622061101c87afa4d07cbb34c1107",
+    "semantic_hash": "0b4622061101c87afa4d07cbb34c1107"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/config.py": {
-    "mtime": 1783122393.185131,
-    "ast_hash": "b49e079156f1748a472b500c644c66a5",
-    "semantic_hash": "b49e079156f1748a472b500c644c66a5"
+  "src/rag/config.py": {
+    "mtime": 1783237546.4198954,
+    "ast_hash": "09cfea2d0f1c91fd73cc69dcf0366c4c",
+    "semantic_hash": "09cfea2d0f1c91fd73cc69dcf0366c4c"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/db.py": {
-    "mtime": 1783123351.434626,
-    "ast_hash": "4c8f849fc9ec15fb3847a115a4bf5114",
-    "semantic_hash": "4c8f849fc9ec15fb3847a115a4bf5114"
+  "src/rag/db.py": {
+    "mtime": 1783237692.59439,
+    "ast_hash": "e8d3f1cfa68349d39ef445d9bfc0957e",
+    "semantic_hash": "e8d3f1cfa68349d39ef445d9bfc0957e"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/embedding.py": {
+  "src/rag/embedding.py": {
     "mtime": 1776957706.1808171,
     "ast_hash": "e82013b9c6c7fd61b0e9ddf591703d24",
     "semantic_hash": "e82013b9c6c7fd61b0e9ddf591703d24"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/graph_db.py": {
+  "src/rag/graph_db.py": {
     "mtime": 1783069716.7736917,
     "ast_hash": "51d8bf595c358875b096657afe3d713c",
     "semantic_hash": "51d8bf595c358875b096657afe3d713c"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/graph_extraction.py": {
-    "mtime": 1783121603.5296474,
+  "src/rag/graph_extraction.py": {
+    "mtime": 1783157279.5277803,
     "ast_hash": "f6ec34ae19c0de9cc86addef2edd0c98",
     "semantic_hash": "f6ec34ae19c0de9cc86addef2edd0c98"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/image_description.py": {
+  "src/rag/image_description.py": {
     "mtime": 1783101798.3098373,
     "ast_hash": "130e8f5480fe96c107f8712635cd31b5",
     "semantic_hash": "130e8f5480fe96c107f8712635cd31b5"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/ingestion.py": {
-    "mtime": 1783122371.41853,
+  "src/rag/ingestion.py": {
+    "mtime": 1783157279.5279205,
     "ast_hash": "2c7c26d23d80546f6ce001dc90d7f0d3",
     "semantic_hash": "2c7c26d23d80546f6ce001dc90d7f0d3"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/insight_extraction.py": {
-    "mtime": 1783120818.0114803,
+  "src/rag/insight_extraction.py": {
+    "mtime": 1783157279.528092,
     "ast_hash": "54907bc25ae0ecf8ef1c795711466314",
     "semantic_hash": "54907bc25ae0ecf8ef1c795711466314"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/logging_config.py": {
+  "src/rag/logging_config.py": {
     "mtime": 1776559605.269224,
     "ast_hash": "b02f8af4288faba55888ddd01451ed49",
     "semantic_hash": "b02f8af4288faba55888ddd01451ed49"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/mcp_server.py": {
-    "mtime": 1779454977.214668,
-    "ast_hash": "21ba49694ad07c1dab00136eb45f95fc",
-    "semantic_hash": "21ba49694ad07c1dab00136eb45f95fc"
+  "src/rag/mcp_server.py": {
+    "mtime": 1783257344.65015,
+    "ast_hash": "2561a80198bded45ef0bc57ae2148286",
+    "semantic_hash": "2561a80198bded45ef0bc57ae2148286"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/metadata_extraction.py": {
+  "src/rag/metadata_extraction.py": {
     "mtime": 1776453965.6428487,
     "ast_hash": "4f043bbb1fed79ddaf54b806771cebf2",
     "semantic_hash": "4f043bbb1fed79ddaf54b806771cebf2"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/parser.py": {
+  "src/rag/parser.py": {
     "mtime": 1783101798.3109643,
     "ast_hash": "cbbfd8232f4fdcedd445a590024ab1ad",
     "semantic_hash": "cbbfd8232f4fdcedd445a590024ab1ad"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/profiling.py": {
+  "src/rag/profiling.py": {
     "mtime": 1777111481.418286,
     "ast_hash": "0fcb936d34dd67d02195bcf02dcf3b19",
     "semantic_hash": "0fcb936d34dd67d02195bcf02dcf3b19"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/prompts/__init__.py": {
-    "mtime": 1783069716.7739885,
-    "ast_hash": "7f2845be65c68ec6f6d976e9af486bc2",
-    "semantic_hash": "7f2845be65c68ec6f6d976e9af486bc2"
+  "src/rag/prompts/__init__.py": {
+    "mtime": 1783238615.6933413,
+    "ast_hash": "a026d2d1856c2534c8d93e716d5a917c",
+    "semantic_hash": "a026d2d1856c2534c8d93e716d5a917c"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/remediation.py": {
+  "src/rag/remediation.py": {
     "mtime": 1777106655.949472,
     "ast_hash": "c975eb2d4eb99be158d6410ef43509a9",
     "semantic_hash": "c975eb2d4eb99be158d6410ef43509a9"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/retrieval.py": {
-    "mtime": 1783120016.0730984,
+  "src/rag/retrieval.py": {
+    "mtime": 1783157279.5283213,
     "ast_hash": "9dc9db988c9a746d74a5a3c2006c6452",
     "semantic_hash": "9dc9db988c9a746d74a5a3c2006c6452"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/sources.py": {
+  "src/rag/sources.py": {
     "mtime": 1778234153.9069872,
     "ast_hash": "b3d09d38c068aeab5119782c9d042d8f",
     "semantic_hash": "b3d09d38c068aeab5119782c9d042d8f"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/storage.py": {
+  "src/rag/storage.py": {
     "mtime": 1777106655.9498591,
     "ast_hash": "89aab0eed4345b81854f1edac00ce1c4",
     "semantic_hash": "89aab0eed4345b81854f1edac00ce1c4"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/worker.py": {
-    "mtime": 1783122470.8567245,
+  "src/rag/worker.py": {
+    "mtime": 1783157279.5284657,
     "ast_hash": "640ef2698f0f3d89712f0b2cc6aee8d2",
     "semantic_hash": "640ef2698f0f3d89712f0b2cc6aee8d2"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/worker_supervisor.py": {
+  "src/rag/worker_supervisor.py": {
     "mtime": 1779454977.2148738,
     "ast_hash": "eb9b183f7e2db0ddccd30ca38dc0d0ad",
     "semantic_hash": "eb9b183f7e2db0ddccd30ca38dc0d0ad"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/youtube_cleanup.py": {
+  "src/rag/youtube_cleanup.py": {
     "mtime": 1777060700.6939993,
     "ast_hash": "e9061ce188ebf9af70e0c6fedc7fa0ca",
     "semantic_hash": "e9061ce188ebf9af70e0c6fedc7fa0ca"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/conftest.py": {
+  "tests/conftest.py": {
     "mtime": 1779454977.2150455,
     "ast_hash": "0a5fc7ba8010d7de48e60650c6e34d2d",
     "semantic_hash": "0a5fc7ba8010d7de48e60650c6e34d2d"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_answering.py": {
+  "tests/test_answering.py": {
     "mtime": 1776843503.86223,
     "ast_hash": "1e3e9df8c3de6c95bdefbcb62451a218",
     "semantic_hash": "1e3e9df8c3de6c95bdefbcb62451a218"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_api.py": {
+  "tests/test_api.py": {
     "mtime": 1783069716.7754817,
     "ast_hash": "3b81e7488de27f9f2e305ea77882d9f9",
     "semantic_hash": "3b81e7488de27f9f2e305ea77882d9f9"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_api_auth_apikey.py": {
+  "tests/test_api_auth_apikey.py": {
     "mtime": 1779454977.2152498,
     "ast_hash": "98b9a4d499b0beb1e65ac928fbe535d8",
     "semantic_hash": "98b9a4d499b0beb1e65ac928fbe535d8"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_api_auth_session.py": {
+  "tests/test_api_auth_session.py": {
     "mtime": 1779454977.2154465,
     "ast_hash": "e0d1c40837600ec3fbe3f1853a4793cb",
     "semantic_hash": "e0d1c40837600ec3fbe3f1853a4793cb"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_api_client.py": {
+  "tests/test_api_client.py": {
     "mtime": 1783101798.3117287,
     "ast_hash": "ec6c93075d83bba3a195711f402c1872",
     "semantic_hash": "ec6c93075d83bba3a195711f402c1872"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_api_community.py": {
-    "mtime": 1776957706.1810489,
-    "ast_hash": "6222f4ef58b656afcec6f0d11f564dfa",
-    "semantic_hash": "6222f4ef58b656afcec6f0d11f564dfa"
+  "tests/test_api_community.py": {
+    "mtime": 1783252907.3000174,
+    "ast_hash": "33366e02cbfa895500ba2ca2ba602c1f",
+    "semantic_hash": "33366e02cbfa895500ba2ca2ba602c1f"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_api_gating.py": {
-    "mtime": 1783122516.6654391,
+  "tests/test_api_gating.py": {
+    "mtime": 1783157279.5286055,
     "ast_hash": "96543238bf220fc27f08555354204e0f",
     "semantic_hash": "96543238bf220fc27f08555354204e0f"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_api_ingest.py": {
+  "tests/test_api_ingest.py": {
     "mtime": 1783101798.313166,
     "ast_hash": "4db102d5db9a58a17004abaf794772b9",
     "semantic_hash": "4db102d5db9a58a17004abaf794772b9"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_api_jobs.py": {
-    "mtime": 1783122615.6375594,
+  "tests/test_api_jobs.py": {
+    "mtime": 1783157279.5287435,
     "ast_hash": "20d259a87179f4a07b7b25d19969a29b",
     "semantic_hash": "20d259a87179f4a07b7b25d19969a29b"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_api_sources_delete.py": {
+  "tests/test_api_sources_delete.py": {
     "mtime": 1779454977.2164083,
     "ast_hash": "d529f3624e291382e26ba6e2f4db43cb",
     "semantic_hash": "d529f3624e291382e26ba6e2f4db43cb"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_api_workers.py": {
+  "tests/test_api_workers.py": {
     "mtime": 1779454977.216557,
     "ast_hash": "f66fb7cfc4d7505b3c4a892fb33c256a",
     "semantic_hash": "f66fb7cfc4d7505b3c4a892fb33c256a"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_chunk_validation.py": {
+  "tests/test_chunk_validation.py": {
     "mtime": 1776468117.9285038,
     "ast_hash": "39e38c90318608ed4469dcafc56e2ea8",
     "semantic_hash": "39e38c90318608ed4469dcafc56e2ea8"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_chunking.py": {
+  "tests/test_chunking.py": {
     "mtime": 1776978244.3133178,
     "ast_hash": "03d3277c53648422d5f8df8cc20cf082",
     "semantic_hash": "03d3277c53648422d5f8df8cc20cf082"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_cli_api_mode.py": {
+  "tests/test_cli_api_mode.py": {
     "mtime": 1783101798.3137813,
     "ast_hash": "06ad0c484059683d2c79cfce80352a21",
     "semantic_hash": "06ad0c484059683d2c79cfce80352a21"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_cli_community.py": {
-    "mtime": 1777366103.620003,
-    "ast_hash": "181b834c21dc3ef49b9ff806e21ee09f",
-    "semantic_hash": "181b834c21dc3ef49b9ff806e21ee09f"
+  "tests/test_cli_community.py": {
+    "mtime": 1783239233.1390412,
+    "ast_hash": "0afecba1eb782d8e6a57c9432d8723a4",
+    "semantic_hash": "0afecba1eb782d8e6a57c9432d8723a4"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_cli_config.py": {
+  "tests/test_cli_config.py": {
     "mtime": 1779454977.216898,
     "ast_hash": "b5dcea9786c8515b2a9848a1ea492aa4",
     "semantic_hash": "b5dcea9786c8515b2a9848a1ea492aa4"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_cli_health.py": {
+  "tests/test_cli_health.py": {
     "mtime": 1776559605.2707253,
     "ast_hash": "d278703c053731db8c165aabe6f21b9a",
     "semantic_hash": "d278703c053731db8c165aabe6f21b9a"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_cli_imports.py": {
+  "tests/test_cli_imports.py": {
     "mtime": 1783101798.314282,
     "ast_hash": "4ce296d12f6892d58e8e615b82794038",
     "semantic_hash": "4ce296d12f6892d58e8e615b82794038"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_cli_ingest.py": {
+  "tests/test_cli_ingest.py": {
     "mtime": 1783101798.3148105,
     "ast_hash": "13e3d5dfa20d02e928614d4827802575",
     "semantic_hash": "13e3d5dfa20d02e928614d4827802575"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_cli_jobs.py": {
-    "mtime": 1783122628.0238173,
+  "tests/test_cli_jobs.py": {
+    "mtime": 1783157279.528942,
     "ast_hash": "cff1e61e4d102a9b63cdf9f9cb0820f0",
     "semantic_hash": "cff1e61e4d102a9b63cdf9f9cb0820f0"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_cli_retrieve.py": {
+  "tests/test_cli_retrieve.py": {
     "mtime": 1777974932.2806385,
     "ast_hash": "c10ffc958b44051f50ac0040aac584e7",
     "semantic_hash": "c10ffc958b44051f50ac0040aac584e7"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_cli_search.py": {
+  "tests/test_cli_search.py": {
     "mtime": 1777974932.2808037,
     "ast_hash": "3fb25a7aad4c7a1ca301ac7dd639e545",
     "semantic_hash": "3fb25a7aad4c7a1ca301ac7dd639e545"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_cli_sources.py": {
+  "tests/test_cli_sources.py": {
     "mtime": 1778234153.907608,
     "ast_hash": "b47a7768a838e66762a68e4ff5612bea",
     "semantic_hash": "b47a7768a838e66762a68e4ff5612bea"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_community.py": {
-    "mtime": 1777974932.2814517,
-    "ast_hash": "79531a16415e3462abf9469986c30660",
-    "semantic_hash": "79531a16415e3462abf9469986c30660"
+  "tests/test_community.py": {
+    "mtime": 1783238341.3335052,
+    "ast_hash": "914e18e8e222edfcf6cf26e63bffc832",
+    "semantic_hash": "914e18e8e222edfcf6cf26e63bffc832"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_config.py": {
-    "mtime": 1783122604.4638855,
+  "tests/test_config.py": {
+    "mtime": 1783157279.529076,
     "ast_hash": "1f8d5a66b2203241685fb347eeeb3171",
     "semantic_hash": "1f8d5a66b2203241685fb347eeeb3171"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_delete_legacy_graph_edges.py": {
+  "tests/test_delete_legacy_graph_edges.py": {
     "mtime": 1776879239.2053092,
     "ast_hash": "60b328295d0c83f98957a260bdae8b58",
     "semantic_hash": "60b328295d0c83f98957a260bdae8b58"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_delete_youtube_sources.py": {
+  "tests/test_delete_youtube_sources.py": {
     "mtime": 1777060700.6942863,
     "ast_hash": "2a9bb96b169435b16d604ba2b2acf79a",
     "semantic_hash": "2a9bb96b169435b16d604ba2b2acf79a"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_embedding.py": {
+  "tests/test_embedding.py": {
     "mtime": 1776468117.9291263,
     "ast_hash": "4b1f93bfdcd43576e1d1b91ea1d7b9cf",
     "semantic_hash": "4b1f93bfdcd43576e1d1b91ea1d7b9cf"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_graph_db.py": {
+  "tests/test_graph_db.py": {
     "mtime": 1783069716.7762232,
     "ast_hash": "4c2593630477eab3f4908ed1c913b905",
     "semantic_hash": "4c2593630477eab3f4908ed1c913b905"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_graph_extraction.py": {
-    "mtime": 1783121603.529965,
+  "tests/test_graph_extraction.py": {
+    "mtime": 1783157279.5292714,
     "ast_hash": "5883b3dcfab2d13c4084a6eeb5768640",
     "semantic_hash": "5883b3dcfab2d13c4084a6eeb5768640"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_hybrid_search.py": {
+  "tests/test_hybrid_search.py": {
     "mtime": 1783069716.7764943,
     "ast_hash": "b234115853c8e7aa1680866815bdde41",
     "semantic_hash": "b234115853c8e7aa1680866815bdde41"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_image_description.py": {
+  "tests/test_image_description.py": {
     "mtime": 1777106655.950771,
     "ast_hash": "2a4a4f51b8374781285e45cef5604169",
     "semantic_hash": "2a4a4f51b8374781285e45cef5604169"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_ingestion.py": {
-    "mtime": 1783122029.0387633,
+  "tests/test_ingestion.py": {
+    "mtime": 1783157279.5294313,
     "ast_hash": "148f1940b0862b7cff81c28fba55278c",
     "semantic_hash": "148f1940b0862b7cff81c28fba55278c"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_ingestion_submit.py": {
+  "tests/test_ingestion_submit.py": {
     "mtime": 1783101798.316032,
     "ast_hash": "7f61c03f50ea4320ee356eaa3497e285",
     "semantic_hash": "7f61c03f50ea4320ee356eaa3497e285"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_insight_extraction.py": {
-    "mtime": 1783121170.1293087,
+  "tests/test_insight_extraction.py": {
+    "mtime": 1783157279.5295904,
     "ast_hash": "f28dfba2b2a8848b38b3a32e5ed24a0c",
     "semantic_hash": "f28dfba2b2a8848b38b3a32e5ed24a0c"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_job_lifecycle.py": {
-    "mtime": 1783122712.4453704,
+  "tests/test_job_lifecycle.py": {
+    "mtime": 1783157279.530026,
     "ast_hash": "d2fae583bdc8d73b26c6f75f6214c203",
     "semantic_hash": "d2fae583bdc8d73b26c6f75f6214c203"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_mcp_server.py": {
-    "mtime": 1779454977.2170372,
-    "ast_hash": "0adb10af47bccf1184a4df39bb4017b8",
-    "semantic_hash": "0adb10af47bccf1184a4df39bb4017b8"
+  "tests/test_mcp_server.py": {
+    "mtime": 1783239337.1435342,
+    "ast_hash": "f176ae2aca2e46d050f7cf2e426c2915",
+    "semantic_hash": "f176ae2aca2e46d050f7cf2e426c2915"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_migration_008.py": {
+  "tests/test_migration_008.py": {
     "mtime": 1779454977.2171824,
     "ast_hash": "9d5725b4c7bb011bef2945879aa859f9",
     "semantic_hash": "9d5725b4c7bb011bef2945879aa859f9"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_migration_009.py": {
+  "tests/test_migration_009.py": {
     "mtime": 1783069716.7767992,
     "ast_hash": "f47db5020c16ae775bc7de49e60fce73",
     "semantic_hash": "f47db5020c16ae775bc7de49e60fce73"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_observability.py": {
-    "mtime": 1783122534.0783334,
+  "tests/test_observability.py": {
+    "mtime": 1783157279.5302103,
     "ast_hash": "af1b435cbec21e934df3e6753a4250e5",
     "semantic_hash": "af1b435cbec21e934df3e6753a4250e5"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_parser.py": {
+  "tests/test_parser.py": {
     "mtime": 1783101798.3162937,
     "ast_hash": "def1cefafef68396243a2f3a277daafb",
     "semantic_hash": "def1cefafef68396243a2f3a277daafb"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_profiling.py": {
+  "tests/test_profiling.py": {
     "mtime": 1776468117.9296687,
     "ast_hash": "79e3f5d266e77e9713b1f594e238f0cb",
     "semantic_hash": "79e3f5d266e77e9713b1f594e238f0cb"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_prompts.py": {
+  "tests/test_prompts.py": {
     "mtime": 1783069716.7770274,
     "ast_hash": "f06ebc24d1c345f2286f9af4d5e7cd40",
     "semantic_hash": "f06ebc24d1c345f2286f9af4d5e7cd40"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_remediate_insights_script.py": {
+  "tests/test_remediate_insights_script.py": {
     "mtime": 1777974932.283133,
     "ast_hash": "6c2a39fb10051c9f350eb1924b7779ee",
     "semantic_hash": "6c2a39fb10051c9f350eb1924b7779ee"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_remediation.py": {
+  "tests/test_remediation.py": {
     "mtime": 1777106655.952018,
     "ast_hash": "c1796f4f300c588ab38104df42eca395",
     "semantic_hash": "c1796f4f300c588ab38104df42eca395"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_retrieval.py": {
+  "tests/test_retrieval.py": {
     "mtime": 1783069716.7774377,
     "ast_hash": "51b6178fa3d4787b625cc14705c662ed",
     "semantic_hash": "51b6178fa3d4787b625cc14705c662ed"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_storage.py": {
+  "tests/test_storage.py": {
     "mtime": 1777106655.9522986,
     "ast_hash": "9c24fb63783e4414fb1cf1cdd8780f92",
     "semantic_hash": "9c24fb63783e4414fb1cf1cdd8780f92"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_worker.py": {
-    "mtime": 1783122659.579897,
+  "tests/test_worker.py": {
+    "mtime": 1783157279.5306172,
     "ast_hash": "a3baa17d67683db138f82a89c28b88ad",
     "semantic_hash": "a3baa17d67683db138f82a89c28b88ad"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_worker_supervisor.py": {
+  "tests/test_worker_supervisor.py": {
     "mtime": 1779454977.2173285,
     "ast_hash": "3a6f987eb834e6241aea8181f641db84",
     "semantic_hash": "3a6f987eb834e6241aea8181f641db84"
   },
-  "/Users/estebanf/development/knowledge-graphrag/AGENTS.md": {
-    "mtime": 1783123901.8405588,
+  "AGENTS.md": {
+    "mtime": 1783157279.5036259,
     "ast_hash": "cc222ac15c3f33db712d586c35db7cdf",
     "semantic_hash": "cc222ac15c3f33db712d586c35db7cdf"
   },
-  "/Users/estebanf/development/knowledge-graphrag/CONCEPTS.md": {
-    "mtime": 1783127083.9911263,
-    "ast_hash": "75be96824b7158b81df6b19ec8265e40",
-    "semantic_hash": "75be96824b7158b81df6b19ec8265e40"
+  "CONCEPTS.md": {
+    "mtime": 1783177879.2567844,
+    "ast_hash": "9544e5c0e05f4dfd699587ae57f06f6f",
+    "semantic_hash": "9544e5c0e05f4dfd699587ae57f06f6f"
   },
-  "/Users/estebanf/development/knowledge-graphrag/README.md": {
-    "mtime": 1783123875.8905742,
-    "ast_hash": "81da2014eeb5abb5620c321f973febf4",
-    "semantic_hash": "81da2014eeb5abb5620c321f973febf4"
+  "README.md": {
+    "mtime": 1783241108.5862637,
+    "ast_hash": "3c13b63d2efe944796884822704091a1",
+    "semantic_hash": "3c13b63d2efe944796884822704091a1"
   },
-  "/Users/estebanf/development/knowledge-graphrag/docker-compose.yml": {
-    "mtime": 1783069716.7296712,
-    "ast_hash": "ea21db267bb5b5d2d30e2c42966503f6",
-    "semantic_hash": "ea21db267bb5b5d2d30e2c42966503f6"
+  "docker-compose.yml": {
+    "mtime": 1783237629.3046963,
+    "ast_hash": "3e364aeee59c6a25970e9c40464b8fe3",
+    "semantic_hash": "3e364aeee59c6a25970e9c40464b8fe3"
   },
-  "/Users/estebanf/development/knowledge-graphrag/docs/plans/2026-04-27-cross-source-communities-pgvector.md": {
+  "docs/plans/2026-04-27-cross-source-communities-pgvector.md": {
     "mtime": 1777366103.6161165,
     "ast_hash": "f9fbdcaf69881bb054f0a5974c275851",
     "semantic_hash": "f9fbdcaf69881bb054f0a5974c275851"
   },
-  "/Users/estebanf/development/knowledge-graphrag/docs/plans/2026-05-01-insight-extraction.md": {
+  "docs/plans/2026-05-01-insight-extraction.md": {
     "mtime": 1777974932.2728539,
     "ast_hash": "e6531c5a307630eefce596339f456ba5",
     "semantic_hash": "e6531c5a307630eefce596339f456ba5"
   },
-  "/Users/estebanf/development/knowledge-graphrag/docs/plans/2026-05-05-insight-retrieval.md": {
+  "docs/plans/2026-05-05-insight-retrieval.md": {
     "mtime": 1777974932.2731926,
     "ast_hash": "16994266943f325230360cf703dca64f",
     "semantic_hash": "16994266943f325230360cf703dca64f"
   },
-  "/Users/estebanf/development/knowledge-graphrag/docs/plans/2026-05-16-merge-duplicate-entities.md": {
+  "docs/plans/2026-05-16-merge-duplicate-entities.md": {
     "mtime": 1779055230.9522505,
     "ast_hash": "cff0b077932c4d12d0f0a1a2b8541481",
     "semantic_hash": "cff0b077932c4d12d0f0a1a2b8541481"
   },
-  "/Users/estebanf/development/knowledge-graphrag/docs/plans/2026-05-21-server-deployment.md": {
+  "docs/plans/2026-05-21-server-deployment.md": {
     "mtime": 1779454977.2081606,
     "ast_hash": "2c688bbb6609729356da466eb7a433e9",
     "semantic_hash": "2c688bbb6609729356da466eb7a433e9"
   },
-  "/Users/estebanf/development/knowledge-graphrag/docs/plans/2026-07-02-001-refactor-retrieval-performance-plan.md": {
+  "docs/plans/2026-07-02-001-refactor-retrieval-performance-plan.md": {
     "mtime": 1783069716.7301862,
     "ast_hash": "25481b1d079710e69f33061100d98267",
     "semantic_hash": "25481b1d079710e69f33061100d98267"
   },
-  "/Users/estebanf/development/knowledge-graphrag/docs/solutions/performance-issues/rag-retrieval-vector-prefilter-and-query-fanout.md": {
+  "docs/solutions/performance-issues/rag-retrieval-vector-prefilter-and-query-fanout.md": {
     "mtime": 1783069716.732665,
     "ast_hash": "56e09c9fdb0034097b779832044078d7",
     "semantic_hash": "56e09c9fdb0034097b779832044078d7"
   },
-  "/Users/estebanf/development/knowledge-graphrag/frontend/index.html": {
+  "frontend/index.html": {
     "mtime": 1776843498.2507138,
     "ast_hash": "882e67d67a41881742cbf054c4de943d",
     "semantic_hash": "882e67d67a41881742cbf054c4de943d"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/migrate/010_entities_autovacuum_tuning.sql": {
+  "scripts/migrate/010_entities_autovacuum_tuning.sql": {
     "mtime": 1783069716.7715094,
     "ast_hash": "cdac6a4933ca80120a707896de4a8a26",
     "semantic_hash": "cdac6a4933ca80120a707896de4a8a26"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/migrate/011_pg_prewarm.sql": {
+  "scripts/migrate/011_pg_prewarm.sql": {
     "mtime": 1783069716.7717144,
     "ast_hash": "397b7fc002edc20a63bc08fb98bfa9dc",
     "semantic_hash": "397b7fc002edc20a63bc08fb98bfa9dc"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/migrate/012_stage_duration_baseline.sql": {
-    "mtime": 1783122399.0789835,
+  "scripts/migrate/012_stage_duration_baseline.sql": {
+    "mtime": 1783157279.5265515,
     "ast_hash": "6b635b89aecdd3753a164fb2999849b9",
     "semantic_hash": "6b635b89aecdd3753a164fb2999849b9"
   },
-  "/Users/estebanf/development/knowledge-graphrag/scripts/weekly_maintenance.py": {
-    "mtime": 1783123450.3314164,
-    "ast_hash": "012e049b2fde4188b825e14d04cec150",
-    "semantic_hash": "012e049b2fde4188b825e14d04cec150"
+  "scripts/weekly_maintenance.py": {
+    "mtime": 1783238809.579937,
+    "ast_hash": "42bf352005bb0b56ca9c0bf9a756e87e",
+    "semantic_hash": "42bf352005bb0b56ca9c0bf9a756e87e"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/api/routes/prepare.py": {
+  "src/rag/api/routes/prepare.py": {
     "mtime": 1783101798.307692,
     "ast_hash": "b3f9301607182893ac63d1f704fe46c6",
     "semantic_hash": "b3f9301607182893ac63d1f704fe46c6"
   },
-  "/Users/estebanf/development/knowledge-graphrag/src/rag/prepare.py": {
+  "src/rag/prepare.py": {
     "mtime": 1783101798.311294,
     "ast_hash": "09f801cf2a03ef3a9f2f64b0dbffedac",
     "semantic_hash": "09f801cf2a03ef3a9f2f64b0dbffedac"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_api_prepare.py": {
+  "tests/test_api_prepare.py": {
     "mtime": 1783101798.313404,
     "ast_hash": "6c613dd42b7c64719ac2390c9b8fa866",
     "semantic_hash": "6c613dd42b7c64719ac2390c9b8fa866"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_cli_prepare.py": {
+  "tests/test_cli_prepare.py": {
     "mtime": 1783101798.3150463,
     "ast_hash": "1d9c6083e29db3fe0ef680c41d2f6e4b",
     "semantic_hash": "1d9c6083e29db3fe0ef680c41d2f6e4b"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_db.py": {
-    "mtime": 1783069716.7759893,
-    "ast_hash": "a152e45d05b732c7bde42ae6bbb96052",
-    "semantic_hash": "a152e45d05b732c7bde42ae6bbb96052"
+  "tests/test_db.py": {
+    "mtime": 1783239530.9513001,
+    "ast_hash": "6db957b5282cc5d4c927eb2bc7cf4552",
+    "semantic_hash": "6db957b5282cc5d4c927eb2bc7cf4552"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_merge_vacuum.py": {
+  "tests/test_merge_vacuum.py": {
     "mtime": 1783069716.7766914,
     "ast_hash": "7a7d88357b0103c9b169ecf3d2075841",
     "semantic_hash": "7a7d88357b0103c9b169ecf3d2075841"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_prepare.py": {
+  "tests/test_prepare.py": {
     "mtime": 1783101798.3165886,
     "ast_hash": "2f8fcd4b1eee08e55c8463b6232612b8",
     "semantic_hash": "2f8fcd4b1eee08e55c8463b6232612b8"
   },
-  "/Users/estebanf/development/knowledge-graphrag/tests/test_weekly_maintenance.py": {
-    "mtime": 1783123520.033742,
-    "ast_hash": "204642bba7f688d0594817bcf33bb7e7",
-    "semantic_hash": "204642bba7f688d0594817bcf33bb7e7"
+  "tests/test_weekly_maintenance.py": {
+    "mtime": 1783239572.6073637,
+    "ast_hash": "be105a7ddc93e066c344ca78ffa52f8f",
+    "semantic_hash": "be105a7ddc93e066c344ca78ffa52f8f"
   },
-  "/Users/estebanf/development/knowledge-graphrag/docs/plans/2026-07-02-002-fix-storage-vacuum-and-index-fixes-plan.md": {
+  "docs/plans/2026-07-02-002-fix-storage-vacuum-and-index-fixes-plan.md": {
     "mtime": 1783069716.7307246,
     "ast_hash": "d4b594f312c7e9944a9bda1bdca916a8",
     "semantic_hash": "d4b594f312c7e9944a9bda1bdca916a8"
   },
-  "/Users/estebanf/development/knowledge-graphrag/docs/plans/2026-07-02-003-perf-search-retrieve-latency-reliability-plan.md": {
+  "docs/plans/2026-07-02-003-perf-search-retrieve-latency-reliability-plan.md": {
     "mtime": 1783069716.731705,
     "ast_hash": "14845ebc256eaca55bd6381137a14799",
     "semantic_hash": "14845ebc256eaca55bd6381137a14799"
   },
-  "/Users/estebanf/development/knowledge-graphrag/docs/plans/2026-07-03-001-refactor-prepared-binary-ingestion-plan.md": {
+  "docs/plans/2026-07-03-001-refactor-prepared-binary-ingestion-plan.md": {
     "mtime": 1783101798.3040895,
     "ast_hash": "528a5481c677a5cd31bdf432f0ee0f0f",
     "semantic_hash": "528a5481c677a5cd31bdf432f0ee0f0f"
   },
-  "/Users/estebanf/development/knowledge-graphrag/docs/plans/2026-07-03-002-perf-intake-pipeline-90s-plan.md": {
-    "mtime": 1783119826.9545612,
+  "docs/plans/2026-07-03-002-perf-intake-pipeline-90s-plan.md": {
+    "mtime": 1783157279.504418,
     "ast_hash": "7ab585fd52582fa81afe52e6e5aaf1f2",
     "semantic_hash": "7ab585fd52582fa81afe52e6e5aaf1f2"
   },
-  "/Users/estebanf/development/knowledge-graphrag/docs/solutions/architecture-patterns/cli-side-document-preparation-keeps-backend-docling-free.md": {
+  "docs/solutions/architecture-patterns/cli-side-document-preparation-keeps-backend-docling-free.md": {
     "mtime": 1783101798.3045144,
     "ast_hash": "02de96b073dcf7239cc8ff1bde7272ea",
     "semantic_hash": "02de96b073dcf7239cc8ff1bde7272ea"
   },
-  "/Users/estebanf/development/knowledge-graphrag/docs/solutions/database-issues/postgres-toast-bloat-memgraph-schema-drift-and-hnsw-ef-search-cap.md": {
-    "mtime": 1783127139.9086504,
+  "docs/solutions/database-issues/postgres-toast-bloat-memgraph-schema-drift-and-hnsw-ef-search-cap.md": {
+    "mtime": 1783157279.5046754,
     "ast_hash": "d8b031539c672579052d3d522de09bc9",
     "semantic_hash": "d8b031539c672579052d3d522de09bc9"
   },
-  "/Users/estebanf/development/knowledge-graphrag/docs/solutions/performance-issues/intake-insight-extraction-vector-prefilter-and-batched-storage.md": {
-    "mtime": 1783127287.9880772,
+  "docs/solutions/performance-issues/intake-insight-extraction-vector-prefilter-and-batched-storage.md": {
+    "mtime": 1783157279.5050645,
     "ast_hash": "9bca13dc8f6570c313a161a8d1863340",
     "semantic_hash": "9bca13dc8f6570c313a161a8d1863340"
+  },
+  ".opencode/opencode.json": {
+    "mtime": 1783236262.0528245,
+    "ast_hash": "e5f74d14a81702b55bdf53b33ec991d7",
+    "semantic_hash": "e5f74d14a81702b55bdf53b33ec991d7"
+  },
+  ".opencode/package.json": {
+    "mtime": 1783236265.2789319,
+    "ast_hash": "c92fdb2f8f3c9b54aabf3fcccdaf2114",
+    "semantic_hash": "c92fdb2f8f3c9b54aabf3fcccdaf2114"
+  },
+  ".opencode/plugins/graphify.js": {
+    "mtime": 1783236210.8879368,
+    "ast_hash": "d12d57c380c6f01a0a3c3d480824d09f",
+    "semantic_hash": "d12d57c380c6f01a0a3c3d480824d09f"
+  },
+  "frontend/src/components/AddToWorkingSetControl.tsx": {
+    "mtime": 1783252764.3195682,
+    "ast_hash": "afea8c3ae3cb12c35a2ae94c4f54f504",
+    "semantic_hash": "afea8c3ae3cb12c35a2ae94c4f54f504"
+  },
+  "frontend/src/lib/argHelp.ts": {
+    "mtime": 1783254461.5696006,
+    "ast_hash": "139e92e22c4ec2031163c77e05a3d370",
+    "semantic_hash": "139e92e22c4ec2031163c77e05a3d370"
+  },
+  "frontend/src/views/AnswerView.tsx": {
+    "mtime": 1783241004.8659477,
+    "ast_hash": "7894bcd8e41cccf549cdd6930b6f7c3b",
+    "semantic_hash": "7894bcd8e41cccf549cdd6930b6f7c3b"
+  },
+  "frontend/src/views/CommunityView.tsx": {
+    "mtime": 1783257395.5508778,
+    "ast_hash": "5b1ae5dcdb78def1e5a6da3bd9081154",
+    "semantic_hash": "5b1ae5dcdb78def1e5a6da3bd9081154"
+  },
+  "frontend/src/views/ExploreView.tsx": {
+    "mtime": 1783249522.8367124,
+    "ast_hash": "0f714f3a7d73fcd449bd164567f42aef",
+    "semantic_hash": "0f714f3a7d73fcd449bd164567f42aef"
+  },
+  "frontend/src/views/LibraryView.tsx": {
+    "mtime": 1783257248.2483635,
+    "ast_hash": "c262c3f29fe8385bf130b69382c2b48c",
+    "semantic_hash": "c262c3f29fe8385bf130b69382c2b48c"
+  },
+  "frontend/src/views/RetrieveView.tsx": {
+    "mtime": 1783254555.8610966,
+    "ast_hash": "b3c45e9f47f685c3a1b972bc87c54af2",
+    "semantic_hash": "b3c45e9f47f685c3a1b972bc87c54af2"
+  },
+  "frontend/src/views/SearchView.tsx": {
+    "mtime": 1783254487.3576536,
+    "ast_hash": "fbc2e33d1f75f9cd98973ce00c3ccc9d",
+    "semantic_hash": "fbc2e33d1f75f9cd98973ce00c3ccc9d"
+  },
+  "frontend/src/views/WorkingSetsView.tsx": {
+    "mtime": 1783240723.950284,
+    "ast_hash": "619a8a04f8be9d71d604a0a98efa9a15",
+    "semantic_hash": "619a8a04f8be9d71d604a0a98efa9a15"
+  },
+  "scripts/migrate/013_research_workspace.sql": {
+    "mtime": 1783237515.0874424,
+    "ast_hash": "616a862bb8eeafb6005ecdbcf2350495",
+    "semantic_hash": "616a862bb8eeafb6005ecdbcf2350495"
+  },
+  "scripts/migrate/014_theme_reports_async.sql": {
+    "mtime": 1783257097.168272,
+    "ast_hash": "eb17a744093711e1c7ee52c1af95141f",
+    "semantic_hash": "eb17a744093711e1c7ee52c1af95141f"
+  },
+  "src/rag/api/routes/answers.py": {
+    "mtime": 1783250066.443155,
+    "ast_hash": "98065a148a86500a1ac46db7d4a83eab",
+    "semantic_hash": "98065a148a86500a1ac46db7d4a83eab"
+  },
+  "src/rag/api/routes/themes.py": {
+    "mtime": 1783257156.9033298,
+    "ast_hash": "606d07e46bbd687ab752d323009ef6f5",
+    "semantic_hash": "606d07e46bbd687ab752d323009ef6f5"
+  },
+  "src/rag/api/routes/working_sets.py": {
+    "mtime": 1783257331.7790856,
+    "ast_hash": "2784d5d7f381e8c2fd3545a204e399dc",
+    "semantic_hash": "2784d5d7f381e8c2fd3545a204e399dc"
+  },
+  "src/rag/community_runs.py": {
+    "mtime": 1783257007.2770033,
+    "ast_hash": "c940e3c4f2a78cb45c0a53c5e7ea8777",
+    "semantic_hash": "c940e3c4f2a78cb45c0a53c5e7ea8777"
+  },
+  "src/rag/themes.py": {
+    "mtime": 1783257141.146201,
+    "ast_hash": "8d89bbd7b14f0c38fef4d7bd90727647",
+    "semantic_hash": "8d89bbd7b14f0c38fef4d7bd90727647"
+  },
+  "tests/test_schema_descriptions.py": {
+    "mtime": 1783238776.7204413,
+    "ast_hash": "b96771b9a8e3c36dd706758dd6f43078",
+    "semantic_hash": "b96771b9a8e3c36dd706758dd6f43078"
+  },
+  "tests/test_surface_parity.py": {
+    "mtime": 1783239416.7533243,
+    "ast_hash": "680d52186e58b9f9aa4e17e5ff4b315e",
+    "semantic_hash": "680d52186e58b9f9aa4e17e5ff4b315e"
+  },
+  "tests/test_themes.py": {
+    "mtime": 1783251980.4245796,
+    "ast_hash": "366e96aa182fc267224b9647109ce7e5",
+    "semantic_hash": "366e96aa182fc267224b9647109ce7e5"
+  },
+  "docs/plans/2026-07-04-001-feat-research-workspace-communities-plan.md": {
+    "mtime": 1783177853.404076,
+    "ast_hash": "349b37f89f1b6d2753096642dcc3af12",
+    "semantic_hash": "349b37f89f1b6d2753096642dcc3af12"
   }
 }

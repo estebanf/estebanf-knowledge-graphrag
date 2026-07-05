@@ -1,10 +1,10 @@
 from fastapi import APIRouter, HTTPException
 
 from rag.themes import (
-    generate_theme_report,
     get_report,
     list_reports,
-    regenerate_report,
+    start_regenerate_report,
+    start_theme_report,
 )
 
 router = APIRouter(prefix="/api/themes", tags=["themes"])
@@ -25,10 +25,10 @@ def generate_theme(payload: dict) -> dict:
         raise HTTPException(status_code=422, detail="run_id is required")
     model = payload.get("model")
     try:
-        report_id = generate_theme_report(run_id, model)
+        report_id = start_theme_report(run_id, model)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return {"id": report_id}
+    return {"id": report_id, "status": "generating"}
 
 
 @router.get("/{report_id}")
@@ -43,7 +43,7 @@ def get_theme_report(report_id: str) -> dict:
 def regenerate_theme(report_id: str, payload: dict | None = None) -> dict:
     model = (payload or {}).get("model")
     try:
-        report_id_new = regenerate_report(report_id, model)
+        report_id_new = start_regenerate_report(report_id, model)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return {"id": report_id_new}
+    return {"id": report_id_new, "status": "generating"}

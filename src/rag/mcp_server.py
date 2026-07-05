@@ -315,10 +315,12 @@ def _ws_row_to_dict(row, json_mod) -> dict:
             source_ids = json_mod.loads(source_ids)
         except (json_mod.JSONDecodeError, TypeError):
             source_ids = []
+    source_ids = source_ids if isinstance(source_ids, list) else []
     return {
         "id": str(row[0]),
         "name": row[1],
-        "source_ids": source_ids if isinstance(source_ids, list) else [],
+        "source_ids": source_ids,
+        "source_count": len(source_ids),
         "created_at": row[3].isoformat() if row[3] else None,
         "updated_at": row[4].isoformat() if row[4] else None,
     }

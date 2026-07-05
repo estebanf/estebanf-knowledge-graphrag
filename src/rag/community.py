@@ -308,6 +308,7 @@ def _load_cross_source_semantic_edges(
                        ON CONFLICT DO NOTHING""",
                     (ea, eb, sim),
                 )
+            conn.commit()
 
     return result
 

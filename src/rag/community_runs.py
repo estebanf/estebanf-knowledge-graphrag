@@ -23,6 +23,7 @@ def _append_stage(run_id: str, entry: dict) -> None:
                WHERE id = %s""",
             (json.dumps([entry]), run_id),
         )
+        conn.commit()
 
 
 def _reap_stale_runs() -> None:
@@ -36,6 +37,7 @@ def _reap_stale_runs() -> None:
                  AND updated_at < now() - make_interval(secs => %s)""",
             (settings.COMMUNITY_RUN_STALE_SECONDS,),
         )
+        conn.commit()
 
 
 # Maintenance sweep advisory lock key — must match
@@ -79,7 +81,22 @@ def create_run(params: dict, source_ids: list[str]) -> str:
                RETURNING id""",
             (json.dumps(params), json.dumps(source_ids)),
         ).fetchone()
+        conn.commit()
     return str(row[0])
+
+
+def complete_run(run_id: str, result: dict, source_ids: list[str]) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """UPDATE community_runs
+               SET status = 'completed',
+                   result = %s::jsonb,
+                   source_ids = %s::jsonb,
+                   updated_at = now()
+               WHERE id = %s""",
+            (json.dumps(result), json.dumps(source_ids), run_id),
+        )
+        conn.commit()
 
 
 def execute_run(run_id: str) -> None:
@@ -142,16 +159,7 @@ def execute_run(run_id: str) -> None:
                 },
             )
 
-        with get_connection() as conn:
-            conn.execute(
-                """UPDATE community_runs
-                   SET status = 'completed',
-                       result = %s::jsonb,
-                       source_ids = %s::jsonb,
-                       updated_at = now()
-                   WHERE id = %s""",
-                (json.dumps(result), json.dumps(source_ids), run_id),
-            )
+        complete_run(run_id, result, source_ids)
         _append_stage(run_id, {"stage": "completed", "at": _now()})
 
     except Exception as e:
@@ -167,6 +175,7 @@ def execute_run(run_id: str) -> None:
                        WHERE id = %s""",
                     (error_msg, run_id),
                 )
+                conn.commit()
         except Exception:
             pass
 
@@ -185,6 +194,7 @@ def get_run(run_id: str) -> Optional[dict]:
 
 
 def list_runs(limit: int = 20, offset: int = 0) -> dict:
+    _reap_stale_runs()
     with get_connection() as conn:
         total = conn.execute(
             "SELECT count(*) FROM community_runs"
@@ -208,6 +218,7 @@ def list_runs(limit: int = 20, offset: int = 0) -> dict:
 def _row_to_dict(row) -> dict:
     return {
         "id": str(row[0]),
+        "run_id": str(row[0]),
         "status": row[1] or "running",
         "params": row[2] if isinstance(row[2], dict) else (json.loads(row[2]) if isinstance(row[2], str) else {}),
         "source_ids": row[3] if isinstance(row[3], list) else [],

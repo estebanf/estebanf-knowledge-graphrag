@@ -167,21 +167,20 @@ export type CommunityRunRequest = {
 export type CommunityRunSummary = {
   run_id: string;
   status: "running" | "completed" | "failed";
-  params_summary: Record<string, unknown>;
   created_at: string;
-  completed_at?: string;
-};
-
-export type CommunityRunDetail = CommunityRunSummary & {
-  params: CommunityRunRequest;
   result?: CommunityResponse;
   error?: string;
 };
 
+export type CommunityRunDetail = CommunityRunSummary & {
+  params: CommunityRunRequest;
+};
+
 export type StageEntry = {
   stage: string;
-  message: string;
-  timestamp?: string;
+  at?: string;
+  counts?: Record<string, number>;
+  error?: string;
 };
 
 export type StreamRunCallbacks = {
@@ -236,6 +235,20 @@ async function postJson<T>(url: string, body: object): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function patchJson<T>(url: string, body: object): Promise<T> {
+  const response = await fetch(url, {
+    method: "PATCH",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  ensureOk(response);
+  return response.json() as Promise<T>;
+}
+
 export function search(query: string, limit: number, minScore: number): Promise<SearchResponse> {
   return postJson<SearchResponse>("/api/search", {
     query,
@@ -244,8 +257,37 @@ export function search(query: string, limit: number, minScore: number): Promise<
   });
 }
 
-export function retrieve(query: string): Promise<RetrieveResponse> {
-  return postJson<RetrieveResponse>("/api/retrieve", { query });
+export type RetrieveOptions = {
+  source_ids?: string[];
+  filters?: Record<string, string>;
+  seed_count?: number;
+  result_count?: number;
+  rrf_k?: number;
+  entity_confidence_threshold?: number;
+  first_hop_similarity_threshold?: number;
+  second_hop_similarity_threshold?: number;
+  trace?: boolean;
+};
+
+export function retrieve(query: string, options: RetrieveOptions = {}): Promise<RetrieveResponse> {
+  return postJson<RetrieveResponse>("/api/retrieve", {
+    query,
+    ...(options.source_ids?.length ? { source_ids: options.source_ids } : {}),
+    ...(options.filters && Object.keys(options.filters).length ? { filters: options.filters } : {}),
+    ...(options.seed_count != null ? { seed_count: options.seed_count } : {}),
+    ...(options.result_count != null ? { result_count: options.result_count } : {}),
+    ...(options.rrf_k != null ? { rrf_k: options.rrf_k } : {}),
+    ...(options.entity_confidence_threshold != null
+      ? { entity_confidence_threshold: options.entity_confidence_threshold }
+      : {}),
+    ...(options.first_hop_similarity_threshold != null
+      ? { first_hop_similarity_threshold: options.first_hop_similarity_threshold }
+      : {}),
+    ...(options.second_hop_similarity_threshold != null
+      ? { second_hop_similarity_threshold: options.second_hop_similarity_threshold }
+      : {}),
+    ...(options.trace ? { trace: options.trace } : {}),
+  });
 }
 
 export async function getAnswerModels(): Promise<AnswerModel[]> {
@@ -358,7 +400,7 @@ export function createWorkingSet(name: string, source_ids: string[]): Promise<{ 
 }
 
 export function updateWorkingSet(id: string, payload: { name?: string; source_ids?: string[] }): Promise<WorkingSet> {
-  return postJson(`/api/working-sets/${id}`, payload);
+  return patchJson(`/api/working-sets/${id}`, payload);
 }
 
 export async function deleteWorkingSet(id: string): Promise<{ deleted: string }> {
@@ -409,17 +451,18 @@ export async function streamRunEvents(
       break;
     }
     buffer += decoder.decode(value, { stream: true });
-    const events = buffer.split("\n\n");
+    // sse-starlette (community runs) uses "\r\n" line separators by default;
+    // the hand-rolled answer stream above uses "\n". Tolerate either.
+    const events = buffer.split(/\r\n\r\n|\n\n/);
     buffer = events.pop() ?? "";
 
     for (const eventBlock of events) {
-      const eventName = eventBlock
-        .split("\n")
+      const lines = eventBlock.split(/\r\n|\n/);
+      const eventName = lines
         .find((line) => line.startsWith("event: "))
         ?.slice(7)
         .trim();
-      const data = eventBlock
-        .split("\n")
+      const data = lines
         .find((line) => line.startsWith("data: "))
         ?.slice(6);
 
@@ -483,7 +526,11 @@ export type CommunityResponse = {
     };
   };
   communities: CommunityItem[];
-  virtual_merges?: number;
+  virtual_merges?: Array<{
+    representative_id: string;
+    merged_ids: string[];
+    canonical_names: string[];
+  }>;
 };
 
 export type CommunityRequestOptions = {
@@ -516,24 +563,32 @@ export function community(options: CommunityRequestOptions): Promise<CommunityRe
 export type ThemeReportSummary = {
   id: string;
   run_id: string;
-  status: "completed" | "partial" | "failed";
+  status: "generating" | "completed" | "partial" | "failed";
   model: string;
   created_at: string;
 };
 
+export type ThemeReportEvidenceChunk = {
+  content: string;
+  source: string;
+};
+
 export type ThemeReportCommunity = {
   label: string;
-  type: string;
+  community_type: string;
   confidence: number;
   cross_source: boolean;
   summary: string;
   key_entities: string[];
   key_sources: string[];
+  evidence_chunks: ThemeReportEvidenceChunk[];
+  all_entities: string[];
 };
 
 export type ThemeReportBucket = {
-  label: string;
-  communities: ThemeReportCommunity[];
+  name: string;
+  member_community_labels: string[];
+  why: string;
 };
 
 export type ThemeReportDetail = ThemeReportSummary & {

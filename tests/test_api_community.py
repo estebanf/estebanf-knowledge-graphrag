@@ -86,3 +86,25 @@ def test_community_endpoint_passes_summarize_model(mock_detect):
     })
     assert response.status_code == 200
     assert mock_detect.call_args[1]["summarize_model"] == "google/gemma-3-4b-it"
+
+
+@patch("rag.api.routes.community.stream_run_events")
+@patch("rag.api.routes.community.get_run")
+def test_run_events_uses_lf_separator(mock_get_run, mock_stream_events):
+    """Regression test: sse-starlette defaults to "\\r\\n" separators, but the
+    frontend's SSE parser splits events on "\\n\\n" (matching the hand-rolled
+    answer stream). Without an explicit sep="\\n" here, events never parse out
+    of the buffer and the frontend never sees progress or results."""
+    mock_get_run.return_value = {"id": "run-1", "status": "completed"}
+    mock_stream_events.return_value = iter([
+        {"event": "stage", "data": '{"stage": "start"}'},
+        {"event": "result", "data": '{"status": "completed"}'},
+    ])
+
+    response = _client().get("/api/community/runs/run-1/events")
+
+    assert response.status_code == 200
+    body = response.text
+    assert "\r\n" not in body
+    assert "event: stage\ndata:" in body
+    assert body.count("\n\n") >= 2

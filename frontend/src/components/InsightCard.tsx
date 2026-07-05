@@ -1,12 +1,12 @@
 import { useState } from "react";
 
+import AddToWorkingSetControl from "./AddToWorkingSetControl";
 import type { InsightResult } from "../lib/api";
 
 type InsightCardProps = {
   result: InsightResult;
   onView: (sourceId: string) => void;
   onCopy: (text: string) => Promise<void>;
-  onAddToBucket?: (sourceId: string, title: string) => void;
 };
 
 function primarySource(result: InsightResult) {
@@ -19,24 +19,16 @@ function sourceLabel(result: InsightResult): string {
   return src.source_metadata.source || src.source_metadata.author || "Unknown source";
 }
 
-export default function InsightCard({ result, onView, onCopy, onAddToBucket }: InsightCardProps) {
+export default function InsightCard({ result, onView, onCopy }: InsightCardProps) {
   const src = primarySource(result);
   const title = src?.source_metadata.title;
   const kind = src?.source_metadata.kind;
   const [copied, setCopied] = useState(false);
-  const [added, setAdded] = useState(false);
 
   async function handleCopy() {
     await onCopy(result.insight);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1200);
-  }
-
-  function handleAddToBucket() {
-    if (!onAddToBucket || !src) return;
-    onAddToBucket(src.source_id, src.source_metadata.title ?? src.source_id);
-    setAdded(true);
-    window.setTimeout(() => setAdded(false), 1200);
   }
 
   return (
@@ -87,21 +79,7 @@ export default function InsightCard({ result, onView, onCopy, onAddToBucket }: I
       </div>
       {src ? (
         <div className="result-card__actions">
-          <div className="feedback-anchor">
-            <button
-              aria-label="Add to bucket"
-              className="ghost-button"
-              type="button"
-              onClick={handleAddToBucket}
-            >
-              + Add
-            </button>
-            {added ? (
-              <span className="copy-popper" role="status">
-                Source added
-              </span>
-            ) : null}
-          </div>
+          <AddToWorkingSetControl sourceId={src.source_id} />
           <button className="ghost-button" type="button" onClick={() => onView(src.source_id)}>
             View
           </button>

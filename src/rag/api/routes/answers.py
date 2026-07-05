@@ -59,6 +59,7 @@ def save_answer(payload: dict) -> dict:
                 json.dumps(evidence),
             ),
         ).fetchone()
+        conn.commit()
     return {"id": str(row[0])}
 
 
@@ -81,6 +82,7 @@ def delete_answer(answer_id: str) -> dict:
         result = conn.execute(
             "DELETE FROM saved_answers WHERE id = %s", (answer_id,)
         )
+        conn.commit()
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="answer not found")
     return {"deleted": answer_id}

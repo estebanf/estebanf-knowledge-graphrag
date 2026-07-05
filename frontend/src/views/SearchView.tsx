@@ -3,14 +3,14 @@ import type { SearchResponse } from "../lib/api";
 import { search } from "../lib/api";
 import InsightCard from "../components/InsightCard";
 import ResultCard from "../components/ResultCard";
+import argHelp from "../lib/argHelp";
 
 type SearchViewProps = {
   onView: (sourceId: string) => void;
-  onAddToBucket: (sourceId: string, title: string) => void;
   onCopyChunk: (chunk: string) => Promise<void>;
 };
 
-export default function SearchView({ onView, onAddToBucket, onCopyChunk }: SearchViewProps) {
+export default function SearchView({ onView, onCopyChunk }: SearchViewProps) {
   const [query, setQuery] = useState("");
   const [minScore, setMinScore] = useState("0.7");
   const [limit, setLimit] = useState("10");
@@ -71,6 +71,7 @@ export default function SearchView({ onView, onAddToBucket, onCopyChunk }: Searc
               value={minScore}
               onChange={(e) => setMinScore(e.target.value)}
             />
+            <span className="arg-help">{argHelp.search_min_score}</span>
           </label>
           <label className="search-controls__field" htmlFor="result-count">
             <span>Result Count</span>
@@ -83,6 +84,7 @@ export default function SearchView({ onView, onAddToBucket, onCopyChunk }: Searc
               value={limit}
               onChange={(e) => setLimit(e.target.value)}
             />
+            <span className="arg-help">{argHelp.search_limit}</span>
           </label>
         </div>
         <div className="query-panel__controls">
@@ -135,7 +137,6 @@ export default function SearchView({ onView, onAddToBucket, onCopyChunk }: Searc
                     result={result}
                     onCopy={onCopyChunk}
                     onView={onView}
-                    onAddToBucket={onAddToBucket}
                   />
                 ))}
               </div>
@@ -151,7 +152,6 @@ export default function SearchView({ onView, onAddToBucket, onCopyChunk }: Searc
                     result={result}
                     onCopyChunk={onCopyChunk}
                     onView={onView}
-                    onAddToBucket={onAddToBucket}
                   />
                 ))}
               </div>

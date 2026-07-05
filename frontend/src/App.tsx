@@ -56,6 +56,7 @@ function Authenticated() {
 
   const [communityScopeIds, setCommunityScopeIds] = useState<string[] | undefined>(undefined);
   const [retrieveScopeIds, setRetrieveScopeIds] = useState<string[] | undefined>(undefined);
+  const [libraryThemeId, setLibraryThemeId] = useState<string | undefined>(undefined);
 
   const handleView = useCallback(async (sourceId: string) => {
     setPreviewLoading(true);
@@ -77,11 +78,6 @@ function Authenticated() {
     setPreviewLoading(false);
   }
 
-  function handleAddToBucket(_sourceId: string, _title: string) {
-    // Retained for backward compat with ResultCard/InsightCard.
-    // Add-to-working-set flow is in ExploreView.
-  }
-
   function handleCopyChunk(chunk: string) {
     return navigator.clipboard.writeText(chunk);
   }
@@ -96,9 +92,15 @@ function Authenticated() {
     setMode("retrieve");
   }
 
+  function navigateTheme(reportId: string) {
+    setLibraryThemeId(reportId);
+    setMode("library");
+  }
+
   function switchMode(newMode: Mode) {
     setCommunityScopeIds(undefined);
     setRetrieveScopeIds(undefined);
+    setLibraryThemeId(undefined);
     setMode(newMode);
   }
 
@@ -147,13 +149,11 @@ function Authenticated() {
         ) : mode === "search" ? (
           <SearchView
             onView={handleView}
-            onAddToBucket={handleAddToBucket}
             onCopyChunk={handleCopyChunk}
           />
         ) : mode === "retrieve" ? (
           <RetrieveView
             onView={handleView}
-            onAddToBucket={handleAddToBucket}
             onCopyChunk={handleCopyChunk}
           />
         ) : mode === "answer" ? (
@@ -165,9 +165,10 @@ function Authenticated() {
           <CommunityView
             onView={handleView}
             initialSourceIds={communityScopeIds}
+            onNavigateTheme={navigateTheme}
           />
         ) : mode === "library" ? (
-          <LibraryView onView={handleView} />
+          <LibraryView onView={handleView} initialThemeId={libraryThemeId} />
         ) : mode === "working_sets" ? (
           <WorkingSetsView
             onNavigateCommunity={navigateCommunity}

@@ -1,0 +1,4 @@
+/Users/estebanf/development/knowledge-graphrag/CONCEPTS.md
+/Users/estebanf/development/knowledge-graphrag/README.md
+/Users/estebanf/development/knowledge-graphrag/docker-compose.yml
+/Users/estebanf/development/knowledge-graphrag/docs/plans/2026-07-04-001-feat-research-workspace-communities-plan.md

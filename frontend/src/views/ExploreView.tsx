@@ -21,12 +21,13 @@ type ExploreViewProps = {
 };
 
 const SOURCES_PAGE_SIZE = 20;
-const FACET_KEYS = ["kind", "author", "source", "domain"];
+const FACET_KEYS = ["kind", "source", "domain"];
 
 export default function ExploreView({ onView, onNavigateCommunity, onNavigateRetrieve }: ExploreViewProps) {
   const [facets, setFacets] = useState<FacetsResponse["facets"] | null>(null);
   const [facetsLoading, setFacetsLoading] = useState(true);
   const [selectedFacetValues, setSelectedFacetValues] = useState<Record<string, string[]>>({});
+  const [collapsedFacets, setCollapsedFacets] = useState<Record<string, boolean>>({});
 
   const [sources, setSources] = useState<SourceSummary[]>([]);
   const [sourcesTotal, setSourcesTotal] = useState(0);
@@ -184,11 +185,16 @@ export default function ExploreView({ onView, onNavigateCommunity, onNavigateRet
                 const values = facets[key];
                 if (!values || values.length === 0) return null;
                 const selected = selectedFacetValues[key] || [];
+                const collapsed = collapsedFacets[key] || false;
+                const sorted = [...values].sort((a, b) => a.value.localeCompare(b.value));
                 return (
                   <div className="facet-group" key={key}>
-                    <h4 className="facet-group__label">{key}</h4>
-                    <ul className="facet-group__list">
-                      {values.map((fv: FacetValue) => (
+                    <h4 className="facet-group__label" onClick={() => setCollapsedFacets((prev) => ({ ...prev, [key]: !prev[key] }))} style={{ cursor: "pointer" }}>
+                      {collapsed ? "▸" : "▾"} {key}
+                    </h4>
+                    {!collapsed ? (
+                      <ul className="facet-group__list">
+                        {sorted.map((fv: FacetValue) => (
                         <li className="facet-group__item" key={`${key}-${fv.value}`}>
                           <label className="facet-checkbox">
                             <input
@@ -202,8 +208,9 @@ export default function ExploreView({ onView, onNavigateCommunity, onNavigateRet
                             <span className="facet-checkbox__count">{fv.count}</span>
                           </label>
                         </li>
-                      ))}
-                    </ul>
+                        ))}
+                      </ul>
+                    ) : null}
                   </div>
                 );
               })}

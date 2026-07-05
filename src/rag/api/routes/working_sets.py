@@ -30,6 +30,7 @@ def create_working_set(payload: dict) -> dict:
                    RETURNING id""",
                 (name, json.dumps(source_ids)),
             ).fetchone()
+            conn.commit()
         return {"id": str(row[0]), "name": name}
     except Exception as e:
         if "unique" in str(e).lower() or "duplicate" in str(e).lower():
@@ -69,6 +70,7 @@ def update_working_set(ws_id: str, payload: dict) -> dict:
                     "UPDATE working_sets SET name = %s, updated_at = now() WHERE id = %s",
                     (name, ws_id),
                 )
+                conn.commit()
         except Exception as e:
             if "unique" in str(e).lower() or "duplicate" in str(e).lower():
                 raise HTTPException(status_code=400, detail=f"working set name already exists: {name}")
@@ -80,6 +82,7 @@ def update_working_set(ws_id: str, payload: dict) -> dict:
                 "UPDATE working_sets SET source_ids = %s::jsonb, updated_at = now() WHERE id = %s",
                 (json.dumps(source_ids), ws_id),
             )
+            conn.commit()
 
     return get_working_set(ws_id)
 
@@ -88,6 +91,7 @@ def update_working_set(ws_id: str, payload: dict) -> dict:
 def delete_working_set(ws_id: str) -> dict:
     with get_connection() as conn:
         result = conn.execute("DELETE FROM working_sets WHERE id = %s", (ws_id,))
+        conn.commit()
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="working set not found")
     return {"deleted": ws_id}
@@ -100,10 +104,12 @@ def _row_to_dict(row) -> dict:
             source_ids = json.loads(source_ids)
         except (json.JSONDecodeError, TypeError):
             source_ids = []
+    source_ids = source_ids if isinstance(source_ids, list) else []
     return {
         "id": str(row[0]),
         "name": row[1],
-        "source_ids": source_ids if isinstance(source_ids, list) else [],
+        "source_ids": source_ids,
+        "source_count": len(source_ids),
         "created_at": row[3].isoformat() if row[3] else None,
         "updated_at": row[4].isoformat() if row[4] else None,
     }

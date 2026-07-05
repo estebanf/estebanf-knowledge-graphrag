@@ -95,8 +95,9 @@ class CommunityOptions(BaseModel):
 
 
 class CommunityRequest(BaseModel):
-    scope_mode: str = Field(..., pattern="^(ids|search|retrieve)$", description="How to scope the community: by explicit source IDs, search query, or retrieval query")
+    scope_mode: str = Field(..., pattern="^(ids|search|retrieve|working_set)$", description="How to scope the community: by explicit source IDs, search query, retrieval query, or a saved working set")
     source_ids: list[str] = Field(default_factory=list, description="Source IDs when scope_mode is 'ids'")
+    working_set_id: Optional[str] = Field(default=None, description="Working set ID when scope_mode is 'working_set'")
     criteria: list[str] = Field(default_factory=list, description="Retrieval criteria when scope_mode is 'retrieve'")
     filters: dict[str, str] = Field(default_factory=dict, description="Key-value metadata filters applied to the scope")
     search_options: SearchOptions = Field(default_factory=SearchOptions, description="Search tuning parameters when scope_mode is 'search'")

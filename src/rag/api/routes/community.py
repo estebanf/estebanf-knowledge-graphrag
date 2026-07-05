@@ -7,14 +7,36 @@ from sse_starlette.sse import EventSourceResponse
 from rag.api.schemas import CommunityRequest
 from rag.community import detect_communities
 from rag.community_runs import (
+    complete_run,
     create_run,
     execute_run,
     get_run,
     list_runs,
     stream_run_events,
 )
+from rag.db import get_connection
 
 router = APIRouter(prefix="/api/community", tags=["community"])
+
+
+def _resolve_working_set(payload: CommunityRequest) -> None:
+    """Resolve scope_mode='working_set' into scope_mode='ids' + source_ids, in place."""
+    if payload.scope_mode != "working_set":
+        return
+    if not payload.working_set_id:
+        raise HTTPException(status_code=422, detail="working_set_id is required when scope_mode is 'working_set'")
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT source_ids FROM working_sets WHERE id = %s",
+            (payload.working_set_id,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"working set not found: {payload.working_set_id}")
+    source_ids_raw = row[0]
+    if isinstance(source_ids_raw, str):
+        source_ids_raw = json.loads(source_ids_raw)
+    payload.scope_mode = "ids"
+    payload.source_ids = list(source_ids_raw) if isinstance(source_ids_raw, list) else []
 
 
 def _build_params(payload: CommunityRequest) -> dict:
@@ -51,6 +73,7 @@ def _build_params(payload: CommunityRequest) -> dict:
 
 @router.post("")
 def community_sync(payload: CommunityRequest) -> dict:
+    _resolve_working_set(payload)
     try:
         result = detect_communities(
             scope_mode=payload.scope_mode,
@@ -74,7 +97,9 @@ def community_sync(payload: CommunityRequest) -> dict:
 
     try:
         params = _build_params(payload)
-        run_id = create_run(params, payload.source_ids if payload.scope_mode == "ids" else result.get("metadata", {}).get("source_ids", []))
+        resolved_source_ids = payload.source_ids if payload.scope_mode == "ids" else result.get("metadata", {}).get("source_ids", [])
+        run_id = create_run(params, resolved_source_ids)
+        complete_run(run_id, result, resolved_source_ids)
         result["run_id"] = run_id
     except Exception:
         pass
@@ -84,6 +109,7 @@ def community_sync(payload: CommunityRequest) -> dict:
 
 @router.post("/runs")
 def start_run(payload: CommunityRequest) -> dict:
+    _resolve_working_set(payload)
     params = _build_params(payload)
     try:
         run_id = create_run(params, payload.source_ids)
@@ -133,4 +159,7 @@ def run_events(run_id: str):
                     pass
             yield event
 
-    return EventSourceResponse(event_iter())
+    # sse-starlette defaults to "\r\n" line separators; the frontend parser
+    # (shared with the hand-rolled answer stream) splits on "\n\n", so the
+    # separator must match here or events never get parsed out of the buffer.
+    return EventSourceResponse(event_iter(), sep="\n")

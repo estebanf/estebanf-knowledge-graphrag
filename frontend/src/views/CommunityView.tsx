@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import MonacoEditor from "@monaco-editor/react";
 
 import type {
@@ -10,8 +10,10 @@ import type {
   WorkingSet,
 } from "../lib/api";
 import {
+  generateTheme,
   getAnswerModels,
   getCommunityRun,
+  getTheme,
   listCommunityRuns,
   listWorkingSets,
   startCommunityRun,
@@ -22,9 +24,29 @@ import argHelp from "../lib/argHelp";
 type CommunityViewProps = {
   onView: (sourceId: string) => void;
   initialSourceIds?: string[];
+  onNavigateTheme?: (reportId: string) => void;
 };
 
-export default function CommunityView({ onView, initialSourceIds }: CommunityViewProps) {
+const STAGE_LABELS: Record<string, string> = {
+  start: "Starting run",
+  resolve_scope: "Resolving scope",
+  leiden: "Detecting communities",
+  summaries: "Summarizing communities",
+  completed: "Completed",
+  failed: "Failed",
+};
+
+function describeStage(entry: StageEntry): string {
+  const label = STAGE_LABELS[entry.stage] ?? entry.stage;
+  if (entry.error) return `${label} — ${entry.error}`;
+  if (entry.counts) {
+    const parts = Object.entries(entry.counts).map(([key, value]) => `${value} ${key}`);
+    return `${label} (${parts.join(", ")})`;
+  }
+  return label;
+}
+
+export default function CommunityView({ onView, initialSourceIds, onNavigateTheme }: CommunityViewProps) {
   const scopeInit = initialSourceIds && initialSourceIds.length > 0 ? "ids" : "working_set";
   const idsInit = initialSourceIds?.join("\n") || "";
 
@@ -66,6 +88,56 @@ export default function CommunityView({ onView, initialSourceIds }: CommunityVie
   const [runs, setRuns] = useState<CommunityRunSummary[]>([]);
   const [runsLoading, setRunsLoading] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [themeGenerating, setThemeGenerating] = useState(false);
+  const [themeGeneratedId, setThemeGeneratedId] = useState<string | null>(null);
+  const [themeStatus, setThemeStatus] = useState<"generating" | "completed" | "partial" | "failed" | null>(null);
+  const [themeElapsedSec, setThemeElapsedSec] = useState(0);
+
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  async function pollThemeStatus(reportId: string) {
+    while (mountedRef.current) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1500));
+      if (!mountedRef.current) return;
+      try {
+        const report = await getTheme(reportId);
+        if (!mountedRef.current) return;
+        if (report.status !== "generating") {
+          setThemeStatus(report.status);
+          return;
+        }
+      } catch (e) {
+        if (mountedRef.current) setError(e instanceof Error ? e.message : "Failed to check theme report status");
+        return;
+      }
+    }
+  }
+
+  async function handleGenerateTheme() {
+    if (!runId || themeGenerating) return;
+    setThemeGenerating(true);
+    setThemeGeneratedId(null);
+    setThemeStatus(null);
+    setThemeElapsedSec(0);
+    setError(null);
+    const tick = window.setInterval(() => setThemeElapsedSec((s) => s + 1), 1000);
+    try {
+      const resp = await generateTheme(runId);
+      setThemeGeneratedId(resp.id);
+      setThemeStatus("generating");
+      await pollThemeStatus(resp.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to generate theme");
+    } finally {
+      window.clearInterval(tick);
+      if (mountedRef.current) setThemeGenerating(false);
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -90,13 +162,24 @@ export default function CommunityView({ onView, initialSourceIds }: CommunityVie
 
   useEffect(() => {
     let active = true;
-    setRunsLoading(true);
-    listCommunityRuns()
-      .then((resp) => { if (active) setRuns(resp.runs ?? []); })
-      .catch(() => { if (active) setRuns([]); })
-      .finally(() => { if (active) setRunsLoading(false); });
+    loadRuns(active);
     return () => { active = false; };
-  }, [runStatus]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function loadRuns(active?: boolean) {
+    setRunsLoading(true);
+    try {
+      const resp = await listCommunityRuns();
+      if (active === false) return;
+      setRuns(resp.runs ?? []);
+    } catch {
+      setRuns([]);
+    } finally {
+      if (active === false) return;
+      setRunsLoading(false);
+    }
+  }
 
   useEffect(() => {
     if (!runs.length || runStatus !== "idle") return;
@@ -124,6 +207,7 @@ export default function CommunityView({ onView, initialSourceIds }: CommunityVie
           onResult: (data) => {
             setResult(data);
             setRunStatus("completed");
+            loadRuns();
           },
           onError: (err) => {
             setError(err.message || "Run failed");
@@ -148,11 +232,11 @@ export default function CommunityView({ onView, initialSourceIds }: CommunityVie
       if (!workingSetId) return;
       body.working_set_id = workingSetId;
     } else if (scopeMode === "ids") {
-      const ids = explicitIds.split("\n").map((s) => s.trim()).filter(Boolean);
+      const ids = explicitIds.split(/[\n\s,]+/).map((s) => s.trim()).filter(Boolean);
       if (!ids.length) return;
       body.source_ids = ids;
     } else {
-      const lines = criteria.split("\n").map((s) => s.trim()).filter(Boolean);
+      const lines = criteria.split(/[\n]+/).map((s) => s.trim()).filter(Boolean);
       if (!lines.length) return;
       body.criteria = lines;
       if (scopeMode === "search") {
@@ -192,6 +276,7 @@ export default function CommunityView({ onView, initialSourceIds }: CommunityVie
       const resp = await startCommunityRun(body);
       const newRunId = resp.run_id;
       setRunId(newRunId);
+      loadRuns();
       attachToStream(newRunId);
     } catch (e) {
       setRunStatus("failed");
@@ -239,6 +324,7 @@ export default function CommunityView({ onView, initialSourceIds }: CommunityVie
 
   const communityCount = result?.communities?.length ?? 0;
   const virtualMerges = result?.virtual_merges;
+  const virtualMergeCount = virtualMerges?.length;
 
   return (
     <div className="content">
@@ -472,7 +558,7 @@ export default function CommunityView({ onView, initialSourceIds }: CommunityVie
             <div className="stage-progress">
               {stageEntries.map((entry, i) => (
                 <p className="stage-entry" key={`${entry.stage}-${i}`}>
-                  <span className="stage-entry__stage">{entry.stage}</span> {entry.message}
+                  {describeStage(entry)}
                 </p>
               ))}
             </div>
@@ -504,8 +590,39 @@ export default function CommunityView({ onView, initialSourceIds }: CommunityVie
             </div>
           ) : null}
 
-          {virtualMerges !== undefined ? (
-            <p className="panel-state">Virtual merges: {virtualMerges}</p>
+          {virtualMergeCount ? (
+            <p className="panel-state">
+              Virtual merges: {virtualMergeCount} ({virtualMerges!.map((m) => m.canonical_names.join(" = ")).join("; ")})
+            </p>
+          ) : null}
+
+          {runStatus === "completed" && result ? (
+            <div className="community-actions">
+              <button
+                className="primary-button"
+                type="button"
+                onClick={handleGenerateTheme}
+                disabled={themeGenerating}
+              >
+                {themeGenerating ? `Generating… (${themeElapsedSec}s)` : "Generate Theme Report"}
+              </button>
+              {themeGenerating ? (
+                <span className="panel-state">Status: {themeStatus ?? "starting"}</span>
+              ) : null}
+              {themeGeneratedId && !themeGenerating ? (
+                onNavigateTheme ? (
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => onNavigateTheme(themeGeneratedId)}
+                  >
+                    {themeStatus === "failed" ? "View Failed Report" : "View Theme Report"} {themeGeneratedId.slice(0, 8)}…
+                  </button>
+                ) : (
+                  <span className="panel-state">Report {themeGeneratedId.slice(0, 8)}… — view in Library</span>
+                )
+              ) : null}
+            </div>
           ) : null}
 
           <div className="community-json">
@@ -538,6 +655,15 @@ export default function CommunityView({ onView, initialSourceIds }: CommunityVie
                     {run.status}
                   </span>
                   <span className="run-history-item__id">{run.run_id.slice(0, 8)}</span>
+                  {run.status === "completed" ? (
+                    <span className="run-history-item__meta">
+                      {run.result?.communities?.length ?? 0} communit
+                      {(run.result?.communities?.length ?? 0) === 1 ? "y" : "ies"}
+                    </span>
+                  ) : null}
+                  {run.status === "failed" && run.error ? (
+                    <span className="run-history-item__meta panel-state--error">{run.error}</span>
+                  ) : null}
                   <span className="run-history-item__date">
                     {new Date(run.created_at).toLocaleString()}
                   </span>
