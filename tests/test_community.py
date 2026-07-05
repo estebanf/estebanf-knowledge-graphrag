@@ -24,8 +24,14 @@ def test_cosine_similarity_zero_vector_returns_zero():
 
 def test_resolve_scope_ids_returns_deduped():
     from rag.community import _resolve_scope
-    result = _resolve_scope("ids", ["s1", "s2", "s1"], [], {}, {}, {})
-    assert result == ["s1", "s2"]
+    with patch("rag.community.get_connection") as mock_conn:
+        conn = mock_conn.return_value.__enter__.return_value
+        conn.execute.return_value.fetchall.return_value = [
+            ("s1", False), ("s2", False),
+        ]
+        resolved, excluded = _resolve_scope("ids", ["s1", "s2", "s1"], [], {}, {}, {})
+    assert resolved == ["s1", "s2"]
+    assert excluded == []
 
 @patch("rag.community.hybrid_search")
 def test_resolve_scope_search_unions_source_ids(mock_search):
@@ -35,8 +41,9 @@ def test_resolve_scope_search_unions_source_ids(mock_search):
     r1 = MagicMock(); r1.chunks = [c1]
     r2 = MagicMock(); r2.chunks = [c2]
     mock_search.side_effect = [r1, r2]
-    result = _resolve_scope("search", [], ["q1", "q2"], {}, {"limit": 5, "min_score": 0.0}, {})
+    result, excluded = _resolve_scope("search", [], ["q1", "q2"], {}, {"limit": 5, "min_score": 0.0}, {})
     assert set(result) == {"src-A", "src-B"}
+    assert excluded == []
 
 
 @patch("rag.community.resolve_retrieval_scope")
@@ -45,7 +52,7 @@ def test_resolve_scope_retrieve_uses_lightweight_retrieval_scope(mock_scope):
 
     mock_scope.side_effect = [["src-A", "src-B"], ["src-B", "src-C"]]
 
-    result = _resolve_scope(
+    result, excluded = _resolve_scope(
         "retrieve",
         [],
         ["q1", "q2"],
@@ -55,6 +62,7 @@ def test_resolve_scope_retrieve_uses_lightweight_retrieval_scope(mock_scope):
     )
 
     assert result == ["src-A", "src-B", "src-C"]
+    assert excluded == []
     assert mock_scope.call_count == 2
 
 def test_resolve_scope_unknown_mode_raises():
@@ -135,13 +143,17 @@ def test_cross_source_semantic_edges_creates_edge_above_threshold():
         "e2": EntityNode("e2", "Beta", "PERSON", source_ids={"s2"}, chunk_ids={"c2"}),
     }
     idx = {"e1": 0, "e2": 1}
-    embeddings = {"e1": [1.0, 0.0], "e2": [1.0, 0.0]}
+    embeddings = {"e1": [1.0, 0.0]}  # only e1 has embedding, one ANN query
 
     mock_conn = MagicMock()
     mock_conn.__enter__ = lambda s: mock_conn
     mock_conn.__exit__ = MagicMock(return_value=False)
-    # ANN query for e1 returns e2 with sim=0.95
-    mock_conn.execute.return_value.fetchall.return_value = [("e2", 0.95)]
+    mock_conn.execute.side_effect = [
+        MagicMock(fetchall=lambda: []),              # cache query
+        MagicMock(),                                  # SET hnsw.ef_search
+        MagicMock(fetchall=lambda: [("e2", 0.95)]),  # ANN query for e1
+        MagicMock(),                                  # insert
+    ]
 
     with patch("rag.community.get_connection", return_value=mock_conn):
         result = _load_cross_source_semantic_edges(
@@ -160,13 +172,16 @@ def test_cross_source_semantic_edges_threshold_gates_edge():
         "e2": EntityNode("e2", "Beta", "PERSON", source_ids={"s2"}, chunk_ids={"c2"}),
     }
     idx = {"e1": 0, "e2": 1}
-    embeddings = {"e1": [1.0, 0.0], "e2": [0.5, 0.5]}
+    embeddings = {"e1": [1.0, 0.0]}  # only e1 has embedding
 
     mock_conn = MagicMock()
     mock_conn.__enter__ = lambda s: mock_conn
     mock_conn.__exit__ = MagicMock(return_value=False)
-    # ANN query returns e2 with sim below threshold
-    mock_conn.execute.return_value.fetchall.return_value = [("e2", 0.70)]
+    mock_conn.execute.side_effect = [
+        MagicMock(fetchall=lambda: []),              # cache query
+        MagicMock(),                                  # SET hnsw.ef_search
+        MagicMock(fetchall=lambda: [("e2", 0.70)]),  # ANN below threshold (no insert)
+    ]
 
     with patch("rag.community.get_connection", return_value=mock_conn):
         result = _load_cross_source_semantic_edges(
@@ -180,7 +195,6 @@ def test_cross_source_semantic_edges_threshold_gates_edge():
 def test_cross_source_semantic_edges_budget_cap_prioritizes_most_mentioned():
     from rag.community import EntityNode, _load_cross_source_semantic_edges
 
-    # Build 10 entities; set chunk_ids so e0 has the most, e9 the fewest
     entities = {
         f"e{i}": EntityNode(f"e{i}", f"E{i}", "ORG", source_ids={f"s{i}"}, chunk_ids=set(f"c{j}" for j in range(10 - i)))
         for i in range(10)
@@ -189,9 +203,21 @@ def test_cross_source_semantic_edges_budget_cap_prioritizes_most_mentioned():
     embeddings = {eid: [1.0, 0.0] for eid in entities}
 
     queried_ids: list[str] = []
+    cache_queried = False
 
-    def fake_execute(sql, params):
-        queried_ids.append(params[2])  # third param is the a_id being queried
+    def fake_execute(sql, *args):
+        nonlocal cache_queried
+        if not cache_queried:
+            cache_queried = True
+            m = MagicMock()
+            m.fetchall.return_value = []
+            return m
+        try:
+            params = args[0]
+            if isinstance(params, tuple) and len(params) >= 5:
+                queried_ids.append(params[1])
+        except (IndexError, TypeError):
+            pass
         m = MagicMock()
         m.fetchall.return_value = []
         return m
@@ -208,7 +234,6 @@ def test_cross_source_semantic_edges_budget_cap_prioritizes_most_mentioned():
         )
 
     assert len(queried_ids) == 3
-    # The 3 queried entities must be the ones with the most chunk_ids (e0, e1, e2)
     assert set(queried_ids) == {"e0", "e1", "e2"}
 
 
@@ -346,15 +371,17 @@ def test_summarize_community_raises_without_api_key(monkeypatch):
 @patch("rag.community._score_and_select_chunks")
 @patch("rag.community._run_leiden")
 @patch("rag.community._build_igraph")
+@patch("rag.community._virtual_resolve")
 @patch("rag.community._load_source_names")
 @patch("rag.community._load_graph_data")
 @patch("rag.community._resolve_scope")
 def test_detect_communities_returns_correct_shape(
-    mock_scope, mock_graph_data, mock_names, mock_build,
-    mock_leiden, mock_chunks, mock_summarize
+    mock_scope, mock_graph_data, mock_names, mock_virtual,
+    mock_build, mock_leiden, mock_chunks, mock_summarize
 ):
     from rag.community import EntityNode, ChunkResult, detect_communities
-    mock_scope.return_value = ["s1"]
+    mock_scope.return_value = (["s1"], [])
+    mock_virtual.return_value = ({}, [])
     entities = {
         "e1": EntityNode("e1", "Alpha", "ORG", source_ids={"s1"}, chunk_ids={"c1"}),
         "e2": EntityNode("e2", "Beta", "PERSON", source_ids={"s1"}, chunk_ids={"c1"}),
@@ -377,11 +404,13 @@ def test_detect_communities_returns_correct_shape(
     params = result["metadata"]["parameters"]
     assert "cross_source_top_k" in params
     assert "max_cross_source_queries" in params
+    assert "resolution" in params
 
 
 def test_detect_communities_new_params_override_defaults():
     from rag.community import detect_communities
-    with patch("rag.community._resolve_scope", return_value=[]), \
+    with patch("rag.community._virtual_resolve", return_value=({}, [])), \
+         patch("rag.community._resolve_scope", return_value=(["s1"], [])), \
          patch("rag.community._load_graph_data", return_value=({}, {}, [])), \
          patch("rag.community._load_source_names", return_value={}), \
          patch("rag.community._build_igraph") as mock_build, \

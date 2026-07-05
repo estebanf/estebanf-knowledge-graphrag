@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from rag.api.auth import Principal, default_principal_dependency
 from rag.api.routes.answer import router as answer_router
+from rag.api.routes.answers import router as answers_router
 from rag.api.routes.auth import (
     PostgresUserAuthService,
     build_router as build_auth_router,
@@ -20,7 +21,9 @@ from rag.api.routes.prepare import router as prepare_router
 from rag.api.routes.retrieve import router as retrieve_router
 from rag.api.routes.search import router as search_router
 from rag.api.routes.sources import router as sources_router
+from rag.api.routes.themes import router as themes_router
 from rag.api.routes.workers import router as workers_router
+from rag.api.routes.working_sets import router as working_sets_router
 from rag.config import settings
 from rag.db import get_connection, prewarm_vector_indexes
 from rag.graph_db import get_graph_driver, reconcile_schema
@@ -129,8 +132,12 @@ def create_app() -> FastAPI:
     app.include_router(search_router, dependencies=gated)
     app.include_router(retrieve_router, dependencies=gated)
     app.include_router(answer_router, dependencies=gated)
+    app.include_router(answers_router, dependencies=gated)
     app.include_router(sources_router, dependencies=gated)
     app.include_router(community_router, dependencies=gated)
+    app.include_router(themes_router, dependencies=gated)
+    app.include_router(answers_router, dependencies=gated)
+    app.include_router(working_sets_router, dependencies=gated)
     app.include_router(ingest_router, dependencies=gated)
     app.include_router(prepare_router, dependencies=gated)
     app.include_router(jobs_router, dependencies=gated)

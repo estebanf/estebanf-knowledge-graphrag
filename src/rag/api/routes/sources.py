@@ -14,6 +14,22 @@ from rag.storage import delete_stored_file
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
 
+@router.get("/facets")
+def get_facets() -> dict:
+    facet_keys = ["kind", "author", "source", "domain"]
+    result: dict[str, list[dict]] = {}
+    with get_connection() as conn:
+        for key in facet_keys:
+            rows = conn.execute(
+                """SELECT COALESCE(metadata->>%s, '(none)') AS value, count(*) AS cnt
+                   FROM sources WHERE deleted_at IS NULL
+                   GROUP BY 1 ORDER BY cnt DESC""",
+                (key,),
+            ).fetchall()
+            result[key] = [{"value": r[0], "count": r[1]} for r in rows]
+    return {"facets": result}
+
+
 @router.get("", response_model=SourceListResponse)
 def get_sources(
     limit: int = Query(default=20, gt=0, le=100),

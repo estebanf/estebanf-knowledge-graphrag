@@ -11,6 +11,7 @@ from rag.config import settings
 PREWARM_INDEXES = (
     "chunks_embedding_binary_hnsw_idx",
     "insights_embedding_binary_hnsw_idx",
+    "entities_embedding_binary_hnsw_idx",
 )
 
 

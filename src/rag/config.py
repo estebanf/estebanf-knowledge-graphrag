@@ -106,7 +106,7 @@ class Settings(BaseSettings):
     SEARCH_DEFAULT_LIMIT: Annotated[int, Field(gt=0)] = 10
     SEARCH_MIN_SCORE: Annotated[float, Field(ge=0.0)] = 0.7
 
-    # Community summarization
+    # Community detection and runs
     COMMUNITY_SEMANTIC_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.85
     COMMUNITY_SOURCE_COOC_WEIGHT: Annotated[float, Field(ge=0.0)] = 0.1
     COMMUNITY_CUTOFF: Annotated[float, Field(ge=0.0, le=1.0)] = 0.5
@@ -115,6 +115,16 @@ class Settings(BaseSettings):
     COMMUNITY_SUMMARIZATION_PROMPT: str = ""
     COMMUNITY_CROSS_SOURCE_TOP_K: Annotated[int, Field(gt=0)] = 10
     COMMUNITY_MAX_CROSS_SOURCE_QUERIES: Annotated[int, Field(gt=0)] = 5000
+    COMMUNITY_RESOLUTION: Annotated[float, Field(gt=0.0)] = 1.0
+    COMMUNITY_VIRTUAL_MERGE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.90
+    COMMUNITY_SUMMARY_MAX_WORKERS: Annotated[int, Field(gt=0)] = 4
+    COMMUNITY_EDGE_CACHE_PREFETCH: Annotated[int, Field(gt=0)] = 250
+    COMMUNITY_MAX_CONCURRENT_RUNS: Annotated[int, Field(gt=0)] = 3
+    COMMUNITY_RUN_STALE_SECONDS: Annotated[int, Field(gt=0)] = 600
+
+    # Theme reports
+    THEME_REPORT_MODEL: str = ""
+    THEME_REPORT_PROMPT: str = ""
 
     # Worker
     WORKER_POLL_INTERVAL: int = 5       # seconds between polls when queue is empty

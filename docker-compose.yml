@@ -37,6 +37,7 @@ services:
     volumes:
       - ./data/postgres:/var/lib/postgresql
       - ./scripts/init/postgres:/docker-entrypoint-initdb.d:ro
+    shm_size: 512m
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     healthcheck:

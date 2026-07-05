@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS chunks (
   chunking_strategy text,
   chunking_config   jsonb,
   metadata          jsonb,
-  embedding         vector(1536),
+  embedding         vector(4096),
   created_at        timestamptz DEFAULT now(),
   deleted_at        timestamptz
 );
@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS entities (
   canonical_name  text,
   entity_type     text,
   aliases         text[],
-  embedding       vector(1536),
+  embedding       vector(4096),
   created_at      timestamptz DEFAULT now()
 ) WITH (
   autovacuum_vacuum_scale_factor = 0.02,
@@ -75,15 +75,17 @@ CREATE TABLE IF NOT EXISTS audit_log (
   created_at      timestamptz DEFAULT now()
 );
 
--- HNSW vector indexes — created here for fresh setups.
--- For large bulk imports, drop and recreate after loading for better performance.
-CREATE INDEX IF NOT EXISTS chunks_embedding_hnsw_idx
-  ON chunks USING hnsw (embedding vector_cosine_ops)
-  WITH (m = 16, ef_construction = 64);
+-- Binary-quantized HNSW prefilter indexes — created here for fresh setups.
+-- pgvector 0.8.x cannot build standard HNSW indexes over vector(4096);
+-- binary_quantize() + bit_hamming_ops is indexable and used as a fast
+-- prefilter before full-precision reranking.
+CREATE INDEX IF NOT EXISTS chunks_embedding_binary_hnsw_idx
+  ON chunks USING hnsw ((binary_quantize(embedding)::bit(4096)) bit_hamming_ops)
+  WHERE deleted_at IS NULL AND embedding IS NOT NULL;
 
-CREATE INDEX IF NOT EXISTS entities_embedding_hnsw_idx
-  ON entities USING hnsw (embedding vector_cosine_ops)
-  WITH (m = 16, ef_construction = 64);
+CREATE INDEX IF NOT EXISTS entities_embedding_binary_hnsw_idx
+  ON entities USING hnsw ((binary_quantize(embedding)::bit(4096)) bit_hamming_ops)
+  WHERE embedding IS NOT NULL;
 
 -- Supporting indexes for common query patterns
 CREATE INDEX IF NOT EXISTS chunks_source_id_idx ON chunks(source_id) WHERE deleted_at IS NULL;
@@ -96,3 +98,69 @@ CREATE INDEX IF NOT EXISTS chunks_content_fts_idx
 CREATE INDEX IF NOT EXISTS sources_md5_idx ON sources(md5) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS jobs_source_id_idx ON jobs(source_id);
 CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs(status);
+
+-- ---------------------------------------------------------------------------
+-- Research workspace tables (migration 013)
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS community_runs (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  status          text NOT NULL DEFAULT 'running'
+                  CHECK (status IN ('running', 'completed', 'failed')),
+  params          jsonb NOT NULL DEFAULT '{}',
+  source_ids      jsonb NOT NULL DEFAULT '[]',
+  stage_log       jsonb NOT NULL DEFAULT '[]',
+  result          jsonb,
+  error           text,
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  updated_at      timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS community_runs_status_idx ON community_runs(status);
+CREATE INDEX IF NOT EXISTS community_runs_created_at_idx ON community_runs(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS theme_reports (
+  id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id              uuid NOT NULL REFERENCES community_runs(id) ON DELETE CASCADE,
+  status              text NOT NULL DEFAULT 'completed'
+                      CHECK (status IN ('completed', 'partial', 'failed')),
+  failed_community_ids jsonb NOT NULL DEFAULT '[]',
+  report              jsonb NOT NULL DEFAULT '{}',
+  model               text NOT NULL DEFAULT '',
+  created_at          timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS theme_reports_run_id_idx ON theme_reports(run_id);
+CREATE INDEX IF NOT EXISTS theme_reports_created_at_idx ON theme_reports(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS saved_answers (
+  id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  question          text NOT NULL,
+  answer            text NOT NULL,
+  model             text NOT NULL DEFAULT '',
+  params            jsonb NOT NULL DEFAULT '{}',
+  evidence_snapshot jsonb NOT NULL DEFAULT '[]',
+  created_at        timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS saved_answers_created_at_idx ON saved_answers(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS working_sets (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name            text NOT NULL UNIQUE,
+  source_ids      jsonb NOT NULL DEFAULT '[]',
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  updated_at      timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS working_sets_name_idx ON working_sets(name);
+
+CREATE TABLE IF NOT EXISTS entity_semantic_edges (
+  entity_a    uuid NOT NULL,
+  entity_b    uuid NOT NULL,
+  similarity  real NOT NULL,
+  computed_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (entity_a, entity_b)
+);
+
+CREATE INDEX IF NOT EXISTS entity_semantic_edges_entity_b_idx ON entity_semantic_edges(entity_b);

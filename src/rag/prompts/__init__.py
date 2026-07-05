@@ -185,3 +185,30 @@ Chunk
 ```
 {chunk}
 ```"""
+
+THEME_COMMUNITY_ANALYSIS = """Analyze this community of related entities extracted from ingested documents. Output a JSON object with these fields:
+
+- label: A concrete 3-7 word label describing the community's theme (e.g. "Go-to-market strategy", "Kubernetes infrastructure", "Vendor evaluation criteria").
+- community_type: One of "thematic_cluster" (coherent topic), "umbrella_cluster" (broad topic spanning multiple subthemes), "vendor_list" (list/comparison of vendors or tools), "source_fragment" (fragments from a single source, no cross-source signal), "noisy_artifact" (low-quality or noise).
+- confidence: Integer 1-5 indicating how well-formed this community is (5 = clear and coherent, 1 = barely recognisable pattern).
+- summary: 1-3 sentence summary of what ties this community together.
+- key_entities: List of the most significant entity names in this community.
+- key_sources: List of the most significant source names contributing to this community.
+- relevance: "high", "medium", or "low" — how useful this community is for downstream analysis.
+
+Entities: {entities}
+Sources: {sources}
+Chunks: {chunks}
+Cross-source: {cross_source}
+
+Return only valid JSON, no other text."""
+
+THEME_SYNTHESIS = """Given per-community analyses from a corpus-wide community detection run, synthesize a higher-order analysis. Output a JSON object with these fields:
+
+- buckets: List of thematic buckets that group related communities together. Each bucket has: "name" (short label), "member_community_labels" (list of community labels in this bucket), "why" (1-2 sentences explaining the grouping).
+- narrative: A 2-4 sentence narrative connecting the major themes across the entire corpus.
+- cleanup_recommendations: List of strings suggesting communities that should be filtered out (noisy_artifact, source_fragment) or merged.
+
+Analyses: {analyses}
+
+Return only valid JSON, no other text."""

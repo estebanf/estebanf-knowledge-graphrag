@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -11,7 +12,7 @@ import requests
 
 from rag import prompts
 from rag.config import settings
-from rag.db import get_connection
+from rag.db import get_connection, set_hnsw_ef_search
 from rag.graph_db import get_graph_driver
 from rag.retrieval import _expand_chunk_texts, _vector_literal, hybrid_search, resolve_retrieval_scope
 
@@ -68,9 +69,10 @@ def _resolve_scope(
     filters: dict[str, str],
     search_options: dict,
     retrieve_options: dict,
-) -> list[str]:
+) -> tuple[list[str], list[dict]]:
     if scope_mode == "ids":
-        return list(dict.fromkeys(source_ids))
+        resolved, excluded = _validate_scope_ids(source_ids)
+        return resolved, excluded
 
     if scope_mode == "search":
         limit = search_options.get("limit", 10)
@@ -79,7 +81,7 @@ def _resolve_scope(
         for criterion in criteria:
             for r in hybrid_search(criterion, limit=limit, min_score=min_score).chunks:
                 seen.add(r.source_id)
-        return list(seen)
+        return list(seen), []
 
     if scope_mode == "retrieve":
         seen: set[str] = set()
@@ -103,9 +105,30 @@ def _resolve_scope(
                     continue
                 seen.add(source_id)
                 ordered.append(source_id)
-        return ordered
+        return ordered, []
 
     raise ValueError(f"Unknown scope_mode: {scope_mode!r}")
+
+
+def _validate_scope_ids(source_ids: list[str]) -> tuple[list[str], list[dict]]:
+    if not source_ids:
+        return [], []
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, deleted_at IS NOT NULL AS is_deleted FROM sources WHERE id = ANY(%s)",
+            (source_ids,),
+        ).fetchall()
+    found = {str(row[0]): bool(row[1]) for row in rows}
+    resolved: list[str] = []
+    excluded: list[dict] = []
+    for sid in dict.fromkeys(source_ids):
+        if sid not in found:
+            excluded.append({"source_id": sid, "reason": "not_found"})
+        elif found[sid]:
+            excluded.append({"source_id": sid, "reason": "deleted"})
+        else:
+            resolved.append(sid)
+    return resolved, excluded
 
 
 def _load_graph_data(
@@ -113,7 +136,10 @@ def _load_graph_data(
 ) -> tuple[dict[str, EntityNode], dict[str, str], list[str]]:
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT id, source_id FROM chunks WHERE source_id = ANY(%s) AND deleted_at IS NULL",
+            """SELECT c.id, c.source_id
+               FROM chunks c
+               JOIN sources s ON s.id = c.source_id
+               WHERE c.source_id = ANY(%s) AND c.deleted_at IS NULL AND s.deleted_at IS NULL""",
             (source_ids,),
         ).fetchall()
     chunk_to_source: dict[str, str] = {str(row[0]): str(row[1]) for row in rows}
@@ -183,29 +209,79 @@ def _load_cross_source_semantic_edges(
     top_k: int,
     max_queries: int,
 ) -> dict[tuple[int, int], float]:
+    entity_ids = list(idx.keys())
+    result: dict[tuple[int, int], float] = {}
+
+    with get_connection() as conn:
+        cache_rows = conn.execute(
+            """SELECT entity_a, entity_b, similarity
+               FROM entity_semantic_edges
+               WHERE entity_a = ANY(%s) AND entity_b = ANY(%s)""",
+            (entity_ids, entity_ids),
+        ).fetchall()
+    cached_pairs: set[tuple[str, str]] = set()
+    for row in cache_rows:
+        a, b = str(row[0]), str(row[1])
+        if a not in idx or b not in idx:
+            continue
+        if entities[a].source_ids & entities[b].source_ids:
+            continue
+        key = (min(idx[a], idx[b]), max(idx[a], idx[b]))
+        if key not in result:
+            result[key] = float(row[2])
+        cached_pairs.add((a, b))
+        cached_pairs.add((b, a))
+
     candidates = [eid for eid in embeddings if eid in idx]
     if len(candidates) > max_queries:
         candidates.sort(key=lambda eid: len(entities[eid].chunk_ids), reverse=True)
         candidates = candidates[:max_queries]
 
-    entity_ids = list(idx.keys())
-    result: dict[tuple[int, int], float] = {}
+    new_edges: list[tuple[str, str, float]] = []
+    prefetch = settings.COMMUNITY_EDGE_CACHE_PREFETCH
 
     with get_connection() as conn:
         for a_id in candidates:
+            has_cache = any((a_id, b_id) in cached_pairs for b_id in entity_ids)
+            if has_cache and not any((a_id, eid) not in cached_pairs and eid != a_id for eid in entity_ids if eid in idx):
+                continue
+
             vector_param = _vector_literal(embeddings[a_id])
-            rows = conn.execute(
-                """
-                SELECT id, 1 - (embedding <=> %s::vector) AS sim
-                FROM entities
-                WHERE id = ANY(%s)
-                  AND id <> %s
-                  AND embedding IS NOT NULL
-                ORDER BY embedding <=> %s::vector
-                LIMIT %s
-                """,
-                (vector_param, entity_ids, a_id, vector_param, top_k),
-            ).fetchall()
+            if prefetch > top_k:
+                set_hnsw_ef_search(conn, prefetch)
+                rows = conn.execute(
+                    """
+                    WITH prefilter AS MATERIALIZED (
+                        SELECT id
+                        FROM entities
+                        WHERE id = ANY(%s)
+                          AND id <> %s
+                          AND embedding IS NOT NULL
+                        ORDER BY binary_quantize(embedding)::bit(4096) <~> binary_quantize(%s::vector)::bit(4096)
+                        LIMIT %s
+                    )
+                    SELECT p.id, (1 - (e.embedding <=> %s::vector)) AS sim
+                    FROM prefilter p
+                    JOIN entities e ON e.id = p.id
+                    ORDER BY e.embedding <=> %s::vector
+                    LIMIT %s
+                    """,
+                    (entity_ids, a_id, vector_param, prefetch, vector_param, vector_param, top_k),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, 1 - (embedding <=> %s::vector) AS sim
+                    FROM entities
+                    WHERE id = ANY(%s)
+                      AND id <> %s
+                      AND embedding IS NOT NULL
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s
+                    """,
+                    (vector_param, entity_ids, a_id, vector_param, top_k),
+                ).fetchall()
+
             for row in rows:
                 b_id = str(row[0])
                 sim = float(row[1])
@@ -213,13 +289,136 @@ def _load_cross_source_semantic_edges(
                     continue
                 if b_id not in idx:
                     continue
+                if (a_id, b_id) in cached_pairs:
+                    continue
                 if entities[a_id].source_ids & entities[b_id].source_ids:
                     continue
                 key = (min(idx[a_id], idx[b_id]), max(idx[a_id], idx[b_id]))
                 if key not in result:
                     result[key] = sim * 0.5
+                norm_a, norm_b = (a_id, b_id) if a_id < b_id else (b_id, a_id)
+                new_edges.append((norm_a, norm_b, sim))
+
+    if new_edges:
+        with get_connection() as conn:
+            for ea, eb, sim in new_edges:
+                conn.execute(
+                    """INSERT INTO entity_semantic_edges (entity_a, entity_b, similarity)
+                       VALUES (%s, %s, %s)
+                       ON CONFLICT DO NOTHING""",
+                    (ea, eb, sim),
+                )
 
     return result
+
+
+def _virtual_resolve(
+    entities: dict[str, EntityNode],
+    threshold: float,
+) -> tuple[dict[str, str], list[dict]]:
+    if threshold <= 0:
+        return {}, []
+
+    entity_ids = list(entities.keys())
+    if len(entity_ids) < 2:
+        return {}, []
+
+    embeddings = _load_entity_embeddings(entity_ids)
+    if not embeddings:
+        return {}, []
+
+    entity_list = [eid for eid in entity_ids if eid in embeddings]
+    idx = {eid: i for i, eid in enumerate(entity_list)}
+    prefetch = settings.COMMUNITY_EDGE_CACHE_PREFETCH
+
+    pairs: list[tuple[str, str, float]] = []
+    with get_connection() as conn:
+        for a_id in entity_list:
+            vector_param = _vector_literal(embeddings[a_id])
+            if prefetch > 0:
+                set_hnsw_ef_search(conn, prefetch)
+                rows = conn.execute(
+                    """
+                    WITH prefilter AS MATERIALIZED (
+                        SELECT id
+                        FROM entities
+                        WHERE id = ANY(%s)
+                          AND id <> %s
+                          AND embedding IS NOT NULL
+                        ORDER BY binary_quantize(embedding)::bit(4096) <~> binary_quantize(%s::vector)::bit(4096)
+                        LIMIT %s
+                    )
+                    SELECT p.id, (1 - (e.embedding <=> %s::vector)) AS sim
+                    FROM prefilter p
+                    JOIN entities e ON e.id = p.id
+                    ORDER BY e.embedding <=> %s::vector
+                    LIMIT %s
+                    """,
+                    (entity_ids, a_id, vector_param, prefetch, vector_param, vector_param, prefetch),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, 1 - (embedding <=> %s::vector) AS sim
+                    FROM entities
+                    WHERE id = ANY(%s)
+                      AND id <> %s
+                      AND embedding IS NOT NULL
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s
+                    """,
+                    (vector_param, entity_ids, a_id, vector_param, prefetch),
+                ).fetchall()
+            for row in rows:
+                b_id = str(row[0])
+                sim = float(row[1])
+                if sim >= threshold and b_id in idx:
+                    pairs.append((a_id, b_id, sim))
+
+    if not pairs:
+        return {}, []
+
+    parent: dict[str, str] = {}
+    def find(x):
+        if x not in parent:
+            parent[x] = x
+        if parent[x] != x:
+            parent[x] = find(parent[x])
+        return parent[x]
+    def union(x, y):
+        rx, ry = find(x), find(y)
+        if rx != ry:
+            parent[ry] = rx
+
+    for a_id, b_id, _ in pairs:
+        union(a_id, b_id)
+
+    clusters: dict[str, set[str]] = defaultdict(set)
+    for eid in entity_list:
+        clusters[find(eid)].add(eid)
+
+    merge_map: dict[str, str] = {}
+    virtual_merges: list[dict] = []
+
+    for cluster in clusters.values():
+        if len(cluster) < 2:
+            continue
+        members = list(cluster)
+        members.sort(key=lambda eid: (
+            0 if embeddings.get(eid) is not None else 1,
+            entities[eid].created_at if hasattr(entities[eid], 'created_at') else "",
+        ))
+        rep = members[0]
+        for eid in members:
+            if eid != rep:
+                merge_map[eid] = rep
+        virtual_merges.append({
+            "representative_id": rep,
+            "merged_ids": [eid for eid in members if eid != rep],
+            "canonical_names": [entities[eid].canonical_name for eid in members],
+        })
+
+    return merge_map, virtual_merges
 
 
 def _build_igraph(
@@ -293,12 +492,18 @@ def _build_igraph(
     return g
 
 
-def _run_leiden(g: igraph.Graph, min_community_size: int) -> list[list[str]]:
+def _run_leiden(g: igraph.Graph, min_community_size: int, resolution: float = 1.0) -> list[list[str]]:
     if g.vcount() == 0:
         return []
 
     weights = "weight" if g.ecount() > 0 else None
-    partition = leidenalg.find_partition(g, leidenalg.ModularityVertexPartition, weights=weights)
+    partition = leidenalg.find_partition(
+        g,
+        leidenalg.RBConfigurationVertexPartition,
+        weights=weights,
+        resolution_parameter=resolution,
+        seed=42,
+    )
 
     return [
         [g.vs[i]["entity_id"] for i in membership]
@@ -433,6 +638,8 @@ def detect_communities(
     summarize_model: Optional[str] = None,
     cross_source_top_k: Optional[int] = None,
     max_cross_source_queries: Optional[int] = None,
+    resolution: Optional[float] = None,
+    virtual_merge_threshold: Optional[float] = None,
 ) -> dict:
     sem_threshold = semantic_threshold if semantic_threshold is not None else settings.COMMUNITY_SEMANTIC_THRESHOLD
     cooc_weight = source_cooc_weight if source_cooc_weight is not None else settings.COMMUNITY_SOURCE_COOC_WEIGHT
@@ -441,12 +648,33 @@ def detect_communities(
     top_k = top_k_chunks if top_k_chunks is not None else settings.COMMUNITY_TOP_K_CHUNKS
     _cross_top_k = cross_source_top_k if cross_source_top_k is not None else settings.COMMUNITY_CROSS_SOURCE_TOP_K
     _max_queries = max_cross_source_queries if max_cross_source_queries is not None else settings.COMMUNITY_MAX_CROSS_SOURCE_QUERIES
+    _resolution = resolution if resolution is not None else settings.COMMUNITY_RESOLUTION
+    _virt_threshold = virtual_merge_threshold if virtual_merge_threshold is not None else settings.COMMUNITY_VIRTUAL_MERGE_THRESHOLD
 
-    resolved_ids = _resolve_scope(scope_mode, source_ids, criteria, filters, search_options, retrieve_options)
+    resolved_ids, scope_excluded = _resolve_scope(scope_mode, source_ids, criteria, filters, search_options, retrieve_options)
+    if not resolved_ids:
+        raise ValueError("scope resolved to zero sources")
     entities, chunk_to_source, excluded_ids = _load_graph_data(resolved_ids)
     source_names = _load_source_names(resolved_ids)
+
+    merge_map, virtual_merges = _virtual_resolve(entities, _virt_threshold)
+
+    if merge_map:
+        merged_entities: dict[str, EntityNode] = {}
+        for eid, node in entities.items():
+            rep = merge_map.get(eid, eid)
+            if rep not in merged_entities:
+                merged_entities[rep] = EntityNode(
+                    entity_id=rep,
+                    canonical_name=entities[rep].canonical_name,
+                    entity_type=entities[rep].entity_type,
+                )
+            merged_entities[rep].chunk_ids.update(node.chunk_ids)
+            merged_entities[rep].source_ids.update(node.source_ids)
+        entities = merged_entities
+
     g = _build_igraph(entities, chunk_to_source, sem_threshold, cooc_weight, _cross_top_k, _max_queries)
-    community_lists = _run_leiden(g, min_size)
+    community_lists = _run_leiden(g, min_size, _resolution)
 
     communities: list[Community] = []
     for i, eid_list in enumerate(community_lists):
@@ -479,14 +707,31 @@ def detect_communities(
     communities.sort(key=lambda c: (not c.is_cross_source, -c.entity_count))
 
     if summarize_model:
-        for community in communities:
-            community.summary = _summarize_community(community, summarize_model)
+        max_workers = settings.COMMUNITY_SUMMARY_MAX_WORKERS
+        if max_workers > 1 and len(communities) > 1:
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {
+                    pool.submit(_summarize_community, c, summarize_model): c
+                    for c in communities
+                }
+                for future in as_completed(futures):
+                    community = futures[future]
+                    try:
+                        community.summary = future.result()
+                    except Exception:
+                        community.summary = ""
+        else:
+            for community in communities:
+                try:
+                    community.summary = _summarize_community(community, summarize_model)
+                except Exception:
+                    community.summary = ""
 
     return {
         "metadata": {
             "scope_mode": scope_mode,
             "source_count": len(resolved_ids),
-            "sources_excluded": [
+            "sources_excluded": scope_excluded + [
                 {"source_id": sid, "reason": "no entity connections"}
                 for sid in excluded_ids
             ],
@@ -498,7 +743,9 @@ def detect_communities(
                 "top_k_chunks": top_k,
                 "cross_source_top_k": _cross_top_k,
                 "max_cross_source_queries": _max_queries,
+                "resolution": _resolution,
             },
+            "virtual_merges": virtual_merges,
         },
         "communities": [
             {
