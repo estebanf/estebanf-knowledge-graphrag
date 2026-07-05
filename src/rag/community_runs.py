@@ -38,8 +38,29 @@ def _reap_stale_runs() -> None:
         )
 
 
+# Maintenance sweep advisory lock key — must match
+# scripts/weekly_maintenance.MAINTENANCE_LOCK_KEY exactly.
+_MAINTENANCE_LOCK_KEY = 875_321_001
+
+
+def _check_maintenance_lock_active() -> bool:
+    """Return True if the weekly maintenance sweep currently holds its advisory lock."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = %s",
+            (_MAINTENANCE_LOCK_KEY,),
+        ).fetchone()
+        return bool(row and row[0] > 0)
+
+
 def create_run(params: dict, source_ids: list[str]) -> str:
     _reap_stale_runs()
+
+    if _check_maintenance_lock_active():
+        raise RuntimeError(
+            "A weekly maintenance sweep is in progress. "
+            "Community runs cannot start while the sweep holds its advisory lock."
+        )
 
     with get_connection() as conn:
         active = conn.execute(

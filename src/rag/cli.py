@@ -82,11 +82,19 @@ app = typer.Typer(help="RAG CLI — document ingestion and management")
 sources_app = typer.Typer(help="Manage ingested sources")
 jobs_app = typer.Typer(help="Manage ingestion jobs")
 community_app = typer.Typer(help="Community summarization")
+community_runs_app = typer.Typer(help="Community run management")
 worker_app = typer.Typer(help="Manage background workers (server-side)")
+working_set_app = typer.Typer(help="Named collections of sources")
+themes_app = typer.Typer(help="Theme reports from community runs")
+answers_app = typer.Typer(help="Saved answers")
 app.add_typer(sources_app, name="sources")
 app.add_typer(jobs_app, name="jobs")
 app.add_typer(community_app, name="community")
+community_app.add_typer(community_runs_app, name="runs")
 app.add_typer(worker_app, name="worker")
+app.add_typer(working_set_app, name="working-set")
+app.add_typer(themes_app, name="themes")
+app.add_typer(answers_app, name="answers")
 
 
 def _use_api() -> bool:
@@ -122,6 +130,26 @@ def _get_connection():
 
 def _get_graph_driver():
     return get_graph_driver()
+
+
+def _resolve_working_set_source_ids(ws_id: str) -> list[str]:
+    """Resolve a working set ID to its member source IDs."""
+    import json as _json
+    if _use_api():
+        with _get_client() as client:
+            ws = client.get_working_set(ws_id)
+        return list(ws.get("source_ids", []))
+    with _get_connection() as conn:
+        row = conn.execute(
+            "SELECT source_ids FROM working_sets WHERE id = %s",
+            (ws_id,),
+        ).fetchone()
+    if row is None:
+        raise typer.BadParameter(f"Working set not found: {ws_id}")
+    source_ids = row[0]
+    if isinstance(source_ids, str):
+        source_ids = _json.loads(source_ids)
+    return list(source_ids or [])
 
 
 def submit_ingestion_job(*args, **kwargs):
@@ -1369,8 +1397,13 @@ def community_ids(
     summarize: Annotated[Optional[str], typer.Option("--summarize", help="Model name to summarize communities")] = None,
     cross_source_top_k: Annotated[Optional[int], typer.Option("--cross-source-top-k", help="Max cross-source ANN neighbors per entity")] = None,
     max_cross_source_queries: Annotated[Optional[int], typer.Option("--max-cross-source-queries", help="Hard cap on per-entity ANN queries")] = None,
+    resolution: Annotated[Optional[float], typer.Option("--resolution", help="Community granularity; <1 fewer/larger, >1 more/smaller")] = None,
+    source_cooc_weight: Annotated[Optional[float], typer.Option("--source-cooc-weight", help="Extra weight for same-source entity co-occurrence")] = None,
+    working_set: Annotated[Optional[str], typer.Option("--working-set", help="Resolve source IDs from a working set")] = None,
 ) -> None:
     """Detect communities from explicit source IDs."""
+    if working_set:
+        source_id = _resolve_working_set_source_ids(working_set)
     if _use_api():
         with _get_client() as client:
             payload = {
@@ -1384,6 +1417,8 @@ def community_ids(
                         "top_k_chunks": top_k,
                         "cross_source_top_k": cross_source_top_k,
                         "max_cross_source_queries": max_cross_source_queries,
+                        "resolution": resolution,
+                        "source_cooc_weight": source_cooc_weight,
                     }.items() if v is not None
                 },
             }
@@ -1400,6 +1435,8 @@ def community_ids(
         summarize_model=summarize,
         cross_source_top_k=cross_source_top_k,
         max_cross_source_queries=max_cross_source_queries,
+        resolution=resolution,
+        source_cooc_weight=source_cooc_weight,
     )
     console.print_json(json.dumps(result))
 
@@ -1417,6 +1454,9 @@ def community_search(
     summarize: Annotated[Optional[str], typer.Option("--summarize")] = None,
     cross_source_top_k: Annotated[Optional[int], typer.Option("--cross-source-top-k", help="Max cross-source ANN neighbors per entity")] = None,
     max_cross_source_queries: Annotated[Optional[int], typer.Option("--max-cross-source-queries", help="Hard cap on per-entity ANN queries")] = None,
+    resolution: Annotated[Optional[float], typer.Option("--resolution", help="Community granularity; <1 fewer/larger, >1 more/smaller")] = None,
+    source_cooc_weight: Annotated[Optional[float], typer.Option("--source-cooc-weight", help="Extra weight for same-source entity co-occurrence")] = None,
+    working_set: Annotated[Optional[str], typer.Option("--working-set", help="Scope to a working set instead of search")] = None,
 ) -> None:
     """Detect communities from sources matched by search criteria."""
     try:
@@ -1424,11 +1464,20 @@ def community_search(
     except ValueError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
+    if working_set:
+        source_ids = _resolve_working_set_source_ids(working_set)
+        scope_mode = "ids"
+        community_criteria: list[str] = []
+    else:
+        source_ids = []
+        scope_mode = "search"
+        community_criteria = list(criteria)
     if _use_api():
         with _get_client() as client:
-            payload = {
-                "scope_mode": "search",
-                "criteria": list(criteria),
+            payload: dict = {
+                "scope_mode": scope_mode,
+                "source_ids": source_ids,
+                "criteria": community_criteria,
                 "filters": parsed_filters,
                 "search_options": {"limit": limit, "min_score": min_score},
                 "community_options": {
@@ -1439,6 +1488,8 @@ def community_search(
                         "top_k_chunks": top_k,
                         "cross_source_top_k": cross_source_top_k,
                         "max_cross_source_queries": max_cross_source_queries,
+                        "resolution": resolution,
+                        "source_cooc_weight": source_cooc_weight,
                     }.items() if v is not None
                 },
             }
@@ -1448,12 +1499,14 @@ def community_search(
         console.print_json(json.dumps(result))
         return
     result = detect_communities(
-        scope_mode="search", source_ids=[], criteria=list(criteria),
+        scope_mode=scope_mode, source_ids=source_ids, criteria=community_criteria,
         filters=parsed_filters, search_options={"limit": limit, "min_score": min_score},
         retrieve_options={}, semantic_threshold=semantic_threshold, cutoff=cutoff,
         min_community_size=min_community_size, top_k_chunks=top_k, summarize_model=summarize,
         cross_source_top_k=cross_source_top_k,
         max_cross_source_queries=max_cross_source_queries,
+        resolution=resolution,
+        source_cooc_weight=source_cooc_weight,
     )
     console.print_json(json.dumps(result))
 
@@ -1476,6 +1529,9 @@ def community_retrieve(
     summarize: Annotated[Optional[str], typer.Option("--summarize")] = None,
     cross_source_top_k: Annotated[Optional[int], typer.Option("--cross-source-top-k", help="Max cross-source ANN neighbors per entity")] = None,
     max_cross_source_queries: Annotated[Optional[int], typer.Option("--max-cross-source-queries", help="Hard cap on per-entity ANN queries")] = None,
+    resolution: Annotated[Optional[float], typer.Option("--resolution", help="Community granularity; <1 fewer/larger, >1 more/smaller")] = None,
+    source_cooc_weight: Annotated[Optional[float], typer.Option("--source-cooc-weight", help="Extra weight for same-source entity co-occurrence")] = None,
+    working_set: Annotated[Optional[str], typer.Option("--working-set", help="Scope to a working set instead of retrieval")] = None,
 ) -> None:
     """Detect communities from sources matched by retrieve criteria."""
     try:
@@ -1483,11 +1539,20 @@ def community_retrieve(
     except ValueError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
+    if working_set:
+        source_ids = _resolve_working_set_source_ids(working_set)
+        scope_mode = "ids"
+        retrieve_criteria: list[str] = []
+    else:
+        source_ids = []
+        scope_mode = "retrieve"
+        retrieve_criteria = list(criteria)
     if _use_api():
         with _get_client() as client:
-            payload = {
-                "scope_mode": "retrieve",
-                "criteria": list(criteria),
+            payload: dict = {
+                "scope_mode": scope_mode,
+                "source_ids": source_ids,
+                "criteria": retrieve_criteria,
                 "filters": parsed_filters,
                 "retrieve_options": {
                     k: v for k, v in {
@@ -1508,6 +1573,8 @@ def community_retrieve(
                         "top_k_chunks": top_k,
                         "cross_source_top_k": cross_source_top_k,
                         "max_cross_source_queries": max_cross_source_queries,
+                        "resolution": resolution,
+                        "source_cooc_weight": source_cooc_weight,
                     }.items() if v is not None
                 },
             }
@@ -1517,7 +1584,7 @@ def community_retrieve(
         console.print_json(json.dumps(result))
         return
     result = detect_communities(
-        scope_mode="retrieve", source_ids=[], criteria=list(criteria),
+        scope_mode=scope_mode, source_ids=source_ids, criteria=retrieve_criteria,
         filters=parsed_filters, search_options={},
         retrieve_options={
             "seed_count": seed_count, "result_count": result_count, "rrf_k": rrf_k,
@@ -1530,8 +1597,570 @@ def community_retrieve(
         min_community_size=min_community_size, top_k_chunks=top_k, summarize_model=summarize,
         cross_source_top_k=cross_source_top_k,
         max_cross_source_queries=max_cross_source_queries,
+        resolution=resolution,
+        source_cooc_weight=source_cooc_weight,
     )
     console.print_json(json.dumps(result))
+
+
+@sources_app.command("facets")
+def sources_facets() -> None:
+    """List metadata facet keys and their value/count distributions."""
+    if _use_api():
+        with _get_client() as client:
+            data = client.get_facets()
+        facets = data.get("facets", {})
+    else:
+        facet_keys = ["kind", "author", "source", "domain"]
+        facets: dict[str, list[dict]] = {}
+        with _get_connection() as conn:
+            for key in facet_keys:
+                rows = conn.execute(
+                    """SELECT COALESCE(metadata->>%s, '(none)') AS value, count(*) AS cnt
+                       FROM sources WHERE deleted_at IS NULL
+                       GROUP BY 1 ORDER BY cnt DESC""",
+                    (key,),
+                ).fetchall()
+                facets[key] = [{"value": r[0], "count": r[1]} for r in rows]
+    if not facets:
+        console.print("[dim]No facets found.[/dim]")
+        return
+    for key, values in facets.items():
+        table = Table(title=f"Facet: {key}")
+        table.add_column("Value")
+        table.add_column("Count", justify="right")
+        for entry in values:
+            table.add_row(entry["value"], str(entry["count"]))
+        console.print(table)
+
+
+@community_runs_app.command("list")
+def community_runs_list(
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Maximum number of runs")] = 20,
+    offset: Annotated[int, typer.Option("--offset", help="Pagination offset")] = 0,
+) -> None:
+    """List community detection runs."""
+    if _use_api():
+        with _get_client() as client:
+            data = client.list_community_runs(limit=limit, offset=offset)
+    else:
+        from rag.community_runs import list_runs as _list_runs
+        data = _list_runs(limit=limit, offset=offset)
+    runs = data.get("runs", [])
+    if not runs:
+        console.print("[dim]No runs found.[/dim]")
+        return
+    table = Table(title="Community Runs")
+    table.add_column("ID", style="dim", no_wrap=True)
+    table.add_column("Status")
+    table.add_column("Sources", justify="right")
+    table.add_column("Created")
+    for r in runs:
+        color = "green" if r["status"] == "completed" else ("red" if r["status"] == "failed" else "yellow")
+        source_count = len(r.get("source_ids") or [])
+        created = r.get("created_at", "") or ""
+        table.add_row(r["id"], f"[{color}]{r['status']}[/{color}]", str(source_count), created[:19])
+    console.print(table)
+
+
+@community_runs_app.command("show")
+def community_runs_show(
+    run_id: Annotated[str, typer.Argument(help="Community run ID")],
+) -> None:
+    """Show full details of a community run."""
+    if _use_api():
+        from rag.api_client import ApiError
+        with _get_client() as client:
+            try:
+                run = client.get_community_run(run_id)
+            except ApiError as e:
+                if e.status == 404:
+                    console.print(f"[red]Run not found: {run_id}[/red]")
+                    raise typer.Exit(1)
+                raise
+    else:
+        from rag.community_runs import get_run as _get_run
+        run = _get_run(run_id)
+        if run is None:
+            console.print(f"[red]Run not found: {run_id}[/red]")
+            raise typer.Exit(1)
+    console.print_json(json.dumps(run))
+
+
+@working_set_app.command("create")
+def working_set_create(
+    name: Annotated[str, typer.Argument(help="Working set name")],
+    source_ids: Annotated[list[str], typer.Argument(help="Source IDs to include")],
+) -> None:
+    """Create a new working set with the given source IDs."""
+    if _use_api():
+        from rag.api_client import ApiError
+        with _get_client() as client:
+            try:
+                result = client.create_working_set(name, source_ids)
+            except ApiError as e:
+                console.print(f"[red]{e.detail}[/red]")
+                raise typer.Exit(1)
+    else:
+        import json as _json
+        with _get_connection() as conn:
+            try:
+                row = conn.execute(
+                    """INSERT INTO working_sets (name, source_ids)
+                       VALUES (%s, %s::jsonb)
+                       RETURNING id""",
+                    (name, _json.dumps(source_ids)),
+                ).fetchone()
+            except Exception as e:
+                msg = str(e).lower()
+                if "unique" in msg or "duplicate" in msg:
+                    console.print(f"[red]working set name already exists: {name}[/red]")
+                else:
+                    console.print(f"[red]{e}[/red]")
+                raise typer.Exit(1)
+        result = {"id": str(row[0]), "name": name}
+    console.print(f"[green]Created working set {result['id']} ({name}).[/green]")
+
+
+@working_set_app.command("list")
+def working_set_list() -> None:
+    """List all working sets."""
+    if _use_api():
+        with _get_client() as client:
+            data = client.list_working_sets()
+        rows = data.get("working_sets", [])
+    else:
+        import json as _json
+        with _get_connection() as conn:
+            raw_rows = conn.execute(
+                "SELECT id, name, source_ids, created_at, updated_at FROM working_sets ORDER BY name"
+            ).fetchall()
+        rows = []
+        for r in raw_rows:
+            sids = r[2]
+            if isinstance(sids, str):
+                try:
+                    sids = _json.loads(sids)
+                except (_json.JSONDecodeError, TypeError):
+                    sids = []
+            rows.append({
+                "id": str(r[0]),
+                "name": r[1],
+                "source_ids": sids if isinstance(sids, list) else [],
+                "created_at": r[3].isoformat() if r[3] else "",
+                "updated_at": r[4].isoformat() if r[4] else "",
+            })
+    if not rows:
+        console.print("[dim]No working sets found.[/dim]")
+        return
+    table = Table(title="Working Sets")
+    table.add_column("ID", style="dim", no_wrap=True)
+    table.add_column("Name")
+    table.add_column("Sources", justify="right")
+    table.add_column("Created")
+    for r in rows:
+        table.add_row(r["id"], r["name"], str(len(r.get("source_ids") or [])), (r.get("created_at") or "")[:19])
+    console.print(table)
+
+
+@working_set_app.command("show")
+def working_set_show(
+    ws_id: Annotated[str, typer.Argument(help="Working set ID")],
+) -> None:
+    """Show full details of a working set."""
+    if _use_api():
+        from rag.api_client import ApiError
+        with _get_client() as client:
+            try:
+                ws = client.get_working_set(ws_id)
+            except ApiError as e:
+                if e.status == 404:
+                    console.print(f"[red]Working set not found: {ws_id}[/red]")
+                    raise typer.Exit(1)
+                raise
+    else:
+        import json as _json
+        with _get_connection() as conn:
+            row = conn.execute(
+                "SELECT id, name, source_ids, created_at, updated_at FROM working_sets WHERE id = %s",
+                (ws_id,),
+            ).fetchone()
+        if row is None:
+            console.print(f"[red]Working set not found: {ws_id}[/red]")
+            raise typer.Exit(1)
+        sids = row[2]
+        if isinstance(sids, str):
+            try:
+                sids = _json.loads(sids)
+            except (_json.JSONDecodeError, TypeError):
+                sids = []
+        ws = {
+            "id": str(row[0]),
+            "name": row[1],
+            "source_ids": sids if isinstance(sids, list) else [],
+            "created_at": row[3].isoformat() if row[3] else None,
+            "updated_at": row[4].isoformat() if row[4] else None,
+        }
+    console.print_json(json.dumps(ws))
+
+
+@working_set_app.command("add")
+def working_set_add(
+    ws_id: Annotated[str, typer.Argument(help="Working set ID")],
+    source_ids: Annotated[list[str], typer.Argument(help="Source IDs to add")],
+) -> None:
+    """Add source IDs to an existing working set."""
+    if _use_api():
+        from rag.api_client import ApiError
+        with _get_client() as client:
+            try:
+                existing = client.get_working_set(ws_id)
+            except ApiError as e:
+                if e.status == 404:
+                    console.print(f"[red]Working set not found: {ws_id}[/red]")
+                    raise typer.Exit(1)
+                raise
+            current = set(existing.get("source_ids", []))
+            current.update(source_ids)
+            result = client.update_working_set(ws_id, source_ids=sorted(current))
+    else:
+        import json as _json
+        with _get_connection() as conn:
+            row = conn.execute(
+                "SELECT source_ids FROM working_sets WHERE id = %s",
+                (ws_id,),
+            ).fetchone()
+            if row is None:
+                console.print(f"[red]Working set not found: {ws_id}[/red]")
+                raise typer.Exit(1)
+            sids = row[0]
+            if isinstance(sids, str):
+                try:
+                    sids = _json.loads(sids)
+                except (_json.JSONDecodeError, TypeError):
+                    sids = []
+            current = set(sids if isinstance(sids, list) else [])
+            current.update(source_ids)
+            conn.execute(
+                "UPDATE working_sets SET source_ids = %s::jsonb, updated_at = now() WHERE id = %s",
+                (_json.dumps(sorted(current)), ws_id),
+            )
+        result = {"id": ws_id}
+    console.print(f"[green]Updated working set {result['id']}.[/green]")
+
+
+@working_set_app.command("remove")
+def working_set_remove(
+    ws_id: Annotated[str, typer.Argument(help="Working set ID")],
+    source_ids: Annotated[list[str], typer.Argument(help="Source IDs to remove")],
+) -> None:
+    """Remove source IDs from a working set."""
+    if _use_api():
+        from rag.api_client import ApiError
+        with _get_client() as client:
+            try:
+                existing = client.get_working_set(ws_id)
+            except ApiError as e:
+                if e.status == 404:
+                    console.print(f"[red]Working set not found: {ws_id}[/red]")
+                    raise typer.Exit(1)
+                raise
+            current = set(existing.get("source_ids", []))
+            current.difference_update(source_ids)
+            result = client.update_working_set(ws_id, source_ids=sorted(current))
+    else:
+        import json as _json
+        with _get_connection() as conn:
+            row = conn.execute(
+                "SELECT source_ids FROM working_sets WHERE id = %s",
+                (ws_id,),
+            ).fetchone()
+            if row is None:
+                console.print(f"[red]Working set not found: {ws_id}[/red]")
+                raise typer.Exit(1)
+            sids = row[0]
+            if isinstance(sids, str):
+                try:
+                    sids = _json.loads(sids)
+                except (_json.JSONDecodeError, TypeError):
+                    sids = []
+            current = set(sids if isinstance(sids, list) else [])
+            current.difference_update(source_ids)
+            conn.execute(
+                "UPDATE working_sets SET source_ids = %s::jsonb, updated_at = now() WHERE id = %s",
+                (_json.dumps(sorted(current)), ws_id),
+            )
+        result = {"id": ws_id}
+    console.print(f"[green]Updated working set {result['id']}.[/green]")
+
+
+@working_set_app.command("rename")
+def working_set_rename(
+    ws_id: Annotated[str, typer.Argument(help="Working set ID")],
+    new_name: Annotated[str, typer.Argument(help="New name for the working set")],
+) -> None:
+    """Rename a working set."""
+    if _use_api():
+        from rag.api_client import ApiError
+        with _get_client() as client:
+            try:
+                result = client.update_working_set(ws_id, name=new_name)
+            except ApiError as e:
+                console.print(f"[red]{e.detail}[/red]")
+                raise typer.Exit(1)
+    else:
+        with _get_connection() as conn:
+            existing = conn.execute(
+                "SELECT id FROM working_sets WHERE id = %s",
+                (ws_id,),
+            ).fetchone()
+            if existing is None:
+                console.print(f"[red]Working set not found: {ws_id}[/red]")
+                raise typer.Exit(1)
+            try:
+                conn.execute(
+                    "UPDATE working_sets SET name = %s, updated_at = now() WHERE id = %s",
+                    (new_name, ws_id),
+                )
+            except Exception as e:
+                msg = str(e).lower()
+                if "unique" in msg or "duplicate" in msg:
+                    console.print(f"[red]working set name already exists: {new_name}[/red]")
+                else:
+                    console.print(f"[red]{e}[/red]")
+                raise typer.Exit(1)
+        result = {"id": ws_id}
+    console.print(f"[green]Renamed working set {result['id']} to {new_name}.[/green]")
+
+
+@working_set_app.command("delete")
+def working_set_delete(
+    ws_id: Annotated[str, typer.Argument(help="Working set ID")],
+) -> None:
+    """Delete a working set."""
+    if _use_api():
+        from rag.api_client import ApiError
+        with _get_client() as client:
+            try:
+                client.delete_working_set(ws_id)
+            except ApiError as e:
+                if e.status == 404:
+                    console.print(f"[red]Working set not found: {ws_id}[/red]")
+                    raise typer.Exit(1)
+                raise
+    else:
+        with _get_connection() as conn:
+            result = conn.execute("DELETE FROM working_sets WHERE id = %s", (ws_id,))
+        if result.rowcount == 0:
+            console.print(f"[red]Working set not found: {ws_id}[/red]")
+            raise typer.Exit(1)
+    console.print(f"[green]Deleted working set {ws_id}.[/green]")
+
+
+@themes_app.command("generate")
+def themes_generate(
+    run_id: Annotated[str, typer.Option("--run-id", help="Community run ID to generate a theme report from")],
+    model: Annotated[Optional[str], typer.Option("--model", help="LLM model to use for theme analysis")] = None,
+) -> None:
+    """Generate a theme report from a completed community run."""
+    if _use_api():
+        from rag.api_client import ApiError
+        with _get_client() as client:
+            try:
+                result = client.generate_theme(run_id, model=model)
+            except ApiError as e:
+                console.print(f"[red]{e.detail}[/red]")
+                raise typer.Exit(1)
+    else:
+        from rag.themes import generate_theme_report as _generate
+        try:
+            report_id = _generate(run_id, model)
+        except ValueError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1)
+        result = {"id": report_id}
+    console.print(f"[green]Theme report created: {result['id']}.[/green]")
+
+
+@themes_app.command("list")
+def themes_list(
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Maximum number of reports")] = 20,
+    offset: Annotated[int, typer.Option("--offset", help="Pagination offset")] = 0,
+) -> None:
+    """List theme reports."""
+    if _use_api():
+        with _get_client() as client:
+            data = client.list_theme_reports(limit=limit, offset=offset)
+    else:
+        from rag.themes import list_reports as _list_reports
+        data = _list_reports(limit=limit, offset=offset)
+    rows = data.get("reports", [])
+    if not rows:
+        console.print("[dim]No theme reports found.[/dim]")
+        return
+    table = Table(title="Theme Reports")
+    table.add_column("ID", style="dim", no_wrap=True)
+    table.add_column("Run ID", style="dim")
+    table.add_column("Status")
+    table.add_column("Model")
+    table.add_column("Created")
+    for r in rows:
+        color = "green" if r["status"] == "completed" else ("red" if r["status"] == "failed" else "yellow")
+        table.add_row(
+            r["id"],
+            r.get("run_id") or "",
+            f"[{color}]{r['status']}[/{color}]",
+            r.get("model") or "",
+            (r.get("created_at") or "")[:19],
+        )
+    console.print(table)
+
+
+@themes_app.command("show")
+def themes_show(
+    report_id: Annotated[str, typer.Argument(help="Theme report ID")],
+) -> None:
+    """Show a theme report in full."""
+    if _use_api():
+        from rag.api_client import ApiError
+        with _get_client() as client:
+            try:
+                report = client.get_theme_report(report_id)
+            except ApiError as e:
+                if e.status == 404:
+                    console.print(f"[red]Theme report not found: {report_id}[/red]")
+                    raise typer.Exit(1)
+                raise
+    else:
+        from rag.themes import get_report as _get_report
+        report = _get_report(report_id)
+        if report is None:
+            console.print(f"[red]Theme report not found: {report_id}[/red]")
+            raise typer.Exit(1)
+    console.print_json(json.dumps(report))
+
+
+@themes_app.command("regenerate")
+def themes_regenerate(
+    report_id: Annotated[str, typer.Argument(help="Theme report ID to regenerate")],
+    model: Annotated[Optional[str], typer.Option("--model", help="LLM model to use")] = None,
+) -> None:
+    """Regenerate a theme report (retries failed communities)."""
+    if _use_api():
+        from rag.api_client import ApiError
+        with _get_client() as client:
+            try:
+                result = client.regenerate_theme(report_id, model=model)
+            except ApiError as e:
+                console.print(f"[red]{e.detail}[/red]")
+                raise typer.Exit(1)
+    else:
+        from rag.themes import regenerate_report as _regenerate
+        try:
+            new_id = _regenerate(report_id, model)
+        except ValueError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1)
+        result = {"id": new_id}
+    console.print(f"[green]Regenerated theme report: {result['id']}.[/green]")
+
+
+@answers_app.command("list")
+def answers_list(
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Maximum number of answers")] = 20,
+    offset: Annotated[int, typer.Option("--offset", help="Pagination offset")] = 0,
+) -> None:
+    """List saved answers."""
+    if _use_api():
+        with _get_client() as client:
+            data = client.list_answers(limit=limit, offset=offset)
+    else:
+        import json as _json
+        with _get_connection() as conn:
+            total = conn.execute("SELECT count(*) FROM saved_answers").fetchone()[0]
+            rows = conn.execute(
+                """SELECT id, question, answer, model, params, evidence_snapshot, created_at
+                   FROM saved_answers ORDER BY created_at DESC LIMIT %s OFFSET %s""",
+                (limit, offset),
+            ).fetchall()
+        data = {
+            "answers": [
+                {
+                    "id": str(r[0]),
+                    "question": r[1],
+                    "answer": r[2],
+                    "model": r[3] or "",
+                    "created_at": r[6].isoformat() if r[6] else None,
+                }
+                for r in rows
+            ],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+    answers = data.get("answers", [])
+    if not answers:
+        console.print("[dim]No saved answers found.[/dim]")
+        return
+    table = Table(title="Saved Answers")
+    table.add_column("ID", style="dim", no_wrap=True)
+    table.add_column("Question")
+    table.add_column("Model")
+    table.add_column("Created")
+    for a in answers:
+        question = (a.get("question") or "")[:80] + ("…" if len(a.get("question") or "") > 80 else "")
+        table.add_row(a["id"], question, a.get("model") or "", (a.get("created_at") or "")[:19])
+    console.print(table)
+
+
+@answers_app.command("show")
+def answers_show(
+    answer_id: Annotated[str, typer.Argument(help="Saved answer ID")],
+) -> None:
+    """Show a saved answer in full."""
+    if _use_api():
+        from rag.api_client import ApiError
+        with _get_client() as client:
+            try:
+                answer = client.get_answer(answer_id)
+            except ApiError as e:
+                if e.status == 404:
+                    console.print(f"[red]Answer not found: {answer_id}[/red]")
+                    raise typer.Exit(1)
+                raise
+    else:
+        import json as _json
+        with _get_connection() as conn:
+            row = conn.execute(
+                """SELECT id, question, answer, model, params, evidence_snapshot, created_at
+                   FROM saved_answers WHERE id = %s""",
+                (answer_id,),
+            ).fetchone()
+        if row is None:
+            console.print(f"[red]Answer not found: {answer_id}[/red]")
+            raise typer.Exit(1)
+        evidence = row[5]
+        if isinstance(evidence, str):
+            try:
+                evidence = _json.loads(evidence)
+            except (_json.JSONDecodeError, TypeError):
+                evidence = []
+        params = row[4]
+        if isinstance(params, str):
+            try:
+                params = _json.loads(params)
+            except (_json.JSONDecodeError, TypeError):
+                params = {}
+        answer = {
+            "id": str(row[0]),
+            "question": row[1],
+            "answer": row[2],
+            "model": row[3] or "",
+            "params": params if isinstance(params, dict) else {},
+            "evidence_snapshot": evidence if isinstance(evidence, list) else [],
+            "created_at": row[6].isoformat() if row[6] else None,
+        }
+    console.print_json(json.dumps(answer))
 
 
 if __name__ == "__main__":

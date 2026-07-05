@@ -25,14 +25,14 @@ def _result(block_count: int):
 
 
 def test_prewarm_issues_pg_prewarm_for_both_indexes() -> None:
-    conn = _fake_conn([_result(11), _result(22)])
+    conn = _fake_conn([_result(11), _result(22), _result(33)])
     with patch("rag.db.psycopg.connect", return_value=conn) as connect:
         blocks = prewarm_vector_indexes()
 
     assert connect.call_args.kwargs.get("autocommit") is True
     warmed = [call.args[1][0] for call in conn.execute.call_args_list]
     assert warmed == list(PREWARM_INDEXES)
-    assert blocks == [11, 22]
+    assert blocks == [11, 22, 33]
     conn.close.assert_called_once()
 
 
@@ -48,13 +48,12 @@ def test_prewarm_skips_when_extension_missing() -> None:
 
 
 def test_prewarm_skips_absent_index_but_continues() -> None:
-    # First index missing (UndefinedTable) -> skip; second warms normally.
-    conn = _fake_conn([psycopg.errors.UndefinedTable("no such index"), _result(7)])
+    conn = _fake_conn([psycopg.errors.UndefinedTable("no such index"), _result(7), _result(8)])
     with patch("rag.db.psycopg.connect", return_value=conn):
         blocks = prewarm_vector_indexes()
 
-    assert blocks == [7]
-    assert conn.execute.call_count == 2
+    assert blocks == [7, 8]
+    assert conn.execute.call_count == 3
     conn.close.assert_called_once()
 
 

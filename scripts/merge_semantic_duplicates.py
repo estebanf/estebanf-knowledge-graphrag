@@ -247,8 +247,12 @@ def run_entity_merge(
     person_fuzzy_threshold: float = 0.90,
     cosine_threshold: float = 0.93,
     prefix_len: int = 3,
-) -> int:
-    """Find and merge semantic-duplicate entity clusters. Returns total merged count.
+) -> tuple[int, set[str]]:
+    """Find and merge semantic-duplicate entity clusters.
+
+    Returns (total_merged, set of all entity ids that were part of any merge
+    cluster — survivors and merged-away alike — so the caller can invalidate
+    the entity_semantic_edges cache).
 
     Extracted from `main()` so `scripts/weekly_maintenance.py` can invoke the
     exact same code path as this script's own CLI entry point (U7) — both
@@ -311,6 +315,7 @@ def run_entity_merge(
     )
 
     total_merged = 0
+    merged_entity_ids: set[str] = set()
     with get_connection() as conn, get_graph_driver() as driver:
         with driver.session() as session:
             for cluster_ids in clusters.values():
@@ -318,12 +323,13 @@ def run_entity_merge(
                 if len(members) < 2:
                     continue
                 total_merged += merge_cluster(conn, session, members, dry_run=dry_run)
+                merged_entity_ids |= set(cluster_ids)
 
     if total_merged > 0:
         print(f"Reclaiming space from {total_merged} merged row(s)...", flush=True)
         vacuum_analyze_entities()
 
-    return total_merged
+    return total_merged, merged_entity_ids
 
 
 def main() -> int:
@@ -337,7 +343,7 @@ def main() -> int:
     parser.add_argument("--prefix-len", type=int, default=3)
     args = parser.parse_args()
 
-    run_entity_merge(
+    total_merged, _ = run_entity_merge(
         dry_run=args.dry_run,
         fuzzy_threshold=args.fuzzy_threshold,
         person_fuzzy_threshold=args.person_fuzzy_threshold,
@@ -345,7 +351,7 @@ def main() -> int:
         prefix_len=args.prefix_len,
     )
 
-    print("Done.")
+    print(f"Total merged: {total_merged}. Done.")
     return 0
 
 

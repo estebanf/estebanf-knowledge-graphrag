@@ -69,3 +69,20 @@ The audit policy governing per-chunk extraction failures during intake: an indiv
 
 ### Stage Duration Baseline
 A frozen, explicitly-snapshotted reference duration for a pipeline stage, used to detect performance drift. Deliberately not a moving or rolling average: a moving baseline rises together with a gradual regression and would never register as drift, so the baseline is only updated when someone explicitly re-snapshots it, not automatically from recent runs.
+
+## Exploration
+
+### Community Run
+A persisted, addressable execution of community detection: a row holding the resolved source-id snapshot, the parameters used, a stage log of progress, and the full result with stable per-run community ids. Every community execution — synchronous or streamed, from any surface — creates one, so downstream artifacts can reference exactly the partition the operator saw.
+
+### Virtual Entity Resolution
+The run-local clustering of near-duplicate entities (by embedding similarity) inside a community run's subgraph. Merged entities collapse into one graph vertex for that run only; nothing in stored entities or the graph database is mutated, and the run records which entities were virtually merged.
+
+### Cross-Source Edge Cache
+Persisted entity-pair similarity edges computed just-in-time during community runs and reused by later runs. Derived data, keyed on persistent entity ids: safe to truncate at any time, and invalidated by the Weekly Maintenance Sweep when entities are merged or no longer exist.
+
+### Working Set
+A named, persisted collection of source ids usable as scope for search, retrieve, community, theme, and answer operations. Scope resolution snapshots the member ids at dispatch, so later edits to the set never change what an in-flight or completed run covered.
+
+### Theme Report
+The persisted LLM analysis of a Community Run: per-community labels, quality types (thematic cluster, umbrella cluster, vendor list, source fragment, noisy artifact), confidence, cross-source flags, higher-order thematic buckets, and a cross-community narrative — with evidence resolved through the run it references. Reports with partially failed analyses are saved as partial and support targeted regeneration.

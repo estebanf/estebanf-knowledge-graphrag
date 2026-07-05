@@ -254,3 +254,66 @@ class RagClient:
         with connect_sse(self._client, "GET", f"/api/workers/{worker_id}/log", params={"follow": "true"}) as event_source:
             for sse in event_source.iter_sse():
                 yield sse.data
+
+    # --- working sets -----------------------------------------------------------
+
+    def list_working_sets(self) -> dict:
+        return self._get_json("/api/working-sets")
+
+    def create_working_set(self, name: str, source_ids: list[str]) -> dict:
+        return self._post_json("/api/working-sets", {"name": name, "source_ids": source_ids})
+
+    def get_working_set(self, ws_id: str) -> dict:
+        return self._get_json(f"/api/working-sets/{ws_id}")
+
+    def update_working_set(self, ws_id: str, *, name: str | None = None, source_ids: list[str] | None = None) -> dict:
+        payload: dict = {}
+        if name is not None:
+            payload["name"] = name
+        if source_ids is not None:
+            payload["source_ids"] = source_ids
+        return self._request("PATCH", f"/api/working-sets/{ws_id}", json=payload).json()
+
+    def delete_working_set(self, ws_id: str) -> dict:
+        return self._request("DELETE", f"/api/working-sets/{ws_id}").json()
+
+    # --- themes ----------------------------------------------------------------
+
+    def generate_theme(self, run_id: str, model: str | None = None) -> dict:
+        payload: dict = {"run_id": run_id}
+        if model:
+            payload["model"] = model
+        return self._post_json("/api/themes", payload)
+
+    def list_theme_reports(self, limit: int = 20, offset: int = 0) -> dict:
+        return self._get_json("/api/themes", params={"limit": limit, "offset": offset})
+
+    def get_theme_report(self, report_id: str) -> dict:
+        return self._get_json(f"/api/themes/{report_id}")
+
+    def regenerate_theme(self, report_id: str, model: str | None = None) -> dict:
+        payload: dict = {}
+        if model:
+            payload["model"] = model
+        return self._post_json(f"/api/themes/{report_id}/regenerate", payload)
+
+    # --- answers ---------------------------------------------------------------
+
+    def list_answers(self, limit: int = 20, offset: int = 0) -> dict:
+        return self._get_json("/api/answers", params={"limit": limit, "offset": offset})
+
+    def get_answer(self, answer_id: str) -> dict:
+        return self._get_json(f"/api/answers/{answer_id}")
+
+    # --- community runs --------------------------------------------------------
+
+    def list_community_runs(self, limit: int = 20, offset: int = 0) -> dict:
+        return self._get_json("/api/community/runs", params={"limit": limit, "offset": offset})
+
+    def get_community_run(self, run_id: str) -> dict:
+        return self._get_json(f"/api/community/runs/{run_id}")
+
+    # --- facets ----------------------------------------------------------------
+
+    def get_facets(self) -> dict:
+        return self._get_json("/api/sources/facets")

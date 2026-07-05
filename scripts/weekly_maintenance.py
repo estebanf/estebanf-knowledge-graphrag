@@ -420,7 +420,80 @@ def release_maintenance_lock(conn) -> None:
     conn.execute("SELECT pg_advisory_unlock(%s)", (MAINTENANCE_LOCK_KEY,))
 
 
-# ── CLI ───────────────────────────────────────────────────────────────────────
+# ── Cache invalidation ────────────────────────────────────────────────────────
+
+
+def _invalidate_entity_edge_cache(merged_entity_ids: set[str]) -> None:
+    """Delete entity_semantic_edges rows touching merged entities and orphaned
+    entity ids that no longer exist in `entities`.  Skip entirely when
+    `merged_entity_ids` is empty and no orphans exist (mirroring the existing
+    "only vacuum when total_merged > 0" discipline)."""
+
+    if not merged_entity_ids:
+        with get_connection() as conn:
+            orphan_count = conn.execute(
+                """SELECT count(*) FROM entity_semantic_edges ese
+                   WHERE NOT EXISTS (SELECT 1 FROM entities e WHERE e.id = ese.entity_a)
+                      OR NOT EXISTS (SELECT 1 FROM entities e WHERE e.id = ese.entity_b)"""
+            ).fetchone()[0]
+        if orphan_count == 0:
+            print("Cache invalidation: nothing to do (no merges, no orphans).")
+            return
+        print(f"Cache invalidation: deleting {orphan_count} orphaned edge row(s)...")
+        with get_connection() as conn:
+            conn.execute(
+                """DELETE FROM entity_semantic_edges
+                   WHERE NOT EXISTS (SELECT 1 FROM entities e WHERE e.id = entity_semantic_edges.entity_a)
+                      OR NOT EXISTS (SELECT 1 FROM entities e WHERE e.id = entity_semantic_edges.entity_b)"""
+            )
+        print(f"Cache invalidation: {orphan_count} orphaned edge row(s) deleted.")
+        return
+
+    entity_list = list(merged_entity_ids)
+    with get_connection() as conn:
+        touched = conn.execute(
+            """DELETE FROM entity_semantic_edges
+               WHERE entity_a = ANY(%s::uuid[]) OR entity_b = ANY(%s::uuid[])""",
+            (entity_list, entity_list),
+        ).rowcount or 0
+
+        orphan = conn.execute(
+            """DELETE FROM entity_semantic_edges
+               WHERE NOT EXISTS (SELECT 1 FROM entities e WHERE e.id = entity_semantic_edges.entity_a)
+                  OR NOT EXISTS (SELECT 1 FROM entities e WHERE e.id = entity_semantic_edges.entity_b)"""
+        ).rowcount or 0
+
+    total = touched + orphan
+    if total > 0:
+        print(
+            f"Cache invalidation: deleted {touched} edge row(s) touching merged entities, "
+            f"{orphan} orphaned row(s) ({total} total)."
+        )
+    else:
+        print("Cache invalidation: nothing to delete (merged entities had no cached edges).")
+
+
+# ── Community-run concurrency guard ───────────────────────────────────────────
+
+
+def _reap_stale_community_runs(conn) -> int:
+    """Mark stale community_runs rows as failed. Returns number of rows reaped."""
+    return conn.execute(
+        """UPDATE community_runs
+           SET status = 'failed',
+               error = 'stale',
+               updated_at = now()
+           WHERE status = 'running'
+             AND updated_at < now() - make_interval(secs => %s)""",
+        (settings.COMMUNITY_RUN_STALE_SECONDS,),
+    ).rowcount or 0
+
+
+def _count_active_community_runs(conn) -> int:
+    return conn.execute(
+        "SELECT count(*) FROM community_runs WHERE status = 'running'"
+    ).fetchone()[0]
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -475,9 +548,12 @@ def _run_phases(args: argparse.Namespace) -> int:
 
     if not args.skip_entities:
         print("== Phase 1: entity merge ==", flush=True)
-        entity_merge.run_entity_merge(dry_run=dry_run)
+        merged_count, merged_entity_ids = entity_merge.run_entity_merge(dry_run=dry_run)
+        if not dry_run:
+            _invalidate_entity_edge_cache(merged_entity_ids)
     else:
         print("== Phase 1: entity merge (skipped) ==")
+        merged_count = 0
 
     if not args.skip_insights:
         print("== Phase 2: insight merge ==", flush=True)
@@ -518,6 +594,21 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"Refusing --execute: {active} job(s) in flight (status pending/"
                 f"processing:*). Wait for them to finish, or rerun with --dry-run."
+            )
+            return 1
+
+        reaped = _reap_stale_community_runs(guard_conn)
+        if reaped > 0:
+            print(
+                f"Reaped {reaped} stale community run(s) (status 'running' with "
+                f"updated_at older than {settings.COMMUNITY_RUN_STALE_SECONDS}s)."
+            )
+
+        active_runs = _count_active_community_runs(guard_conn)
+        if active_runs > 0:
+            print(
+                f"Refusing --execute: {active_runs} community run(s) in flight "
+                f"(status 'running'). Wait for them to finish, or rerun with --dry-run."
             )
             return 1
 
