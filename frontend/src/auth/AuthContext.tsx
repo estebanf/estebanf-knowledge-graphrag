@@ -4,7 +4,7 @@ import { onAuthError } from "../lib/api";
 
 type AuthState =
   | { status: "loading" }
-  | { status: "anonymous" }
+  | { status: "anonymous"; sessionExpired?: boolean }
   | { status: "authenticated"; user: MeResponse };
 
 type AuthContextValue = {
@@ -30,9 +30,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (TEST_BYPASS) return;
     try {
       const me = await fetchMe();
-      setState(me ? { status: "authenticated", user: me } : { status: "anonymous" });
+      setState(me ? { status: "authenticated", user: me } : { status: "anonymous", sessionExpired: false });
     } catch {
-      setState({ status: "anonymous" });
+      setState({ status: "anonymous", sessionExpired: false });
     }
   }, []);
 
@@ -41,7 +41,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [refresh]);
 
   useEffect(() => {
-    onAuthError(() => setState({ status: "anonymous" }));
+    onAuthError(() => setState({ status: "anonymous", sessionExpired: true }));
     return () => onAuthError(null);
   }, []);
 
@@ -55,7 +55,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     await apiLogout();
-    setState({ status: "anonymous" });
+    setState({ status: "anonymous", sessionExpired: false });
   }, []);
 
   const value = useMemo<AuthContextValue>(() => ({ state, login, logout, refresh }), [state, login, logout, refresh]);

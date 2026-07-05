@@ -288,8 +288,21 @@ Live measurements on the reference corpus (~126k chunks / ~112k insights, `rag s
 | `COMMUNITY_SUMMARIZATION_PROMPT` | empty | Optional prompt override for community summarization. |
 | `COMMUNITY_CROSS_SOURCE_TOP_K` | `10` | Max cross-source semantic neighbors fetched per entity via pgvector ANN. |
 | `COMMUNITY_MAX_CROSS_SOURCE_QUERIES` | `5000` | Hard cap on per-entity ANN queries; entities are prioritized by chunk-mention count. |
+| `COMMUNITY_RESOLUTION` | `1.0` | Leiden resolution parameter. 1.0 is balanced; below 1.0 merges into fewer, larger communities; above 1.0 splits into more, smaller ones. |
+| `COMMUNITY_VIRTUAL_MERGE_THRESHOLD` | `0.90` | Cosine similarity threshold for run-local virtual entity merging. Set to `0` to disable. |
+| `COMMUNITY_SUMMARY_MAX_WORKERS` | `4` | Max concurrent LLM calls during community summarization. |
+| `COMMUNITY_EDGE_CACHE_PREFETCH` | `250` | BQ HNSW prefetch count for cross-source edge ANN queries. |
+| `COMMUNITY_MAX_CONCURRENT_RUNS` | `3` | Max concurrent non-terminal community runs allowed before `create_run` rejects. |
+| `COMMUNITY_RUN_STALE_SECONDS` | `600` | Seconds before a `running` run row is marked `failed` as stale. |
 | `WORKER_POLL_INTERVAL` | `5` | Default idle poll interval for `rag worker`. |
 | `WORKER_STUCK_JOB_MINUTES` | `30` | Default age after which a processing job is considered stuck. |
+
+### Theme report settings
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `THEME_REPORT_MODEL` | empty | Model for theme report LLM calls. Empty reuses the community summarization model. |
+| `THEME_REPORT_PROMPT` | empty | Optional prompt override for per-community theme analysis. |
 
 ## Services and Data
 
@@ -353,13 +366,22 @@ Implementation notes:
 
 The backend mounts an MCP (Model Context Protocol) server at `/mcp` using Streamable HTTP transport. Tools wrap the read-only REST endpoints:
 
-| Tool             | Wraps                       |
-| ---------------- | --------------------------- |
-| `search`         | `POST /api/search`          |
-| `retrieve`       | `POST /api/retrieve`        |
-| `community`      | `POST /api/community`       |
-| `list_sources`   | `GET  /api/sources`         |
-| `source_insights`| `GET  /api/sources/{id}/insights` |
+| Tool              | Wraps                       |
+| ----------------- | --------------------------- |
+| `search`          | `POST /api/search`          |
+| `retrieve`        | `POST /api/retrieve`        |
+| `community`       | `POST /api/community`       |
+| `list_sources`    | `GET  /api/sources`         |
+| `source_insights` | `GET  /api/sources/{id}/insights` |
+| `list_community_runs` | `GET  /api/community/runs` |
+| `get_community_run`   | `GET  /api/community/runs/{id}` |
+| `list_theme_reports`  | `GET  /api/themes`         |
+| `get_theme_report`    | `GET  /api/themes/{id}`    |
+| `list_answers`        | `GET  /api/answers`        |
+| `get_answer`          | `GET  /api/answers/{id}`   |
+| `list_working_sets`   | `GET  /api/working-sets`   |
+| `get_working_set`     | `GET  /api/working-sets/{id}` |
+| `list_metadata_facets` | `GET  /api/sources/facets` |
 
 Connect from a compatible client (e.g. Claude Desktop, Claude Code) with the URL `https://your-server/mcp/` and `Authorization: Bearer <token>`. Quick probe:
 
@@ -941,10 +963,121 @@ Community analysis groups connected entities into communities and returns repres
 - explicit source IDs
 - sources matched by search
 - sources matched by retrieval
+- a named working set (resolved to its member source IDs at dispatch)
 
 Optional summarization adds an LLM-written summary per community.
 
-Cross-source community detection uses pgvector ANN queries against the `entities_embedding_hnsw_idx` index and is no longer disabled at large entity scopes. Tuning `--semantic-threshold` lower (e.g. 0.75–0.80) helps surface looser cross-source clusters. If the HNSW index is absent on older deployments, pgvector falls back to a sequential scan with correct but slower results; run `CREATE INDEX entities_embedding_hnsw_idx ON entities USING hnsw (embedding vector_cosine_ops)` to restore index performance.
+Cross-source community detection uses the binary-quantized HNSW index on `entities.embedding` (migration 013) as a fast prefilter, combined with a persistent `entity_semantic_edges` cache for read-through reuse across runs. Virtual entity resolution merges near-duplicate entities within a run's subgraph without mutating stored data. Leiden uses `RBConfigurationVertexPartition` with a configurable `resolution` parameter and a fixed random seed (`42`) for reproducible partitions.
+
+Every community execution is persisted as a run with a stable `run_id`, and progress streams over SSE so the frontend can show live stage counts. A synchronous `POST /api/community` is kept for CLI/MCP compatibility and records a run the same way. Async `POST /api/community/runs` + `GET .../events` are the new frontend flow.
+
+### CLI
+
+**Community detection commands** support new options alongside all existing ones:
+
+- `--resolution FLOAT`: Leiden resolution; 1.0 balanced, below 1.0 merges into fewer communities, above 1.0 splits into more
+- `--source-cooc-weight FLOAT`: extra weight added when entities co-occur in the same source
+- `--cross-source-top-k INTEGER`: max cross-source semantic neighbors fetched per entity via bq-indexed ANN
+- `--max-cross-source-queries INTEGER`: hard cap on per-entity ANN queries; entities prioritized by chunk-mention count
+- `--working-set UUID`: resolve scope from a working set instead of explicit IDs
+
+**New subcommands:**
+
+```bash
+rag community runs list
+rag community runs show <run_id>
+```
+
+#### `rag working-set`
+
+```bash
+rag working-set create --name "AI infra" --source-id <id> --source-id <id>
+rag working-set list
+rag working-set show <ws-id>
+rag working-set add <ws-id> --source-id <id>
+rag working-set remove <ws-id> --source-id <id>
+rag working-set rename <ws-id> --name "New name"
+rag working-set delete <ws-id>
+```
+
+#### `rag themes`
+
+```bash
+rag themes generate --run-id <run_id> [--model TEXT]
+rag themes list
+rag themes show <report_id>
+rag themes regenerate <report_id> [--model TEXT]
+```
+
+#### `rag answers`
+
+```bash
+rag answers list
+rag answers show <answer_id>
+```
+
+#### `rag sources facets`
+
+```bash
+rag sources facets
+# Returns distinct values with counts for kind, author, source, domain metadata keys
+# Each key includes an explicit (none) bucket for sources missing the key.
+```
+
+### REST API
+
+**Community runs (async):**
+
+```text
+POST /api/community/runs         → {run_id}  (starts background thread)
+GET  /api/community/runs          → {runs, total, limit, offset}
+GET  /api/community/runs/{id}     → full run row
+GET  /api/community/runs/{id}/events  → SSE stream of stage_log events
+```
+
+The `events` endpoint polls the run row every 0.5s and emits one SSE event per new `stage_log` entry. On terminal status (`completed` or `failed`) it emits a final `result` event and closes. Reconnecting replays progress from the persisted `stage_log`.
+
+### Working Sets
+
+```text
+GET    /api/working-sets           → list working sets
+POST   /api/working-sets           → create {name, source_ids}
+GET    /api/working-sets/{id}      → get one
+PATCH  /api/working-sets/{id}      → update {name?, source_ids?}
+DELETE /api/working-sets/{id}      → delete
+```
+
+Working sets are named, persisted collections of source IDs usable as scope for community, search, retrieve, answer, and theme report generation. Scope resolution snapshots member IDs at dispatch; later edits to the set do not change in-flight or completed runs.
+
+### Theme Reports
+
+```text
+GET    /api/themes                 → list theme reports
+POST   /api/themes                 → generate {run_id, model?} → {id}
+GET    /api/themes/{id}            → get report with analyses, buckets, narrative
+POST   /api/themes/{id}/regenerate → retry failed per-community calls {model?} → {id}
+```
+
+A Theme Report is an LLM analysis generated from a persisted community run. Parallel per-community calls produce label, community_type, confidence (1-5), summary, key entities/sources; a synthesis pass produces higher-order thematic buckets, cross-community narrative, and cleanup recommendations. If some community calls fail, the report saves with status `partial` and regeneration retries only the failed parts.
+
+### Saved Answers
+
+```text
+GET    /api/answers                → list saved answers
+POST   /api/answers                → save {question, answer, model, params, evidence}
+GET    /api/answers/{id}           → get one
+DELETE /api/answers/{id}           → delete
+```
+
+Answers are saved with denormalized evidence snapshots (source_id, source_name, chunk text at save time) so they survive later source deletion. The evidence payload is validated against a bounded Pydantic model.
+
+### Source Facets
+
+```text
+GET /api/sources/facets            → {facets: {kind: [{value, count}], ...}}
+```
+
+Returns distinct values with counts for `kind`, `author`, `source`, `domain` metadata keys over non-deleted sources. Each key includes an explicit `(none)` bucket for sources missing the key.
 
 ### CLI
 
@@ -1189,6 +1322,7 @@ The migrations most likely to matter for current code are:
 - `scripts/migrate/009_binary_vector_prefilter_indexes.sql`
 - `scripts/migrate/010_entities_autovacuum_tuning.sql`
 - `scripts/migrate/012_stage_duration_baseline.sql`
+- `scripts/migrate/013_research_workspace.sql`
 
 Example:
 
@@ -1199,6 +1333,7 @@ docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/007_insigh
 docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/009_binary_vector_prefilter_indexes.sql
 docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/010_entities_autovacuum_tuning.sql
 docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/012_stage_duration_baseline.sql
+docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/013_research_workspace.sql
 ```
 
 ### Storage maintenance
