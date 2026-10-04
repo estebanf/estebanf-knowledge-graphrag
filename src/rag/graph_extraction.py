@@ -1,14 +1,12 @@
 import html
-import json
 import logging
 import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import jsonschema
-import requests
 
-from rag import prompts
+from rag import opencode, prompts
 from rag.config import settings
 from rag.embedding import get_embeddings
 
@@ -45,8 +43,18 @@ def _validate_entity(entity: dict) -> bool:
         return False
 
 
-def extract_entities(chunk_content: str) -> list[dict]:
-    """Call the LLM to extract entities from one chunk's content.
+def _normalise_entity_type(value) -> str:
+    """Map model output like "organization" / "Product" / "Named-Entity" onto
+    the uppercase underscore form the schema enum expects. Off-list values
+    stay off-list and are dropped by validation."""
+    return re.sub(r"[\s\-]+", "_", str(value).strip()).upper()
+
+
+def extract_entities(chunk_content: str, session_id: str | None = None) -> list[dict]:
+    """Call the LLM (OpenCode Go) to extract entities from one chunk's content.
+
+    `session_id` is the OpenCode conversation ID (`x-opencode-session`); the
+    caller mints one per source so every chunk of one ingestion shares it.
 
     Contract (R7): a missing API key is the documented graceful dev/CI/smoke
     path and returns `[]` rather than raising. Any other failure (HTTP
@@ -56,76 +64,35 @@ def extract_entities(chunk_content: str) -> list[dict]:
     LLM failure" and record the latter in `failed_chunks` instead of
     silently losing it.
     """
-    if not settings.OPENROUTER_API_KEY:
+    if not settings.OPENCODE_API_KEY:
         return []
-    resp = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": settings.MODEL_ENTITY_EXTRACTION,
-            "messages": [{"role": "user", "content": prompts.ENTITY_EXTRACTION.format(
-                types=", ".join(_ENTITY_TYPES),
-                text=chunk_content[:4000],
-            )}],
-            "temperature": 0,
-        },
-        timeout=60,
+    prompt = prompts.ENTITY_EXTRACTION.format(
+        types=", ".join(_ENTITY_TYPES),
+        text=chunk_content[:4000],
     )
-    resp.raise_for_status()
-    raw = resp.json()["choices"][0]["message"]["content"]
-    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
-    parsed = json.loads(raw)
+    parsed = opencode.json_call(
+        settings.MODEL_ENTITY_EXTRACTION,
+        prompt,
+        session_id=session_id,
+        reasoning_effort=settings.EXTRACTION_REASONING_EFFORT,
+        timeout=60,
+        scope="entities",
+    )
     if isinstance(parsed, dict):
         parsed = next((v for v in parsed.values() if isinstance(v, list)), [])
+    if not isinstance(parsed, list):
+        parsed = []
     result = []
     for e in parsed:
         if not isinstance(e, dict):
             continue
+        e = {**e, "entity_type": _normalise_entity_type(e.get("entity_type", ""))}
         if not _validate_entity(e):
             continue
         e["canonical_name"] = _normalise_name(e["canonical_name"])
         e["aliases"] = [_normalise_name(a) for a in e.get("aliases", [])]
         result.append(e)
     return result
-
-
-def extract_relationships(chunk_content: str, entities: list[dict]) -> list[dict]:
-    """Dormant relationship-extraction path.
-
-    Never invoked by `extract_and_store_graph` today — kept only so a future
-    unit can activate it deliberately. U4 is a pure performance rewrite of
-    the entity-only extraction/storage path and must not call this.
-    """
-    if not entities or not settings.OPENROUTER_API_KEY:
-        return []
-    try:
-        entity_names = [e["canonical_name"] for e in entities]
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": settings.MODEL_RELATIONSHIP_EXTRACTION,
-                "messages": [{"role": "user", "content": prompts.RELATIONSHIP_EXTRACTION.format(
-                    entity_names=", ".join(entity_names),
-                    text=chunk_content[:4000],
-                )}],
-                "temperature": 0,
-            },
-            timeout=60,
-        )
-        resp.raise_for_status()
-        raw = resp.json()["choices"][0]["message"]["content"]
-        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
-        rels = json.loads(raw)
-        return [r for r in rels if r.get("confidence", 0) >= settings.RELATIONSHIP_CONFIDENCE_THRESHOLD]
-    except Exception:
-        return []
 
 
 def store_entities_and_edges(
@@ -146,10 +113,6 @@ def store_entities_and_edges(
     batches: one `UNWIND` for `Entity` node MERGEs, one `UNWIND` for
     `MENTIONS` edge MERGEs, covering the whole source instead of one
     `session.run` pair per chunk.
-
-    No relationship-edge UNWIND batching is added — relationships stay
-    unextracted (U4 preserves today's no-relationship-extraction behavior
-    exactly; see `extract_and_store_graph`).
 
     Returns the list of entity ids assigned, one per (chunk, entity) mention
     in input order (duplicates included, matching the old per-chunk
@@ -244,8 +207,11 @@ def store_entities_and_edges(
 
 def _extract_chunk_entities_parallel(
     chunk_rows: list[tuple[str, str]],
+    session_id: str | None = None,
 ) -> tuple[list[tuple[str, list[dict]]], list[str]]:
     """Phase A: fan out `extract_entities` across a thread pool.
+
+    `session_id` is the one OpenCode session shared by every chunk of the source.
 
     Returns `(succeeded, failed_chunk_ids)`. A chunk-level LLM failure (any
     exception from `extract_entities`, e.g. HTTP/timeout/parse errors — NOT
@@ -261,7 +227,7 @@ def _extract_chunk_entities_parallel(
 
     def _extract(row: tuple[str, str]) -> tuple[str, list[dict]]:
         chunk_id, content = row
-        return chunk_id, extract_entities(content)
+        return chunk_id, extract_entities(content, session_id=session_id)
 
     max_workers = min(settings.GRAPH_EXTRACTION_CONCURRENCY, len(chunk_rows))
 
@@ -299,10 +265,7 @@ def extract_and_store_graph(
     """Phase A-B entity extraction/storage orchestration for one source.
 
     A: parallel `extract_entities` fan-out with per-chunk failure recording
-       (KTD6/R7). Relationship extraction (`extract_relationships`) is
-       deliberately never invoked here — U4 is a performance rewrite of the
-       entity-only path, not a scope change; today's no-relationship-
-       extraction behavior is preserved exactly.
+       (KTD6/R7), all sharing one OpenCode session id minted per source.
     B: one serial batch storage pass (`store_entities_and_edges`) — Postgres
        exact-name dedup stays a serial per-name lookup (R6), Memgraph writes
        batch into two `UNWIND` calls for the whole source.
@@ -312,16 +275,18 @@ def extract_and_store_graph(
     # KTD6b: missing API key short-circuits before the fan-out entirely —
     # this is the existing graceful dev/CI/smoke-test path, not a failure,
     # so it must never feed the failure-rate gate below.
-    if not settings.OPENROUTER_API_KEY:
+    if not settings.OPENCODE_API_KEY:
         return {
             "chunks_processed": 0,
             "entities_stored": 0,
             "failed_chunks": [],
             "skipped": True,
-            "skip_reason": "OPENROUTER_API_KEY not configured",
+            "skip_reason": "OPENCODE_API_KEY not configured",
         }
 
-    extracted_rows, failed_chunks = _extract_chunk_entities_parallel(chunk_rows)
+    extracted_rows, failed_chunks = _extract_chunk_entities_parallel(
+        chunk_rows, session_id=opencode.new_session_id("entities")
+    )
 
     if total_chunks and (len(failed_chunks) / total_chunks) > settings.STAGE_FAILURE_RATE_THRESHOLD:
         raise RuntimeError(

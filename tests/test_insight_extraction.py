@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
 
 
 def _one_hot(index: int, dim: int = 4096) -> list[float]:
@@ -20,6 +21,13 @@ def _mock_opencode(monkeypatch, handler):
         "rag.opencode._new_client",
         lambda timeout: httpx.Client(transport=httpx.MockTransport(handler), timeout=timeout),
     )
+
+
+@pytest.fixture(autouse=True)
+def _chat_completions_model(monkeypatch):
+    """Most tests here mock a /chat/completions reply; pin a DeepSeek model so
+    the production default (gpt-6-luna, /responses) doesn't change the shape."""
+    monkeypatch.setattr("rag.insight_extraction.settings.MODEL_INSIGHT_EXTRACTION", "deepseek-v4.1-flash")
 
 
 def _chat_reply(content: str):
@@ -61,6 +69,48 @@ def test_extract_parses_valid_response(monkeypatch):
     assert len(result) == 1
     assert result[0]["insight"] == "AI reduces costs"
     assert result[0]["topics"] == ["AI Adoption"]
+
+
+def test_extract_uses_configured_model_and_reasoning_effort(monkeypatch):
+    monkeypatch.setattr("rag.insight_extraction.settings.OPENCODE_API_KEY", "test-key")
+    monkeypatch.setattr("rag.insight_extraction.settings.MODEL_INSIGHT_EXTRACTION", "gpt-6-luna")
+    monkeypatch.setattr("rag.insight_extraction.settings.EXTRACTION_REASONING_EFFORT", "none")
+    import json
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"output": [{"type": "message", "content": [
+            {"type": "output_text", "text": '{"insights": []}'}]}]})
+
+    _mock_opencode(monkeypatch, handler)
+    from rag.insight_extraction import extract_insights_from_chunk
+    extract_insights_from_chunk("some text")
+    assert seen["url"].endswith("/responses")
+    assert seen["body"]["model"] == "gpt-6-luna"
+    assert seen["body"]["reasoning"] == {"effort": "none"}
+    assert "temperature" not in seen["body"]
+
+
+def test_extract_deepseek_override_routes_to_chat_completions(monkeypatch):
+    monkeypatch.setattr("rag.insight_extraction.settings.OPENCODE_API_KEY", "test-key")
+    monkeypatch.setattr("rag.insight_extraction.settings.MODEL_INSIGHT_EXTRACTION", "deepseek-v4.1-flash")
+    monkeypatch.setattr("rag.insight_extraction.settings.EXTRACTION_REASONING_EFFORT", "none")
+    import json
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"insights": []}'}}]})
+
+    _mock_opencode(monkeypatch, handler)
+    from rag.insight_extraction import extract_insights_from_chunk
+    extract_insights_from_chunk("some text")
+    assert seen["url"].endswith("/chat/completions")
+    assert seen["body"]["model"] == "deepseek-v4.1-flash"
+    assert seen["body"]["reasoning_effort"] == "none"
 
 
 def test_upsert_insight_reuses_existing():

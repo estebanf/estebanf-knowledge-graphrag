@@ -972,7 +972,7 @@ def test_generate_query_variants_uses_opencode(monkeypatch):
     monkeypatch.setattr("rag.retrieval.settings.OPENCODE_API_KEY", "test-key")
     monkeypatch.setattr("rag.retrieval.settings.MODEL_RETRIEVAL_QUERY_VARIANTS", "deepseek-v4-flash")
 
-    def fake_opencode(model, prompt, timeout=90):
+    def fake_opencode(model, prompt, timeout=90, **kwargs):
         return {"original": "what changed", "hyde": "answer", "expanded": "alt"}
     monkeypatch.setattr("rag.retrieval._chat_json_opencode", fake_opencode)
 
@@ -983,9 +983,43 @@ def test_generate_query_variants_uses_opencode(monkeypatch):
     assert result["hyde"] == "answer"
 
 
+def test_query_variant_callers_pass_default_model_and_reasoning_none(monkeypatch):
+    monkeypatch.setattr("rag.retrieval.settings.OPENCODE_API_KEY", "test-key")
+    monkeypatch.delenv("MODEL_RETRIEVAL_QUERY_VARIANTS", raising=False)
+    from rag.config import Settings
+    defaults = Settings(_env_file=None)
+    monkeypatch.setattr(
+        "rag.retrieval.settings.MODEL_RETRIEVAL_QUERY_VARIANTS", defaults.MODEL_RETRIEVAL_QUERY_VARIANTS
+    )
+    monkeypatch.setattr(
+        "rag.retrieval.settings.RETRIEVAL_QUERY_VARIANTS_REASONING_EFFORT",
+        defaults.RETRIEVAL_QUERY_VARIANTS_REASONING_EFFORT,
+    )
+    calls = []
+
+    def fake_opencode(model, prompt, **kwargs):
+        calls.append((model, kwargs))
+        return {"query": "q", "hyde": "h"}
+    monkeypatch.setattr("rag.retrieval._chat_json_opencode", fake_opencode)
+
+    from rag.retrieval import (
+        _generate_insight_sub_query,
+        generate_insight_query_variants,
+        generate_query_variants,
+    )
+    generate_query_variants("what changed?")
+    generate_insight_query_variants("what changed?")
+    _generate_insight_sub_query("what changed?", "an insight")
+
+    assert len(calls) == 3
+    for model, kwargs in calls:
+        assert model == "deepseek-v4.1-flash"
+        assert kwargs["reasoning_effort"] == "none"
+
+
 def test_generate_insight_query_variants_returns_clean_dict(monkeypatch):
     monkeypatch.setattr("rag.retrieval.settings.OPENCODE_API_KEY", "test-key")
-    def fake_opencode(model, prompt, timeout=90):
+    def fake_opencode(model, prompt, timeout=90, **kwargs):
         return {
             "original": "what changed",
             "hyde": "A policy amendment occurred",
@@ -1229,7 +1263,7 @@ def test_load_related_insights_uses_related_to():
 
 def test_generate_insight_sub_query_returns_query(monkeypatch):
     monkeypatch.setattr("rag.retrieval.settings.OPENCODE_API_KEY", "test-key")
-    def fake_opencode(model, prompt, timeout=90):
+    def fake_opencode(model, prompt, timeout=90, **kwargs):
         return {"query": "find similar strategic shifts"}
     monkeypatch.setattr("rag.retrieval._chat_json_opencode", fake_opencode)
     monkeypatch.setattr("rag.retrieval.settings.MODEL_RETRIEVAL_QUERY_VARIANTS", "deepseek-v4-flash")

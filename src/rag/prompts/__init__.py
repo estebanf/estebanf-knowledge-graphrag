@@ -29,30 +29,19 @@ Return ONLY: {"pass": true} or {"pass": false, "reason": "brief explanation"}
 Chunk:
 """
 
-ENTITY_EXTRACTION = """Extract named entities from the following text. Return ONLY a JSON array with no other text.
+ENTITY_EXTRACTION = """Extract named entities from the following text. Return ONLY a JSON object of the form {{"entities": [...]}} with no other text.
 
 Rules:
 1. Correct obvious misspellings and transcript noise to their canonical form before extracting.
    Example: "Chad GPT" → "ChatGPT", "Microsift" → "Microsoft", "Open Eye" → "OpenAI".
-2. entity_type MUST be exactly one of: {types}. No other values are acceptable — omit the entity entirely if none fits.
+2. entity_type MUST be exactly one of: {types} (uppercase). No other values are acceptable — omit the entity entirely if none fits.
 3. canonical_name must be the clean, properly capitalised, real-world name.
 4. aliases: include only meaningfully distinct alternative names (abbreviations, prior names). Leave as [] if none.
 
 Example input: "Chad GPT was released by Open Eye in twenty twenty-two"
-Example output: [{{"canonical_name": "ChatGPT", "entity_type": "PRODUCT", "aliases": []}}, {{"canonical_name": "OpenAI", "entity_type": "ORGANIZATION", "aliases": []}}]
+Example output: {{"entities": [{{"canonical_name": "ChatGPT", "entity_type": "PRODUCT", "aliases": []}}, {{"canonical_name": "OpenAI", "entity_type": "ORGANIZATION", "aliases": []}}]}}
 
-Return [] if no entities found.
-
-Text:
-{text}"""
-
-RELATIONSHIP_EXTRACTION = """Given these entities: {entity_names}
-
-Extract relationships from the text. Return ONLY a JSON array.
-Each item must have: "source" (canonical_name), "target" (canonical_name), "type" (string), "confidence" (0.0-1.0).
-Use concise relationship types like OWNS, EMPLOYS, GOVERNS, REQUIRES, IS_PART_OF, RELATED_TO.
-Only include relationships grounded in the text.
-Return [] if none found.
+Return {{"entities": []}} if no entities found.
 
 Text:
 {text}"""

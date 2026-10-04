@@ -171,17 +171,17 @@ All runtime settings are env-backed. The CLI, backend, worker, and Docker servic
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MODEL_METADATA_EXTRACTION` | `google/gemma-3-4b-it` | Extracts structured metadata from parsed markdown. |
-| `MODEL_DOC_PROFILING` | `google/gemma-3-4b-it` | Profiles a document to guide chunking behavior. |
-| `MODEL_CHUNK_VALIDATION` | `qwen/qwen2.5-7b-instruct` | Evaluates sampled chunks for quality control. |
-| `MODEL_PROPOSITION_CHUNKING` | `qwen/qwen2.5-14b-instruct` | Decomposes text into propositions when chunking requires it. |
-| `MODEL_EMBEDDING` | `qwen/qwen3-embedding-8b` | Embedding model used to vectorize chunks and search queries. |
-| `MODEL_ENTITY_EXTRACTION` | `qwen/qwen-2.5-7b-instruct` | Extracts entities from chunk text. |
-| `MODEL_RELATIONSHIP_EXTRACTION` | `qwen/qwen-2.5-7b-instruct` | Extracts entity relationships from chunk text. |
-| `MODEL_IMAGE_DESCRIPTION` | `google/gemini-2.0-flash-lite-001` | Describes inline images found during parsing. |
-| `MODEL_RETRIEVAL_QUERY_VARIANTS` | `google/gemini-2.5-flash-lite` | Generates retrieval query variants. |
-| `MODEL_RETRIEVAL_GRAPH` | `google/gemini-2.5-flash-lite` | Selects entities and graph traversal queries during retrieval. |
-| `MODEL_RETRIEVAL_RERANKER` | `cohere/rerank-v3.5` | Reranks first-stage and final retrieval candidates. |
+| `MODEL_METADATA_EXTRACTION` | `google/gemma-3-4b-it` | OpenRouter. Extracts structured metadata from parsed markdown. |
+| `MODEL_DOC_PROFILING` | `google/gemma-3-4b-it` | OpenRouter. Profiles a document to guide chunking behavior. |
+| `MODEL_CHUNK_VALIDATION` | `qwen/qwen2.5-7b-instruct` | OpenRouter. Evaluates sampled chunks for quality control. |
+| `MODEL_PROPOSITION_CHUNKING` | `qwen/qwen2.5-14b-instruct` | OpenRouter. Decomposes text into propositions when chunking requires it. |
+| `MODEL_EMBEDDING` | `qwen/qwen3-embedding-8b` | OpenRouter. Embedding model used to vectorize chunks, insights, entity names and search queries. |
+| `MODEL_IMAGE_DESCRIPTION` | `google/gemini-2.0-flash-lite-001` | OpenRouter. Describes inline images found during parsing. |
+| `MODEL_RETRIEVAL_GRAPH` | `google/gemini-2.5-flash-lite` | OpenRouter. Selects entities and graph traversal queries during retrieval. |
+| `MODEL_RETRIEVAL_RERANKER` | `cohere/rerank-v3.5` | OpenRouter. Reranks first-stage and final retrieval candidates. |
+| `MODEL_ENTITY_EXTRACTION` | `gpt-6-luna` | OpenCode Go. Extracts entities from chunk text (`/responses`). Set to e.g. `deepseek-v4.1-flash` to move off the gpt-6-luna Go quota. |
+| `MODEL_INSIGHT_EXTRACTION` | `gpt-6-luna` | OpenCode Go. Extracts insights from chunk text. For large backfills (`scripts/remediate_insights.py`) set `MODEL_INSIGHT_EXTRACTION=deepseek-v4.1-flash`. |
+| `MODEL_RETRIEVAL_QUERY_VARIANTS` | `deepseek-v4.1-flash` | OpenCode Go. Generates retrieval query variants and insight sub-queries. |
 
 ### Embedding, chunking, and graph extraction
 
@@ -190,20 +190,21 @@ All runtime settings are env-backed. The CLI, backend, worker, and Docker servic
 | `EMBEDDING_DIMENSIONS` | `4096` | Expected vector length stored in Postgres. |
 | `CHUNK_VALIDATION_SAMPLE_RATE` | `0.10` | Fraction of chunks sampled for validation on standard documents. |
 | `CHUNK_VALIDATION_SAMPLE_RATE_HIGH_STAKES` | `0.25` | Higher validation sampling rate for high-stakes domains. |
-| `RELATIONSHIP_CONFIDENCE_THRESHOLD` | `0.75` | Minimum relationship confidence kept during graph extraction. |
 | `ENTITY_DEDUP_COSINE_THRESHOLD` | `0.92` | Similarity threshold used when deduplicating entities. |
 | `GRAPH_EXTRACTION_CONCURRENCY` | `8` | Number of concurrent entity-extraction LLM calls per ingestion job; Memgraph/Postgres writes are batched afterward, not threaded. |
 | `STAGE_FAILURE_RATE_THRESHOLD` | `0.25` | Fraction of per-chunk LLM extraction failures (graph or insight extraction) tolerated before the stage fails outright instead of completing with recorded `failed_chunks`. |
 | `STAGE_DRIFT_WARN_FACTOR` | `3.0` | Multiplier over the pinned `stage_duration_baseline` (see `rag jobs stats --set-baseline`) above which a stage's duration triggers a drift warning log. |
 
-**Entity quality at insert time:** The extraction prompt instructs the LLM to correct misspellings and transcript noise before extracting. Responses are validated against a JSON schema — items with `entity_type` values outside the 7 defined types are dropped. `canonical_name` and aliases are normalised (HTML unescaping, whitespace collapse, punctuation trim) before insert. If a `canonical_name` already exists in the `entities` table, the existing row is reused rather than creating a duplicate. Residual semantic duplicates across ingestion runs are resolved offline using `scripts/merge_semantic_duplicates.py`.
+**Entity quality at insert time:** The extraction prompt instructs the LLM to correct misspellings and transcript noise before extracting. The model returns a JSON object `{"entities": [...]}`. `entity_type` is normalised (trimmed, uppercased, spaces/hyphens to underscores) and then validated against a JSON schema — items whose type is still outside the 7 defined types are dropped. `canonical_name` and aliases are normalised (HTML unescaping, whitespace collapse, punctuation trim) before insert. If a `canonical_name` already exists in the `entities` table, the existing row is reused rather than creating a duplicate. Residual semantic duplicates across ingestion runs are resolved offline using `scripts/merge_semantic_duplicates.py`.
 
 ### Insight extraction
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `OPENCODE_API_KEY` | empty | The single OpenCode Go API key, used for answer generation, retrieval query variants, insight extraction and theme reports. (`OPENCODE_GO_API_KEY` no longer exists.) |
+| `OPENCODE_API_KEY` | empty | The single OpenCode Go API key, used for answer generation, retrieval query variants, entity and insight extraction and theme reports. (`OPENCODE_GO_API_KEY` no longer exists.) |
 | `OPENCODE_FALLBACK_MODEL` | `deepseek-v4.1-flash` | Model retried once (with reasoning off) when a call hits its OpenCode Go quota/spend cap: HTTP 429 after retries, or a 4xx whose body mentions quota/limit/usage/exceeded. Empty disables the fallback. Streaming answers fall back only if the failure occurs before any text was streamed. |
+| `EXTRACTION_REASONING_EFFORT` | `none` | Reasoning effort (`none`/`low`/`medium`/`high`) for entity and insight extraction. `none` keeps gpt-6-luna cheap and avoids multi-second DeepSeek reasoning latency. |
+| `RETRIEVAL_QUERY_VARIANTS_REASONING_EFFORT` | `none` | Reasoning effort for query-variant generation. DeepSeek v4.1 flash takes ~2.5s with `none` vs 6-14s otherwise. |
 | `ANSWER_REASONING_EFFORT` | `low` | Reasoning effort (`none`/`low`/`medium`/`high`) sent for `gpt-*` answer models such as the default `gpt-6-luna`. |
 | `INSIGHT_DEDUP_COSINE_THRESHOLD` | `0.95` | Minimum cosine similarity to reuse an existing insight instead of creating a new one. |
 | `INSIGHT_LINK_TOP_K` | `10` | Number of nearest insight neighbors used for mutual top-K `RELATED_TO` edge creation. |
@@ -1296,7 +1297,6 @@ That module is the canonical place to maintain prompt text for:
 - document profiling
 - chunk validation
 - entity extraction
-- relationship extraction
 - proposition decomposition
 - answer generation
 - community summarization

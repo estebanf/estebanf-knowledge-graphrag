@@ -25,7 +25,10 @@ class Settings(BaseSettings):
     MODEL_CHUNK_VALIDATION: str = "qwen/qwen2.5-7b-instruct"
     MODEL_PROPOSITION_CHUNKING: str = "qwen/qwen2.5-14b-instruct"
     MODEL_EMBEDDING: str = "qwen/qwen3-embedding-8b"
-    MODEL_RETRIEVAL_QUERY_VARIANTS: str = "deepseek-v4-flash"
+    MODEL_RETRIEVAL_QUERY_VARIANTS: str = "deepseek-v4.1-flash"
+    # Reasoning effort for query-variant generation (deepseek-v4.1-flash is
+    # 2.5s with "none" vs 6-14s with reasoning on).
+    RETRIEVAL_QUERY_VARIANTS_REASONING_EFFORT: str = "none"
     MODEL_RETRIEVAL_GRAPH: str = "google/gemini-2.5-flash-lite"
     MODEL_RETRIEVAL_RERANKER: str = "cohere/rerank-v3.5"
 
@@ -38,10 +41,9 @@ class Settings(BaseSettings):
 
     # Graph pipeline
     MEMGRAPH_URL: str = "bolt://localhost:7687"
-    MODEL_ENTITY_EXTRACTION: str = "qwen/qwen-2.5-7b-instruct"
-    MODEL_RELATIONSHIP_EXTRACTION: str = "qwen/qwen-2.5-7b-instruct"
+    # Entity extraction runs on OpenCode Go (rag.opencode), not OpenRouter.
+    MODEL_ENTITY_EXTRACTION: str = "gpt-6-luna"
     MODEL_IMAGE_DESCRIPTION: str = "google/gemini-2.0-flash-lite-001"
-    RELATIONSHIP_CONFIDENCE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.75
     ENTITY_DEDUP_COSINE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.92
     GRAPH_EXTRACTION_CONCURRENCY: Annotated[int, Field(gt=0)] = 8
 
@@ -53,8 +55,11 @@ class Settings(BaseSettings):
     OPENCODE_FALLBACK_MODEL: str = "deepseek-v4.1-flash"
     # Reasoning effort for gpt-* answer models (none|low|medium|high).
     ANSWER_REASONING_EFFORT: str = "low"
+    # Reasoning effort for entity and insight extraction (none|low|medium|high).
+    EXTRACTION_REASONING_EFFORT: str = "none"
 
     # Insight extraction
+    MODEL_INSIGHT_EXTRACTION: str = "gpt-6-luna"
     INSIGHT_DEDUP_COSINE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.95
     INSIGHT_LINK_TOP_K: Annotated[int, Field(gt=0)] = 10
     INSIGHT_EXTRACTION_CONCURRENCY: Annotated[int, Field(gt=0)] = 12

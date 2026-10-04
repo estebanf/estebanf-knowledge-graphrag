@@ -6,7 +6,6 @@ def test_all_prompt_constants_are_non_empty_strings():
         prompts.DOCUMENT_PROFILING,
         prompts.CHUNK_VALIDATION,
         prompts.ENTITY_EXTRACTION,
-        prompts.RELATIONSHIP_EXTRACTION,
         prompts.PROPOSITION_DECOMPOSITION,
         prompts.ANSWER_GENERATION,
         prompts.COMMUNITY_SUMMARIZATION,
@@ -30,3 +29,15 @@ def test_insight_extraction_prompt_placeholders():
 def test_query_variant_prompts_do_not_request_step_back():
     assert "step_back" not in prompts.QUERY_VARIANTS
     assert "step_back" not in prompts.INSIGHT_QUERY_VARIANTS
+
+
+def test_entity_extraction_prompt_asks_for_object_and_formats():
+    rendered = prompts.ENTITY_EXTRACTION.format(types="ORGANIZATION, PERSON", text="hello")
+    assert '{"entities": [' in rendered
+    assert "JSON object" in rendered
+    assert "ORGANIZATION, PERSON" in rendered
+    assert "hello" in rendered
+
+
+def test_relationship_extraction_prompt_removed():
+    assert not hasattr(prompts, "RELATIONSHIP_EXTRACTION")

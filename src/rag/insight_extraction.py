@@ -12,7 +12,6 @@ from rag.opencode import new_session_id
 log = logging.getLogger(__name__)
 ProgressCallback = Callable[[str, dict], None]
 
-_MODEL = "deepseek-v4-flash"
 _MAX_CHUNK_CHARS = 4000
 
 
@@ -59,9 +58,10 @@ def extract_insights_from_chunk(content: str, session_id: str | None = None) -> 
         return []
     prompt = prompts.INSIGHT_EXTRACTION.format(chunk=content[:_MAX_CHUNK_CHARS])
     result = opencode.json_call(
-        _MODEL,
+        settings.MODEL_INSIGHT_EXTRACTION,
         prompt,
         session_id=session_id,
+        reasoning_effort=settings.EXTRACTION_REASONING_EFFORT,
         timeout=120,
         scope="insight",
     )

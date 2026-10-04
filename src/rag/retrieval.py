@@ -308,7 +308,12 @@ def generate_query_variants(query: str, trace_logger: Optional[TraceLogger] = No
         max_decomposed=settings.RETRIEVAL_MAX_DECOMPOSED_QUERIES,
         query=query,
     )
-    raw = _chat_json_opencode(settings.MODEL_RETRIEVAL_QUERY_VARIANTS, prompt, timeout=90)
+    raw = _chat_json_opencode(
+        settings.MODEL_RETRIEVAL_QUERY_VARIANTS,
+        prompt,
+        timeout=90,
+        reasoning_effort=settings.RETRIEVAL_QUERY_VARIANTS_REASONING_EFFORT,
+    )
     raw["original"] = query
     variants = normalize_query_variants(raw)
     if trace_logger:
@@ -318,7 +323,12 @@ def generate_query_variants(query: str, trace_logger: Optional[TraceLogger] = No
 
 def generate_insight_query_variants(query: str, trace_logger: Optional[TraceLogger] = None) -> dict[str, object]:
     prompt = prompts.INSIGHT_QUERY_VARIANTS.format(query=query)
-    raw = _chat_json_opencode(settings.MODEL_RETRIEVAL_QUERY_VARIANTS, prompt, timeout=90)
+    raw = _chat_json_opencode(
+        settings.MODEL_RETRIEVAL_QUERY_VARIANTS,
+        prompt,
+        timeout=90,
+        reasoning_effort=settings.RETRIEVAL_QUERY_VARIANTS_REASONING_EFFORT,
+    )
     raw["original"] = query
     variants = normalize_query_variants(raw)
     variants.pop("decomposed", None)
@@ -1270,7 +1280,12 @@ def _generate_insight_sub_query(
         original_query=original_query,
         insight=insight,
     )
-    raw = _chat_json_opencode(settings.MODEL_RETRIEVAL_QUERY_VARIANTS, prompt, timeout=60)
+    raw = _chat_json_opencode(
+        settings.MODEL_RETRIEVAL_QUERY_VARIANTS,
+        prompt,
+        timeout=60,
+        reasoning_effort=settings.RETRIEVAL_QUERY_VARIANTS_REASONING_EFFORT,
+    )
     return str(raw.get("query", "")).strip()
 
 

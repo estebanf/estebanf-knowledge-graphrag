@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""Backfill insights for already-ingested sources via the intake pipeline's path.
+
+Large backfills should be run with MODEL_INSIGHT_EXTRACTION=deepseek-v4.1-flash
+set in the environment to avoid the gpt-6-luna OpenCode Go quota.
+"""
 from __future__ import annotations
 
 import argparse
@@ -147,7 +152,11 @@ def _has_existing_links(conn, source_id: str) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Backfill insights for already-ingested sources."
+        description="Backfill insights for already-ingested sources.",
+        epilog=(
+            "Large backfills: set MODEL_INSIGHT_EXTRACTION=deepseek-v4.1-flash in the "
+            "environment to avoid the gpt-6-luna OpenCode Go quota."
+        ),
     )
     parser.add_argument(
         "--batch-size",

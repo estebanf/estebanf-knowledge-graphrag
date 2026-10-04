@@ -1,11 +1,12 @@
 from rag.config import settings
 
 
-def test_graph_config_defaults():
+def test_graph_config_defaults(monkeypatch):
+    monkeypatch.delenv("MODEL_ENTITY_EXTRACTION", raising=False)
+    from rag.config import Settings
+    s = Settings(_env_file=None)
     assert settings.MEMGRAPH_URL == "bolt://localhost:7687"
-    assert settings.MODEL_ENTITY_EXTRACTION == "qwen/qwen-2.5-7b-instruct"
-    assert settings.MODEL_RELATIONSHIP_EXTRACTION == "qwen/qwen-2.5-7b-instruct"
-    assert settings.RELATIONSHIP_CONFIDENCE_THRESHOLD == 0.75
+    assert s.MODEL_ENTITY_EXTRACTION == "gpt-6-luna"
     assert settings.ENTITY_DEDUP_COSINE_THRESHOLD == 0.92
 
 
@@ -137,3 +138,27 @@ def test_opencode_fallback_model_can_be_disabled_from_env(monkeypatch):
     monkeypatch.setenv("OPENCODE_FALLBACK_MODEL", "")
     from rag.config import Settings
     assert Settings(_env_file=None).OPENCODE_FALLBACK_MODEL == ""
+
+
+def test_opencode_extraction_and_variant_defaults(monkeypatch):
+    for name in (
+        "MODEL_ENTITY_EXTRACTION",
+        "MODEL_INSIGHT_EXTRACTION",
+        "MODEL_RETRIEVAL_QUERY_VARIANTS",
+        "EXTRACTION_REASONING_EFFORT",
+        "RETRIEVAL_QUERY_VARIANTS_REASONING_EFFORT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    from rag.config import Settings
+    s = Settings(_env_file=None)
+    assert s.MODEL_ENTITY_EXTRACTION == "gpt-6-luna"
+    assert s.MODEL_INSIGHT_EXTRACTION == "gpt-6-luna"
+    assert s.MODEL_RETRIEVAL_QUERY_VARIANTS == "deepseek-v4.1-flash"
+    assert s.EXTRACTION_REASONING_EFFORT == "none"
+    assert s.RETRIEVAL_QUERY_VARIANTS_REASONING_EFFORT == "none"
+
+
+def test_relationship_extraction_settings_removed():
+    from rag.config import Settings
+    assert not hasattr(Settings(_env_file=None), "MODEL_RELATIONSHIP_EXTRACTION")
+    assert not hasattr(Settings(_env_file=None), "RELATIONSHIP_CONFIDENCE_THRESHOLD")
