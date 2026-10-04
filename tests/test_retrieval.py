@@ -945,17 +945,27 @@ def test_apply_expanded_chunk_text_updates_nested_results():
 
 
 def test_chat_json_opencode_calls_opencode_endpoint(monkeypatch):
+    import httpx
+
     monkeypatch.setattr("rag.retrieval.settings.OPENCODE_API_KEY", "test-key")
-    mock_client = MagicMock()
-    mock_client.__enter__.return_value.post.return_value.json.return_value = {
-        "choices": [{"message": {"content": '{"foo":"bar"}'}}]
-    }
-    monkeypatch.setattr("rag.retrieval.httpx.Client", lambda **kw: mock_client)
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["session"] = request.headers.get("x-opencode-session")
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"foo":"bar"}'}}]})
+
+    monkeypatch.setattr(
+        "rag.opencode._new_client",
+        lambda timeout: httpx.Client(transport=httpx.MockTransport(handler), timeout=timeout),
+    )
 
     from rag.retrieval import _chat_json_opencode
     result = _chat_json_opencode("deepseek-v4-flash", "hello")
 
     assert result == {"foo": "bar"}
+    assert seen["url"] == "https://opencode.ai/zen/go/v1/chat/completions"
+    assert seen["session"]
 
 
 def test_generate_query_variants_uses_opencode(monkeypatch):

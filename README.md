@@ -202,7 +202,9 @@ All runtime settings are env-backed. The CLI, backend, worker, and Docker servic
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `OPENCODE_API_KEY` | empty | API key for OpenCode service used in insight extraction. |
+| `OPENCODE_API_KEY` | empty | The single OpenCode Go API key, used for answer generation, retrieval query variants, insight extraction and theme reports. (`OPENCODE_GO_API_KEY` no longer exists.) |
+| `OPENCODE_FALLBACK_MODEL` | `deepseek-v4.1-flash` | Model retried once (with reasoning off) when a call hits its OpenCode Go quota/spend cap: HTTP 429 after retries, or a 4xx whose body mentions quota/limit/usage/exceeded. Empty disables the fallback. Streaming answers fall back only if the failure occurs before any text was streamed. |
+| `ANSWER_REASONING_EFFORT` | `low` | Reasoning effort (`none`/`low`/`medium`/`high`) sent for `gpt-*` answer models such as the default `gpt-6-luna`. |
 | `INSIGHT_DEDUP_COSINE_THRESHOLD` | `0.95` | Minimum cosine similarity to reuse an existing insight instead of creating a new one. |
 | `INSIGHT_LINK_TOP_K` | `10` | Number of nearest insight neighbors used for mutual top-K `RELATED_TO` edge creation. |
 | `INSIGHT_EXTRACTION_CONCURRENCY` | `12` | Number of concurrent OpenCode chunk extraction calls per ingestion job. Batched dedup/storage (below) means the LLM fan-out is the remaining serial bottleneck, so this can run wider than when storage was per-insight. |

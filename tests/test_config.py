@@ -121,3 +121,19 @@ def test_stage_drift_warn_factor_overridable_from_env(monkeypatch):
     from rag.config import Settings
     s = Settings(_env_file=None)
     assert s.STAGE_DRIFT_WARN_FACTOR == 2.5
+
+
+def test_opencode_defaults_and_single_key(monkeypatch):
+    for name in ("OPENCODE_API_KEY", "OPENCODE_FALLBACK_MODEL", "ANSWER_REASONING_EFFORT"):
+        monkeypatch.delenv(name, raising=False)
+    from rag.config import Settings
+    s = Settings(_env_file=None)
+    assert s.OPENCODE_FALLBACK_MODEL == "deepseek-v4.1-flash"
+    assert s.ANSWER_REASONING_EFFORT == "low"
+    assert not hasattr(s, "OPENCODE_GO_API_KEY")
+
+
+def test_opencode_fallback_model_can_be_disabled_from_env(monkeypatch):
+    monkeypatch.setenv("OPENCODE_FALLBACK_MODEL", "")
+    from rag.config import Settings
+    assert Settings(_env_file=None).OPENCODE_FALLBACK_MODEL == ""

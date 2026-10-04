@@ -1,6 +1,7 @@
 SUPPORTED_ANSWER_MODELS: list[dict[str, object]] = [
+    {"id": "gpt-6-luna", "label": "GPT 6 Luna", "default": True},
     {"id": "deepseek-v4-pro", "label": "DeepSeek V4 Pro", "default": False},
-    {"id": "deepseek-v4-flash", "label": "DeepSeek V4 Flash", "default": True},
+    {"id": "deepseek-v4-flash", "label": "DeepSeek V4 Flash", "default": False},
     {"id": "glm-5", "label": "GLM-5", "default": False},
     {"id": "glm-5.1", "label": "GLM-5.1", "default": False},
     {"id": "kimi-k2.5", "label": "Kimi K2.5", "default": False},

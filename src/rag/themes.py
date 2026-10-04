@@ -3,30 +3,37 @@ import json
 import threading
 import requests
 
-from rag import prompts
+from rag import opencode, prompts
 from rag.config import settings
 from rag.db import get_connection
-from rag.opencode import SESSION_HEADER, new_session_id
+from rag.opencode import new_session_id
 
 
 def _call_llm(prompt_text: str, model: str, session_id: str | None = None) -> str:
-    api_key = settings.OPENCODE_API_KEY or settings.OPENROUTER_API_KEY
-    if not api_key:
-        raise RuntimeError("No LLM API key configured (set OPENCODE_API_KEY or OPENROUTER_API_KEY)")
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
     if settings.OPENCODE_API_KEY:
-        url = "https://opencode.ai/zen/go/v1/chat/completions"
-        # OpenCode Go requires the session header; the OpenRouter fallback
-        # below has no such concept, so it is scoped to this branch.
-        headers[SESSION_HEADER] = session_id or new_session_id("themes")
-    else:
-        url = "https://openrouter.ai/api/v1/chat/completions"
+        # Shared OpenCode Go client: endpoint dispatch (gpt-* -> /responses),
+        # session header, retry and quota fallback. Reasoning effort is pinned
+        # like answers so gpt-* theme reports don't run at the provider default.
+        return opencode.text_call(
+            model,
+            prompt_text,
+            session_id=session_id,
+            reasoning_effort=(
+                settings.ANSWER_REASONING_EFFORT
+                if opencode.endpoint_for_model(model) == "/responses"
+                else None
+            ),
+            timeout=120,
+            scope="themes",
+        )
+    if not settings.OPENROUTER_API_KEY:
+        raise RuntimeError("No LLM API key configured (set OPENCODE_API_KEY or OPENROUTER_API_KEY)")
     response = requests.post(
-        url,
-        headers=headers,
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+        },
         json={
             "model": model,
             "messages": [{"role": "user", "content": prompt_text}],

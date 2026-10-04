@@ -45,11 +45,16 @@ class Settings(BaseSettings):
     ENTITY_DEDUP_COSINE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.92
     GRAPH_EXTRACTION_CONCURRENCY: Annotated[int, Field(gt=0)] = 8
 
-    # OpenCode Go (answer generation)
-    OPENCODE_GO_API_KEY: str = ""
+    # OpenCode Go: single key for answers, retrieval query variants, insight
+    # extraction and theme reports (see rag.opencode).
+    OPENCODE_API_KEY: str = ""
+    # Model retried once when the requested model hits its Go quota/spend cap
+    # (HTTP 429, or a 4xx mentioning quota/limit/usage/exceeded). Empty disables.
+    OPENCODE_FALLBACK_MODEL: str = "deepseek-v4.1-flash"
+    # Reasoning effort for gpt-* answer models (none|low|medium|high).
+    ANSWER_REASONING_EFFORT: str = "low"
 
     # Insight extraction
-    OPENCODE_API_KEY: str = ""
     INSIGHT_DEDUP_COSINE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.95
     INSIGHT_LINK_TOP_K: Annotated[int, Field(gt=0)] = 10
     INSIGHT_EXTRACTION_CONCURRENCY: Annotated[int, Field(gt=0)] = 12

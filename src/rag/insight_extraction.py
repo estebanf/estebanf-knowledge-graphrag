@@ -1,28 +1,19 @@
-import json
 import math
-import re
 import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import httpx
-
-from rag import prompts
+from rag import opencode, prompts
 from rag.config import settings
 from rag.db import set_hnsw_ef_search
 from rag.embedding import get_embeddings
-from rag.opencode import new_session_id, opencode_headers
+from rag.opencode import new_session_id
 
 log = logging.getLogger(__name__)
 ProgressCallback = Callable[[str, dict], None]
 
-_OPENCODE_URL = "https://opencode.ai/zen/go/v1/chat/completions"
 _MODEL = "deepseek-v4-flash"
 _MAX_CHUNK_CHARS = 4000
-
-
-def _strip_fences(text: str) -> str:
-    return re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
 
 
 def _embedding_literal(embedding) -> str:
@@ -67,18 +58,14 @@ def extract_insights_from_chunk(content: str, session_id: str | None = None) -> 
     if not settings.OPENCODE_API_KEY:
         return []
     prompt = prompts.INSIGHT_EXTRACTION.format(chunk=content[:_MAX_CHUNK_CHARS])
-    resp = httpx.post(
-        _OPENCODE_URL,
-        headers=opencode_headers(
-            settings.OPENCODE_API_KEY,
-            session_id or new_session_id("insight"),
-        ),
-        json={"model": _MODEL, "messages": [{"role": "user", "content": prompt}]},
-        timeout=(10, 120),
+    result = opencode.json_call(
+        _MODEL,
+        prompt,
+        session_id=session_id,
+        timeout=120,
+        scope="insight",
     )
-    resp.raise_for_status()
-    raw = resp.json()["choices"][0]["message"]["content"]
-    return json.loads(_strip_fences(raw)).get("insights", [])
+    return result.get("insights", [])
 
 
 def upsert_insight(conn, content: str, embedding: list[float]) -> tuple[str, bool]:

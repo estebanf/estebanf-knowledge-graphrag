@@ -9,14 +9,13 @@ from typing import Callable, Optional
 import requests
 import tiktoken
 
-import httpx
 
 from rag import prompts
 from rag.config import settings
 from rag.db import get_connection, set_hnsw_ef_search
 from rag.embedding import get_embeddings
 from rag.graph_db import get_graph_driver
-from rag.opencode import new_session_id, opencode_headers
+from rag import opencode
 
 
 @dataclass
@@ -95,7 +94,6 @@ class RetrievalParams:
 
 _CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
 _RERANK_URL = "https://openrouter.ai/api/v1/rerank"
-_OPENCODE_URL = "https://opencode.ai/zen/go/v1/chat/completions"
 _ENC = tiktoken.get_encoding("cl100k_base")
 _QUERY_WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9'/-]*")
 _QUERY_INTENT_TERMS = {
@@ -264,33 +262,28 @@ def _parse_json_response(content: str) -> dict:
 
 
 def _chat_json_opencode(
-    model: str, prompt: str, *, timeout: int = 90, session_id: str | None = None
+    model: str,
+    prompt: str,
+    *,
+    timeout: int = 90,
+    session_id: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> dict:
-    """One-shot JSON chat call against OpenCode Go.
+    """One-shot JSON call against OpenCode Go via the shared client.
 
     Query-variant generation fans out through several thread pools, so rather
     than thread a session ID down every path each call mints its own by
     default. Grouping is a routing hint on the provider's side; presence of the
     header is what is mandatory.
     """
-    if not settings.OPENCODE_API_KEY:
-        raise ValueError("OPENCODE_API_KEY is required for OpenCode calls")
-    with httpx.Client(timeout=httpx.Timeout(timeout)) as client:
-        response = client.post(
-            _OPENCODE_URL,
-            headers=opencode_headers(
-                settings.OPENCODE_API_KEY,
-                session_id or new_session_id("retrieval"),
-            ),
-            json={
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0,
-                "response_format": {"type": "json_object"},
-            },
-        )
-        response.raise_for_status()
-        return _parse_json_response(response.json()["choices"][0]["message"]["content"])
+    return opencode.json_call(
+        model,
+        prompt,
+        session_id=session_id,
+        reasoning_effort=reasoning_effort,
+        timeout=timeout,
+        scope="retrieval",
+    )
 
 
 def _chat_json(model: str, prompt: str, *, timeout: int = 60) -> dict:

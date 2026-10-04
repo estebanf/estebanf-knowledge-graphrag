@@ -99,3 +99,87 @@ def test_generate_theme_report_raises_on_no_communities():
         conn.execute.return_value.fetchone.return_value = ("run-1", "completed", {"communities": []})
         with pytest.raises(ValueError):
             themes.generate_theme_report("run-1")
+
+
+# --- _call_llm provider selection ---
+
+def _patch_opencode_client(monkeypatch, handler):
+    import httpx
+    from rag import opencode
+
+    monkeypatch.setattr(
+        opencode,
+        "_new_client",
+        lambda timeout: httpx.Client(transport=httpx.MockTransport(handler), timeout=timeout),
+    )
+
+
+def test_call_llm_uses_shared_opencode_client_for_gpt_models(monkeypatch):
+    import httpx
+    from rag import themes
+
+    monkeypatch.setattr(themes.settings, "OPENCODE_API_KEY", "oc-key")
+    seen = {}
+
+    def handler(request):
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        seen["session"] = request.headers.get("x-opencode-session")
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "error": None,
+                "output": [
+                    {"type": "reasoning"},
+                    {"type": "message", "content": [{"type": "output_text", "text": "  themed  "}]},
+                ],
+            },
+        )
+
+    _patch_opencode_client(monkeypatch, handler)
+    assert themes._call_llm("prompt", "gpt-6-luna", "sess-1") == "themed"
+    assert seen["path"] == "/zen/go/v1/responses"
+    assert "temperature" not in seen["body"]
+    assert seen["session"] == "sess-1"
+
+
+def test_call_llm_uses_chat_completions_for_other_opencode_models(monkeypatch):
+    import httpx
+    from rag import themes
+
+    monkeypatch.setattr(themes.settings, "OPENCODE_API_KEY", "oc-key")
+    seen = {}
+
+    def handler(request):
+        seen["path"] = request.url.path
+        return httpx.Response(200, json={"choices": [{"message": {"content": " ok "}}]})
+
+    _patch_opencode_client(monkeypatch, handler)
+    assert themes._call_llm("prompt", "deepseek-v4-pro") == "ok"
+    assert seen["path"] == "/zen/go/v1/chat/completions"
+
+
+def test_call_llm_falls_back_to_openrouter_when_only_that_key_is_set(monkeypatch):
+    from rag import themes
+
+    monkeypatch.setattr(themes.settings, "OPENCODE_API_KEY", "")
+    monkeypatch.setattr(themes.settings, "OPENROUTER_API_KEY", "or-key")
+    captured = {}
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"choices": [{"message": {"content": " via openrouter "}}]}
+
+    def fake_post(url, headers, json, timeout):
+        captured["url"] = url
+        captured["headers"] = headers
+        return Resp()
+
+    monkeypatch.setattr(themes.requests, "post", fake_post)
+    assert themes._call_llm("prompt", "some/model") == "via openrouter"
+    assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
+    assert "x-opencode-session" not in captured["headers"]

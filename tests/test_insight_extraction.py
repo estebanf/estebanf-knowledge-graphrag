@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock, patch
 
+import httpx
+
 
 def _one_hot(index: int, dim: int = 4096) -> list[float]:
     """An orthogonal-ish embedding for test fixtures: distinct indices
@@ -10,6 +12,18 @@ def _one_hot(index: int, dim: int = 4096) -> list[float]:
     vec = [0.0] * dim
     vec[index % dim] = 1.0
     return vec
+
+
+def _mock_opencode(monkeypatch, handler):
+    """Route the shared OpenCode client through an `httpx.MockTransport`."""
+    monkeypatch.setattr(
+        "rag.opencode._new_client",
+        lambda timeout: httpx.Client(transport=httpx.MockTransport(handler), timeout=timeout),
+    )
+
+
+def _chat_reply(content: str):
+    return lambda request: httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
 
 
 def test_extract_returns_empty_without_api_key(monkeypatch):
@@ -23,25 +37,27 @@ def test_extract_raises_on_api_error(monkeypatch):
     swallowed into an empty list — it raises, so the parallel wrapper can
     distinguish it from a chunk that legitimately extracted zero insights."""
     monkeypatch.setattr("rag.insight_extraction.settings.OPENCODE_API_KEY", "test-key")
-    with patch("rag.insight_extraction.httpx.post", side_effect=Exception("connection error")):
-        from rag.insight_extraction import extract_insights_from_chunk
-        try:
-            extract_insights_from_chunk("some text")
-            assert False, "expected extract_insights_from_chunk to raise"
-        except Exception as exc:
-            assert "connection error" in str(exc)
+
+    def boom(request):
+        raise Exception("connection error")
+
+    _mock_opencode(monkeypatch, boom)
+    from rag.insight_extraction import extract_insights_from_chunk
+    try:
+        extract_insights_from_chunk("some text")
+        assert False, "expected extract_insights_from_chunk to raise"
+    except Exception as exc:
+        assert "connection error" in str(exc)
 
 
 def test_extract_parses_valid_response(monkeypatch):
     monkeypatch.setattr("rag.insight_extraction.settings.OPENCODE_API_KEY", "test-key")
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {
-        "choices": [{"message": {"content": '{"insights": [{"insight": "AI reduces costs", "topics": ["AI Adoption"]}]}'}}]
-    }
-    mock_resp.raise_for_status = MagicMock()
-    with patch("rag.insight_extraction.httpx.post", return_value=mock_resp):
-        from rag.insight_extraction import extract_insights_from_chunk
-        result = extract_insights_from_chunk("AI reduces operational costs significantly.")
+    _mock_opencode(
+        monkeypatch,
+        _chat_reply('{"insights": [{"insight": "AI reduces costs", "topics": ["AI Adoption"]}]}'),
+    )
+    from rag.insight_extraction import extract_insights_from_chunk
+    result = extract_insights_from_chunk("AI reduces operational costs significantly.")
     assert len(result) == 1
     assert result[0]["insight"] == "AI reduces costs"
     assert result[0]["topics"] == ["AI Adoption"]
@@ -799,21 +815,24 @@ def test_extract_sends_session_header(monkeypatch):
     """OpenCode Go rejects requests without `x-opencode-session` (HTTP 400
     MissingSessionID), which is what stalled the insight_extraction stage."""
     monkeypatch.setattr("rag.insight_extraction.settings.OPENCODE_API_KEY", "test-key")
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {"choices": [{"message": {"content": '{"insights": []}'}}]}
-    mock_resp.raise_for_status = MagicMock()
-
     from rag.opencode import SESSION_HEADER
 
-    with patch("rag.insight_extraction.httpx.post", return_value=mock_resp) as post:
-        from rag.insight_extraction import extract_insights_from_chunk
-        extract_insights_from_chunk("some text", "session-abc")
-        assert post.call_args.kwargs["headers"][SESSION_HEADER] == "session-abc"
+    seen = []
 
-        # A direct caller that omits the ID still gets a valid header rather
-        # than a 400.
-        extract_insights_from_chunk("some text")
-        assert post.call_args.kwargs["headers"][SESSION_HEADER]
+    def handler(request):
+        seen.append(request.headers.get(SESSION_HEADER))
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"insights": []}'}}]})
+
+    _mock_opencode(monkeypatch, handler)
+    from rag.insight_extraction import extract_insights_from_chunk
+
+    extract_insights_from_chunk("some text", "session-abc")
+    assert seen[-1] == "session-abc"
+
+    # A direct caller that omits the ID still gets a valid header rather
+    # than a 400.
+    extract_insights_from_chunk("some text")
+    assert seen[-1]
 
 
 def test_all_chunks_of_one_source_share_a_session(monkeypatch):
