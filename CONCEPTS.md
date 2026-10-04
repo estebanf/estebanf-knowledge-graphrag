@@ -17,7 +17,7 @@ A query variant written as a hypothetical answer-like passage so dense retrieval
 A query variant that adds likely context to a short or underspecified query; in this project it is gated because expansion can add fanout without improving longer intent-rich queries.
 
 ### Step-Back Variant
-A broad abstraction of the user's query that was previously part of retrieval fanout but is no longer scheduled by default because it added latency with weak value.
+A broad abstraction of the user's query that was previously part of retrieval fanout. Support (and its weight setting) has been removed because it added latency with weak value.
 
 ### Dense Prefilter
 An approximate candidate-selection stage that narrows high-dimensional vector search to a smaller pool before the system applies full-precision similarity scoring.
@@ -41,7 +41,19 @@ The retrieval stage that starts from selected insight seeds, follows related-ins
 The retrieval stage that expands selected chunk seeds through entity mentions, same-source fallback, and second-hop relationships to gather supporting chunks.
 
 ### Entity Mention
-The graph relationship that connects a chunk to an entity it discusses. Retrieval treats this as the authoritative edge for chunk graph expansion.
+The graph relationship that connects a chunk to an entity it discusses. Retrieval treats this as the authoritative edge for chunk graph expansion. It carries a `confidence` property: `1.0` until the Entity Audit scores it, then the mention's Salience.
+
+### Mention Salience
+The 0..1 score the Entity Audit stores in `MENTIONS.confidence` for how central an entity is to a chunk (a four-level judgment divided by 3: passing mention, minor, important, central). Retrieval drops mentions below `RETRIEVAL_ENTITY_CONFIDENCE_THRESHOLD` from graph expansion; unaudited mentions are `1.0` and always pass.
+
+### Entity Audit
+The opt-in weekly-maintenance phase that has Jev judge every chunk-to-entity mention (is it a real named entity, which type, how salient), stores the judgments in `entity_mention_audit`, and then deletes invalid mentions, retypes off-schema entities and writes Mention Salience onto the graph.
+
+### Jev
+The TypeSafe System One model, reached through OpenRouter, that answers several typed questions (yes/no, choice, score) about one piece of text in a single call and returns calibrated probabilities instead of prose. Used for first-hop entity selection, document profiling, chunk validation and the Jev maintenance phases. A Jev failure always degrades to a deterministic or LLM fallback; it never fails retrieval or ingestion.
+
+### Backend Switch
+A `*_BACKEND` setting (`ENTITY_SELECTION_BACKEND`, `PROFILING_BACKEND`, `CHUNK_VALIDATION_BACKEND`) that chooses between the legacy LLM behavior and Jev (or off) for one task. Defaults keep the legacy behavior; the operator flips them in `.env` after running the matching pilot.
 
 ## Storage
 
@@ -63,6 +75,8 @@ The rule for creating `RELATED_TO` edges between insights: an edge exists only w
 The offline maintenance run that keeps corpus integrity high between ingests: merging duplicate entities and insights, removing orphaned insights, reconciling Postgres rows with Memgraph nodes, and refreshing table statistics and vector-index residency. Dry-run by default; a run with `--execute` applies changes.
 
 By default, insight-merge candidate detection only compares recently-created insights against the corpus rather than sweeping every insight against every other insight each run — an occasional full-corpus pass is available but is an explicit, opt-in exception, not the routine weekly behavior. `--execute` refuses to run while intake is actively processing a source, so the sweep and live ingestion never race over the same rows.
+
+With Jev maintenance enabled (`--jev` or `MAINTENANCE_JEV_ENABLED`) the sweep also runs an Entity Audit of mentions, Jev-confirmed entity merges, hub entity name correction and Jev-confirmed near-duplicate insights. Borderline pairs go to review tables for a human instead of being merged.
 
 ### Stage Failure-Rate Threshold
 The audit policy governing per-chunk extraction failures during intake: an individual chunk's extraction failure is recorded rather than silently dropped, and the owning stage still completes as long as the fraction of failed chunks stays at or below a configured threshold. Above the threshold, the stage fails outright instead of completing with an elevated share of silently missing entities or insights.

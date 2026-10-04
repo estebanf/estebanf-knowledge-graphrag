@@ -68,8 +68,14 @@ cleanup() {
   set +e
   note "Cleanup"
 
-  local source_id
-  source_id=$(echo "$job_payload" | grep -oE 'source-[0-9a-f-]+' | head -n1)
+  # `rag ingest` prints only the job id (a bare UUID); the source id is in the
+  # job's "Source ID" row. Both are bare UUIDs.
+  local uuid_re='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+  local cleanup_job_id source_id=""
+  cleanup_job_id=$(echo "$job_payload" | grep -oE "$uuid_re" | head -n1)
+  if [[ -n "$cleanup_job_id" ]]; then
+    source_id=$(venv/bin/rag jobs status "$cleanup_job_id" 2>&1 | grep 'Source ID' | grep -oE "$uuid_re" | head -n1)
+  fi
   if [[ -n "$source_id" ]]; then
     venv/bin/rag sources delete "$source_id" --hard
   fi

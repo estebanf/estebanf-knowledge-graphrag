@@ -33,12 +33,12 @@ docker compose exec -T postgres psql -U rag -d rag
 docker compose exec -T memgraph mgconsole
 ```
 
-For one-off SQL or migrations, keep using `docker compose exec -T postgres ...`.
+For one-off SQL or migrations, keep using `docker compose exec -T postgres ...`. Only `scripts/init/postgres` is mounted into the Postgres container, so migration files must be fed on stdin from the host (`psql ... -f scripts/migrate/...` inside the container fails).
 
 Examples:
 
 ```bash
-docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/004_job_improvements.sql
+docker compose exec -T postgres psql -U rag -d rag < scripts/migrate/004_job_improvements.sql
 docker compose exec -T postgres psql -U rag -d rag -c "SELECT count(*) FROM jobs;"
 printf "MATCH (n) RETURN count(n);\n" | docker compose exec -T memgraph mgconsole
 ```
@@ -69,7 +69,7 @@ The repo is split into a few main areas:
 - `src/rag/entity_audit.py`: Jev audit of chunk->entity `MENTIONS` edges, driven by `scripts/weekly_maintenance.py` phase 0 (opt-in). Pure logic taking `conn` (Postgres) and `session` (Memgraph) parameters, so it is unit-tested with `tests/audit_fakes.py` doubles. Do not run it from agent sessions: it calls live OpenRouter/Jev and mutates the corpus. See "Entity audit" in Current Behavioral Notes
 - `src/rag/retrieval.py`: hybrid chunk and insight search, retrieval expansion for both chunks and insights (entity MENTIONS for chunks, RELATED_TO + LLM sub-queries for insights), reranking, and trace behavior
 - `src/rag/community.py`: entity-community detection and optional summarization
-- `src/rag/answering.py`: answer generation over retrieval output
+- `src/rag/opencode.py`: the shared OpenCode Go client (endpoint dispatch, session header, retry, quota fallback); `src/rag/answering.py`: SSE answer generation over retrieval output; `src/rag/answer_models.py`: supported answer models (single `default`); `src/rag/themes.py`: theme-report generation (OpenCode Go, default model `deepseek-v4-pro` when `THEME_REPORT_MODEL` is empty)
 - `src/rag/prompts/__init__.py`: shared prompt templates; this is the canonical prompt maintenance location
 - `src/rag/storage.py`, `src/rag/sources.py`: stored-file and source-detail helpers
 - `tests/`: CLI, API, ingestion, retrieval, prompt, and community coverage
@@ -89,8 +89,8 @@ The repo is split into a few main areas:
 - Every `/api/*` route except `GET /api/health` and `POST /api/auth/login` requires a `Principal` resolved by `rag.api.auth.require_principal`. The dep accepts either an `Authorization: Bearer <key>` (validated against `data/api_keys.toml`) or a session cookie set by `POST /api/auth/login` (validated against the `user_sessions` table).
 - API key file is hot-reloaded by mtime. Editing `data/api_keys.toml` does not require a backend restart.
 - The frontend uses username/password → `HttpOnly` session cookie; the CLI and MCP use API keys. The same `require_principal` accepts either.
-- Scopes are `read`, `ingest`, `admin`. `admin` implies all. Route declarations use `Depends(require_principal())` and explicit `requires_scope("...")` on top when needed.
-- `data/api_keys.toml` lives outside Postgres on purpose so an operator can edit it by hand. Auditing of usage is in the `api_key_audit` table.
+- Scopes are `read`, `ingest`, `admin`. `admin` implies all. Route declarations use `Depends(require_principal())` and explicit `requires_scope("...")` on top when needed. Today only `POST /api/prepare/describe-image` actually calls `requires_scope("ingest")`; every other gated route (and the MCP mount) accepts any valid key regardless of scopes. Do not document scope-based restrictions that the code does not enforce; add the `requires_scope` dependency when a route should be restricted.
+- `data/api_keys.toml` lives outside Postgres on purpose so an operator can edit it by hand. The `api_key_audit` table exists (migration 008) but nothing in `src/rag` writes to it; do not claim usage is audited.
 
 ## Worker supervisor
 
@@ -105,7 +105,7 @@ The repo is split into a few main areas:
 - Mounted at `/mcp` via `rag.mcp_server.build_mcp_app()`. Uses Streamable HTTP transport from the official Python `mcp` SDK.
 - The MCP ASGI sub-app is wrapped with `BearerAuthMiddleware`, which reuses the same `KeyStore` as the REST layer. Bypassing it would create a parallel auth surface; do not.
 - The FastAPI `lifespan` enters the inner MCP app's lifespan so the streamable-http session manager is initialized. Tests must use `with TestClient(app) as c:` to trigger lifespan.
-- Tool surface is intentionally read-only: `search`, `retrieve`, `community`, `list_sources`, `source_insights`. Ingestion, jobs, and worker management are CLI-only.
+- Tool surface is intentionally read-only (14 tools, listed in the README MCP table; the source of truth is the `@mcp.tool()` functions in `src/rag/mcp_server.py`): search/retrieve/community, source listing and insights, community runs, theme reports, saved answers, working sets and metadata facets. There is no ingest tool; ingestion, jobs, and worker management are CLI-only. Update the README table when adding a tool.
 
 ## CLI
 
@@ -158,7 +158,10 @@ The repo is split into a few main areas:
 - Sparse retrieval uses Postgres full-text search over `chunks.content`; the default `english` config is expected to have the matching GIN index from `scripts/migrate/006_search_performance_indexes.sql`.
 - `insights` and `chunk_insights` are added in `scripts/migrate/007_insights.sql`; apply it on any database predating insight extraction.
 - Hard delete order matters: remove insight join rows, orphan insights, `entities`, and `chunks` before `jobs`, then `sources`, or foreign keys will break deletes.
-- Postgres schema is initialized from `scripts/init/postgres/`.
+- Postgres schema is initialized from `scripts/init/postgres/`, but that is not the whole schema: a fresh install also needs migrations 003, 004, 007, 008, 009, 012 and 014 (README, Server installation). When you add schema, update `02_schema.sql` and add a numbered migration (015 did both) and keep both idempotent.
+- Memgraph data lives in the named Docker volume `knowledge-graphrag_memgraph_data`, not `data/memgraph/`. `scripts/backup.sh` and `scripts/start.sh` still reference `data/memgraph/` (stale); do not assume a backup contains the live graph.
+- Graph model: `Source -INCLUDES-> Chunk`, `Chunk -MENTIONS {confidence}-> Entity`, `Chunk -CONTAINS {topics}-> Insight`, `Insight -RELATED_TO {similarity}- Insight`. There are no entity-to-entity edges.
+- `WORKER_POLL_INTERVAL`/`WORKER_STUCK_JOB_MINUTES` are shadowed for supervised workers: the hidden `_worker-run` command passes its own defaults (`5`/`30`) to `run_worker`, whose `or settings.*` fallback therefore never triggers.
 - `entities` has tightened autovacuum thresholds (`scale_factor = 0.02`, set in `scripts/init/postgres/02_schema.sql` and `scripts/migrate/010_entities_autovacuum_tuning.sql`) because `scripts/merge_semantic_duplicates.py`/`merge_duplicate_entities.py` are update/delete-heavy; both scripts also call `rag.db.vacuum_analyze_entities()` after a run that merges at least one row. Don't remove that call without re-checking `entities` doesn't re-bloat.
 - Dense retrieval (`dense_retrieve`/`insight_dense_retrieve` in `src/rag/retrieval.py`) sets Postgres's `hnsw.ef_search` to `RETRIEVAL_DENSE_PREFETCH_COUNT` before the binary-quantized prefilter query. pgvector's HNSW candidate search silently caps returned rows at `hnsw.ef_search` (default `40`) regardless of the SQL `LIMIT`, so without this the prefetch count setting was a no-op past ~40 candidates.
 - `src/rag/graph_db.py::reconcile_schema()` re-applies Memgraph's index/constraint statements idempotently on every backend startup (`SCHEMA_STATEMENTS`, mirroring `scripts/init/memgraph_init.cypher`). Add new statements to that list, not just the `.cypher` file, or a live instance won't pick them up.
@@ -182,6 +185,10 @@ Pick verification based on the area you changed:
 - retrieval/search/community logic: `pytest -q tests/test_retrieval.py tests/test_cli_retrieve.py tests/test_cli_search.py tests/test_cli_community.py tests/test_api.py tests/test_api_community.py tests/test_config.py`
 - ingestion/jobs/parser/storage: `pytest -q tests/test_cli_jobs.py tests/test_job_lifecycle.py tests/test_worker.py tests/test_ingestion_submit.py tests/test_parser.py tests/test_storage.py tests/test_cli_ingest.py`
 - insight extraction: `pytest -q tests/test_insight_extraction.py tests/test_config.py tests/test_prompts.py tests/test_cli_sources.py`
+- OpenCode client / answers / theme reports / entity extraction: `pytest -q tests/test_opencode_client.py tests/test_answering.py tests/test_themes.py tests/test_graph_extraction.py tests/test_insight_extraction.py tests/test_config.py`
+- Jev client and switchable backends: `pytest -q tests/test_jev.py tests/test_jev_profiling.py tests/test_jev_ingestion_stages.py tests/test_chunk_validation.py tests/test_pilot_jev_scripts.py tests/test_retrieval.py tests/test_config.py`
+- migrations and operator scripts: `pytest -q tests/test_migration_008.py tests/test_migration_009.py tests/test_migration_015.py tests/test_remove_api_key_script.py tests/test_remediate_insights_script.py`
+- full offline suite: `pytest -q --ignore=tests/test_ingestion.py` (`tests/test_ingestion.py` is a live integration file)
 - entity audit / weekly maintenance: `pytest -q tests/test_entity_audit.py tests/test_weekly_maintenance.py tests/test_weekly_maintenance_jev.py tests/test_entity_names.py tests/test_jev_dedup.py tests/test_entity_survivor.py tests/test_merge_vacuum.py tests/test_migration_015.py tests/test_jev.py tests/test_config.py`
 - prompts: `pytest -q tests/test_prompts.py`
 - auth (api keys + sessions + gating): `pytest -q tests/test_api_auth_apikey.py tests/test_api_auth_session.py tests/test_api_gating.py`

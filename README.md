@@ -14,9 +14,11 @@ Two roles to keep straight:
 
 ## Requirements
 
-- Server: Docker Desktop or a compatible Docker engine; Python `3.11+` with the project installed (`pip install -e .`) for host-run operator scripts such as `scripts/create_user.py` and `scripts/smoke_e2e.sh`.
+- Server: Docker Desktop or a compatible Docker engine; Python `3.11+` with the project installed in `venv` (`pip install -e .`) for host-run operator scripts such as `scripts/create_user.py`, `scripts/weekly_maintenance.py` and `scripts/smoke_e2e.sh`.
 - Laptop CLI: Python `3.11+`.
-- OpenRouter API key (server-side) with access to chat, embedding, and reranker models — see [Model selection](#model-selection).
+- Two server-side API keys, both required (see [Model selection](#model-selection) for which task uses which):
+  - `OPENROUTER_API_KEY`: embeddings, reranking, image descriptions, document metadata/profiling/chunk-validation LLMs, the retrieval graph LLM, community summaries, and **Jev** (the TypeSafe System One model, also reached through OpenRouter). The OpenRouter account needs credits for Jev as well; a `402` from Jev means it is out of credits.
+  - `OPENCODE_API_KEY`: an OpenCode Go key for answer generation, retrieval query variants, entity extraction, insight extraction and theme reports. Without it, `graph_extraction` and `insight_extraction` are skipped (the stage completes with `skip_reason`), and `rag retrieve` and answers fail. `rag search` needs only OpenRouter.
 
 ## Server installation
 
@@ -30,7 +32,8 @@ Two roles to keep straight:
 
    ```bash
    POSTGRES_PASSWORD=changeme
-   OPENROUTER_API_KEY=...
+   OPENROUTER_API_KEY=...                        # embeddings, rerank, Jev, auxiliary LLMs (needs credits)
+   OPENCODE_API_KEY=...                          # answers, query variants, entity/insight extraction, themes
    RAG_FRONTEND_ORIGIN=https://rag.example.com   # public origin the browser will hit
    RAG_COOKIE_SECURE=true                        # set to true behind HTTPS
    ```
@@ -41,13 +44,16 @@ Two roles to keep straight:
    ./scripts/start.sh
    ```
 
-4. Apply migration 008 (creates `users`, `user_sessions`, `worker_processes`, `api_key_audit`):
+4. Apply the migrations the init scripts do not cover. `scripts/init/postgres/` creates the base schema on first start, but it does not include `entities.source_id` (003), `jobs.error_detail` and the unique md5 index (004), the insight tables (007), the auth/worker tables (008), the insights indexes (009), the stage-duration baseline table (012) or the async theme-report status (014). Apply these from the host. The migration files are not mounted into the Postgres container, so feed them on stdin (each is idempotent):
 
    ```bash
-   docker compose exec -T postgres psql -U rag -d rag -f /docker-entrypoint-initdb.d/../../scripts/migrate/008_auth_and_workers.sql
-   # or, equivalently, from the host:
-   docker compose exec -T postgres psql -U rag -d rag < scripts/migrate/008_auth_and_workers.sql
+   for n in 003_add_entity_source_tracking 004_job_improvements 007_insights 008_auth_and_workers \
+            009_binary_vector_prefilter_indexes 012_stage_duration_baseline 014_theme_reports_async; do
+     docker compose exec -T postgres psql -U rag -d rag < scripts/migrate/$n.sql
+   done
    ```
+
+   `008` creates `users`, `user_sessions`, `worker_processes` and `api_key_audit`. See [Migrations and Existing Databases](#migrations-and-existing-databases) for what each migration does and for upgrading an older database.
 
 5. Create at least one frontend user:
 
@@ -67,13 +73,13 @@ Two roles to keep straight:
    scopes = ["read", "ingest", "admin"]
    ```
 
-   Scopes are `read` (search/retrieve/sources), `ingest` (POST /api/ingest, ingest_text MCP tool), and `admin` (jobs + workers). `admin` implies all others.
+   Scopes are `read`, `ingest` and `admin`; `admin` implies all others. See [Authentication](#authentication) for which routes currently enforce them.
 
 7. Sanity check:
 
    ```bash
    curl http://localhost:8000/api/health
-   curl -H "Authorization: Bearer <token>" http://localhost:8000/api/auth/me  # should 401 (API keys don't have a user)
+   curl -H "Authorization: Bearer <token>" http://localhost:8000/api/auth/me  # 200, "kind": "apikey", with the key's scopes
    ```
 
 The frontend is now reachable on the host port mapped by `FRONTEND_PORT` (default `80`). Browse to it, sign in, and start ingesting via the UI or the CLI.
@@ -115,9 +121,9 @@ Without `RAG_SERVER_URL`+`RAG_API_KEY` (and no config file), the CLI falls back 
 ## Authentication
 
 - **Frontend** — username/password POSTed to `/api/auth/login`. The backend issues an opaque session token, stored in an `HttpOnly; SameSite=Lax` cookie (`Secure` when `RAG_COOKIE_SECURE=true`). Sessions are persisted in `user_sessions` and revoked by `/api/auth/logout`.
-- **CLI and MCP** — API keys loaded from `data/api_keys.toml`. The file is the source of truth; edit it directly and the backend reloads. Every authenticated request writes a row to `api_key_audit`.
-- **Scopes** — `read`, `ingest`, `admin`. Each protected route or tool declares the scope it requires; `admin` implies all.
-- A request can present a Bearer token *or* a session cookie. Routes that accept either use the `require_principal` dependency.
+- **CLI and MCP** — API keys loaded from `data/api_keys.toml`. The file is the source of truth; edit it directly and the backend reloads on mtime change (no restart). The `api_key_audit` table is created by migration 008 but nothing writes to it yet, so key usage is not audited.
+- **Scopes** — `read`, `ingest`, `admin`; `admin` implies all. Current enforcement is narrow: only `POST /api/prepare/describe-image` checks a scope (`ingest`). Every other `/api/*` route, and every MCP tool, accepts any valid API key or session regardless of its scopes, so treat all keys as full-access until per-route scope checks are added. Sessions always carry all three scopes.
+- A request can present a Bearer token *or* a session cookie. Routes that accept either use the `require_principal` dependency. The MCP mount accepts Bearer tokens only.
 
 ## Environment
 
@@ -144,7 +150,7 @@ All runtime settings are env-backed. The CLI, backend, worker, and Docker servic
 | `STORAGE_BASE_PATH` | `./data/documents` | Base directory where original source files and copied markdown images are stored. |
 | `BACKEND_PORT` | `8000` | Host port mapped to the FastAPI backend container. |
 | `FRONTEND_PORT` | `80` | Host port mapped to the nginx-served frontend container. |
-| `OPENROUTER_API_KEY` | empty | Required for embeddings and all LLM-backed stages. |
+| `OPENROUTER_API_KEY` | empty | Required. OpenRouter key for embeddings, reranking, image descriptions, the OpenRouter-hosted LLM roles in [Model selection](#model-selection), community summaries and Jev. The account needs credits. The OpenCode Go key is the separate `OPENCODE_API_KEY`. |
 | `LOG_LEVEL` | `INFO` | Application log verbosity. |
 
 ### Server / auth
@@ -168,19 +174,27 @@ All runtime settings are env-backed. The CLI, backend, worker, and Docker servic
 
 ### Model selection
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `MODEL_METADATA_EXTRACTION` | `google/gemma-3-4b-it` | OpenRouter. Extracts structured metadata from parsed markdown (with `PROFILING_BACKEND=jev`, only `author` and `source`). |
-| `MODEL_DOC_PROFILING` | `google/gemma-3-4b-it` | OpenRouter. Profiles a document to guide chunking behavior. Used only when `PROFILING_BACKEND=llm` (or as the Jev fallback). |
-| `MODEL_CHUNK_VALIDATION` | `qwen/qwen2.5-7b-instruct` | OpenRouter. Evaluates sampled chunks for quality control. Used only when `CHUNK_VALIDATION_BACKEND=llm`. |
-| `MODEL_PROPOSITION_CHUNKING` | `qwen/qwen2.5-14b-instruct` | OpenRouter. Decomposes text into propositions when chunking requires it. |
-| `MODEL_EMBEDDING` | `qwen/qwen3-embedding-8b` | OpenRouter. Embedding model used to vectorize chunks, insights, entity names and search queries. |
-| `MODEL_IMAGE_DESCRIPTION` | `google/gemini-2.0-flash-lite-001` | OpenRouter. Describes inline images found during parsing. |
-| `MODEL_RETRIEVAL_GRAPH` | `google/gemini-2.5-flash-lite` | OpenRouter. Selects entities and graph traversal queries during retrieval. |
-| `MODEL_RETRIEVAL_RERANKER` | `cohere/rerank-v3.5` | OpenRouter. Reranks first-stage and final retrieval candidates. |
-| `MODEL_ENTITY_EXTRACTION` | `gpt-6-luna` | OpenCode Go. Extracts entities from chunk text (`/responses`). Set to e.g. `deepseek-v4.1-flash` to move off the gpt-6-luna Go quota. |
-| `MODEL_INSIGHT_EXTRACTION` | `gpt-6-luna` | OpenCode Go. Extracts insights from chunk text. For large backfills (`scripts/remediate_insights.py`) set `MODEL_INSIGHT_EXTRACTION=deepseek-v4.1-flash`. |
-| `MODEL_RETRIEVAL_QUERY_VARIANTS` | `deepseek-v4.1-flash` | OpenCode Go. Generates retrieval query variants and insight sub-queries. |
+One row per LLM task. **Provider** is where the call goes: *OpenRouter* uses `OPENROUTER_API_KEY`; *OpenCode Go* uses `OPENCODE_API_KEY` through the shared client in `src/rag/opencode.py`; *Jev* is reached through OpenRouter (`POST /api/v1/systemone`) with `OPENROUTER_API_KEY`. OpenCode model names have no vendor prefix (`gpt-6-luna`, `deepseek-v4.1-flash`) and OpenRouter names do (`google/...`, `qwen/...`), so a pinned OpenCode-style value on an OpenRouter role (or the reverse) fails at request time.
+
+| Task | Setting | Default | Provider | Notes |
+| --- | --- | --- | --- | --- |
+| Document metadata extraction | `MODEL_METADATA_EXTRACTION` | `google/gemma-3-4b-it` | OpenRouter | `parsing` stage. With `PROFILING_BACKEND=jev` it only extracts `author` and `source`. |
+| Document profiling | `MODEL_DOC_PROFILING` | `google/gemma-3-4b-it` | OpenRouter | `profiling` stage. Used only with `PROFILING_BACKEND=llm` (or as the Jev fallback). |
+| Chunk validation | `MODEL_CHUNK_VALIDATION` | `qwen/qwen2.5-7b-instruct` | OpenRouter | `validation` stage. Used only with `CHUNK_VALIDATION_BACKEND=llm`. |
+| Proposition chunking | `MODEL_PROPOSITION_CHUNKING` | `qwen/qwen2.5-14b-instruct` | OpenRouter | Decomposes text into propositions when chunking requires it. |
+| Embeddings | `MODEL_EMBEDDING` | `qwen/qwen3-embedding-8b` | OpenRouter | Chunks, insights, entity names and search queries. 4096 dimensions, fixed by the schema. |
+| Image description | `MODEL_IMAGE_DESCRIPTION` | `google/gemini-2.0-flash-lite-001` | OpenRouter | Runs on the backend for markdown images and for `rag ingest`/`rag prepare` binary conversions. |
+| Retrieval graph LLM | `MODEL_RETRIEVAL_GRAPH` | `google/gemini-2.5-flash-lite` | OpenRouter | First-hop entity selection when `ENTITY_SELECTION_BACKEND=llm`; optional LLM entity queries and second-hop selection. |
+| Reranker | `MODEL_RETRIEVAL_RERANKER` | `cohere/rerank-v3.5` | OpenRouter | Reranks first-stage and final retrieval candidates. |
+| Entity extraction | `MODEL_ENTITY_EXTRACTION` | `gpt-6-luna` | OpenCode Go | `graph_extraction` stage, `/responses`. Reasoning effort: `EXTRACTION_REASONING_EFFORT`. Set to e.g. `deepseek-v4.1-flash` to move off the gpt-6-luna Go quota. |
+| Insight extraction | `MODEL_INSIGHT_EXTRACTION` | `gpt-6-luna` | OpenCode Go | `insight_extraction` stage. Reasoning effort: `EXTRACTION_REASONING_EFFORT`. For large backfills (`scripts/remediate_insights.py`) set `deepseek-v4.1-flash`. |
+| Retrieval query variants | `MODEL_RETRIEVAL_QUERY_VARIANTS` | `deepseek-v4.1-flash` | OpenCode Go | Chunk and insight query variants, HyDE, decomposition, insight sub-queries. Reasoning effort: `RETRIEVAL_QUERY_VARIANTS_REASONING_EFFORT`. |
+| Answer generation | `model` field of each request | `gpt-6-luna` | OpenCode Go | Chosen per request from the list in [Answer generation](#answer-generation). Reasoning effort for `gpt-*` models: `ANSWER_REASONING_EFFORT`. |
+| Theme reports | `THEME_REPORT_MODEL` (or the `model` field of each request) | empty, which resolves to `deepseek-v4-pro` | OpenCode Go | The code falls back to OpenRouter with the same model name only when `OPENCODE_API_KEY` is unset, which will fail for an OpenCode-only model name. `ANSWER_REASONING_EFFORT` applies to `gpt-*` models. |
+| Community summaries | `--summarize` / `summarize_model` | none (summaries are off unless set) | OpenRouter | Per-request model, for example `google/gemini-2.5-flash-lite`. |
+| Jev (calibrated yes/no, choice and score questions) | `JEV_MODEL` | `typesafe/jev-1.13` | Jev via OpenRouter | Entity selection, profiling/metadata, chunk validation and the maintenance phases; see [Jev](#jev-typesafe-system-one-via-openrouter). |
+
+When an OpenCode Go call hits its quota or spend cap (notably `gpt-6-luna`), the shared client retries once on `OPENCODE_FALLBACK_MODEL`; see [OpenCode Go and insight extraction](#opencode-go-and-insight-extraction).
 
 ### Jev (TypeSafe System One) via OpenRouter
 
@@ -229,8 +243,8 @@ The profile is stored in the parsing stage's `stage_log` output (`{"markdown_cha
 Both switches have read-only pilot scripts (SELECT only; no Postgres writes, no Memgraph calls; the only side effect is outbound OpenRouter/Jev calls):
 
 ```bash
-python scripts/pilot_jev_profiling.py --limit 100
-python scripts/pilot_jev_chunk_validation.py --sources 200
+venv/bin/python scripts/pilot_jev_profiling.py --limit 100
+venv/bin/python scripts/pilot_jev_chunk_validation.py --sources 200
 ```
 
 `pilot_jev_profiling.py` runs both the legacy LLM profiler/metadata extractor and the Jev path over the most recent sources and compares what drives chunking (`select_strategy(profile)`, `use_hierarchical`, `use_propositions`), kind and domain agreement, Jev cost and per-path latency. `pilot_jev_chunk_validation.py` samples chunks from the most recent sources (`--chunks-per-source`, default 20), scores them with the same questions, and reports the min-probability distribution, how many chunks and sources would be skipped at thresholds 0.2/0.3/0.4/0.5, how many sources would hit the cap, example low-scoring chunk texts and the Jev cost.
@@ -249,15 +263,15 @@ The embedding dimension is fixed at 4096 by the Postgres schema (`vector(4096)` 
 
 **Entity quality at insert time:** The extraction prompt instructs the LLM to correct misspellings and transcript noise before extracting. The model returns a JSON object `{"entities": [...]}`. `entity_type` is normalised (trimmed, uppercased, spaces/hyphens to underscores) and then validated against a JSON schema — items whose type is still outside the 7 defined types are dropped. `canonical_name` and aliases are normalised (HTML unescaping, whitespace collapse, punctuation trim) before insert. If a `canonical_name` already exists in the `entities` table, the existing row is reused rather than creating a duplicate. Residual semantic duplicates across ingestion runs are resolved offline using `scripts/merge_semantic_duplicates.py`.
 
-### Insight extraction
+### OpenCode Go and insight extraction
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `OPENCODE_API_KEY` | empty | The single OpenCode Go API key, used for answer generation, retrieval query variants, entity and insight extraction and theme reports. (`OPENCODE_GO_API_KEY` no longer exists.) |
+| `OPENCODE_API_KEY` | empty | The single OpenCode Go API key, used for answer generation, retrieval query variants, entity and insight extraction and theme reports. Only this one variable is read; a key left over under any other name in `.env` is ignored. Without it, `graph_extraction` and `insight_extraction` skip (with `skip_reason`), and retrieval and answers fail. |
 | `OPENCODE_FALLBACK_MODEL` | `deepseek-v4.1-flash` | Model retried once (with reasoning off) when a call hits its OpenCode Go quota/spend cap: HTTP 429 after retries, or a 4xx whose body mentions quota/limit/usage/exceeded. Empty disables the fallback. Streaming answers fall back only if the failure occurs before any text was streamed. |
 | `EXTRACTION_REASONING_EFFORT` | `none` | Reasoning effort (`none`/`low`/`medium`/`high`) for entity and insight extraction. `none` keeps gpt-6-luna cheap and avoids multi-second DeepSeek reasoning latency. |
 | `RETRIEVAL_QUERY_VARIANTS_REASONING_EFFORT` | `none` | Reasoning effort for query-variant generation. DeepSeek v4.1 flash takes ~2.5s with `none` vs 6-14s otherwise. |
-| `ANSWER_REASONING_EFFORT` | `low` | Reasoning effort (`none`/`low`/`medium`/`high`) sent for `gpt-*` answer models such as the default `gpt-6-luna`. |
+| `ANSWER_REASONING_EFFORT` | `low` | Reasoning effort (`none`/`low`/`medium`/`high`) sent for `gpt-*` answer models such as the default `gpt-6-luna`; also applied to `gpt-*` theme-report models. Other model families ignore it. |
 | `INSIGHT_DEDUP_COSINE_THRESHOLD` | `0.95` | Minimum cosine similarity to reuse an existing insight instead of creating a new one. |
 | `INSIGHT_NEAR_DUP_COSINE_LOW` | `0.88` | Weekly maintenance, Jev only: insight pairs with cosine in `[this, INSIGHT_DEDUP_COSINE_THRESHOLD)` are confirmed by Jev before merging (see [Jev-confirmed merges](#jev-confirmed-merges-names-and-near-duplicates-opt-in)). |
 | `INSIGHT_LINK_TOP_K` | `10` | Number of nearest insight neighbors used for mutual top-K `RELATED_TO` edge creation. |
@@ -280,6 +294,8 @@ The embedding dimension is fixed at 4096 by the Postgres schema (`vector(4096)` 
 | `RETRIEVAL_RRF_K` | `60` | Reciprocal rank fusion constant used to merge candidate lists. |
 | `RETRIEVAL_RRF_SCORE_FLOOR` | `0.0` | Minimum fused score retained after RRF. |
 | `RETRIEVAL_SEED_COUNT` | `10` | Number of top reranked seed chunks expanded in the graph stage. |
+| `RETRIEVAL_INSIGHT_SEED_COUNT` | `5` | Maximum number of top insights expanded through `RELATED_TO` and sub-queries (capped by the request's seed count). |
+| `RETRIEVAL_EXPANSION_MAX_WORKERS` | `5` | Thread-pool size for parallel graph and insight expansion work inside one retrieval request. |
 | `RETRIEVAL_RESULT_COUNT` | `5` | Number of final root results returned. |
 | `RETRIEVAL_MAX_DECOMPOSED_QUERIES` | `2` | Max number of decomposed variants generated from the query. |
 | `RETRIEVAL_DENSE_PREFETCH_COUNT` | `250` | Binary-quantized ANN candidate count for dense chunk/insight search before full-vector reranking. Set to `0` to use exact full-corpus dense scans. Dense retrieval sets Postgres's `hnsw.ef_search` to this value before running the prefilter query — pgvector's HNSW candidate search otherwise caps returned rows at the `hnsw.ef_search` default (`40`) regardless of this setting. Raising this value widens the exact-rerank candidate pool but costs roughly linear extra query latency (measured locally: ~0.25s at 40 candidates, ~0.74s at 250, ~1.6s at 1000 for a single dense query). `250` was chosen to trade most of that latency back for still-far-wider-than-40 recall; live `rag retrieve "insurance triage"` measured ~30.1s at the previous silent ~40-candidate cap, ~40.1s at `1000`, and ~32.2s at `250` — raise this only if recall quality is confirmed to need it. |
@@ -349,14 +365,14 @@ Live measurements on the reference corpus (~126k chunks / ~112k insights, `rag s
 | `COMMUNITY_EDGE_CACHE_PREFETCH` | `250` | BQ HNSW prefetch count for cross-source edge ANN queries. |
 | `COMMUNITY_MAX_CONCURRENT_RUNS` | `3` | Max concurrent non-terminal community runs allowed before `create_run` rejects. |
 | `COMMUNITY_RUN_STALE_SECONDS` | `600` | Seconds before a `running` run row is marked `failed` as stale. |
-| `WORKER_POLL_INTERVAL` | `5` | Default idle poll interval for `rag worker`. |
-| `WORKER_STUCK_JOB_MINUTES` | `30` | Default age after which a processing job is considered stuck. |
+| `WORKER_POLL_INTERVAL` | `5` | Idle poll interval (seconds) used by `run_worker` when none is passed. Workers started with `rag worker launch` run the hidden `_worker-run` command, which always passes its own defaults (`5`), so changing this in `.env` does not affect them today. |
+| `WORKER_STUCK_JOB_MINUTES` | `30` | Age after which a processing job is considered stuck. Same caveat as `WORKER_POLL_INTERVAL`: supervised workers pass their own default (`30`). |
 
 ### Theme report settings
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `THEME_REPORT_MODEL` | empty | Model for theme report LLM calls. Empty reuses the community summarization model. |
+| `THEME_REPORT_MODEL` | empty | Model for theme report LLM calls (OpenCode Go). Empty resolves to the built-in default `deepseek-v4-pro`. A per-request `model` overrides it. |
 | `THEME_REPORT_PROMPT` | empty | Optional prompt override for per-community theme analysis. |
 
 ## Services and Data
@@ -371,16 +387,19 @@ docker compose ps
 The Docker stack includes:
 
 - `postgres`: PostgreSQL plus pgvector/ParadeDB storage for sources, chunks, jobs, metadata, and embeddings
-- `memgraph`: graph store for `Source`, `Chunk`, and `Entity` nodes plus relationship edges
+- `memgraph`: graph store. Nodes: `Source`, `Chunk`, `Entity` and `Insight`. Edges: `(Source)-[:INCLUDES]->(Chunk)`, `(Chunk)-[:MENTIONS {confidence}]->(Entity)`, `(Chunk)-[:CONTAINS {topics}]->(Insight)` and `(Insight)-[:RELATED_TO {similarity}]-(Insight)`. `RELATED_TO` links insights only; there are no entity-to-entity relationship edges (relationship extraction was removed, and entity similarity is computed on demand and cached in Postgres `entity_semantic_edges`). `MENTIONS.confidence` is `1.0` until the Jev entity audit writes a salience score.
 - `backend`: FastAPI API server on `http://localhost:${BACKEND_PORT:-8000}`
 - `frontend`: nginx-served React app on `http://localhost:${FRONTEND_PORT:-80}`
 
-Persistent local data lives under:
+Persistent local data lives in:
 
-- `data/postgres`
-- `data/memgraph`
-- `data/documents`
-- `data/backups`
+- `data/postgres`: Postgres data directory (bind mount)
+- the named Docker volume `knowledge-graphrag_memgraph_data` (Memgraph snapshots and WAL; not a directory under `data/`)
+- `data/documents`: stored original files and copied markdown images
+- `data/api_keys.toml`, `data/worker_logs`, `data/uploads`: API keys, worker logs and ingest uploads, bind-mounted into the backend
+- `data/backups`: output of `scripts/backup.sh`
+
+Caveat: `scripts/backup.sh` dumps Postgres correctly but copies `data/memgraph/` for the graph, and `docker-compose.yml` no longer stores Memgraph there (it uses the named volume above), so the Memgraph part of a backup is not the live graph. Until the script is updated, snapshot the graph separately (`CREATE SNAPSHOT;` through `mgconsole`, then copy the `knowledge-graphrag_memgraph_data` volume). `scripts/start.sh` has the same leftover: its first-run Memgraph schema init is keyed on `data/memgraph/.initialized`, so on a fresh volume the schema is applied by the backend's startup reconciliation (see [Memgraph schema reconciliation](#memgraph-schema-reconciliation)).
 
 Useful service checks:
 
@@ -395,10 +414,11 @@ printf "MATCH (n) RETURN count(n);\n" | docker compose exec -T memgraph mgconsol
 Workers run on the server, supervised by the backend. They are created, listed, stopped, and tailed through the API (or, equivalently, via the CLI which wraps it):
 
 ```bash
-rag worker launch 4              # spawn 4 workers; prints their IDs
-rag worker list                  # table of all workers + status
+rag worker launch 4              # spawn 4 workers; prints their IDs (default 1)
+rag worker list                  # active workers; add --all for stopped/crashed ones
 rag worker stop <worker-id>      # SIGTERM, then SIGKILL after 5s
-rag worker log <worker-id> -f    # stream the worker's log over SSE
+rag worker stop --all            # stop every active worker
+rag worker log <worker-id> -f    # print the log; -f/--follow streams it over SSE
 ```
 
 REST surface:
@@ -407,15 +427,18 @@ REST surface:
 POST /api/workers/launch?n=4
 GET  /api/workers
 POST /api/workers/{id}/stop
+POST /api/workers/stop-all
 GET  /api/workers/{id}/log?follow=true
 ```
+
+`rag ingest` only queues jobs; nothing is processed until at least one worker is running. Workers are not restarted automatically after a backend rebuild, so relaunch them after `docker compose up -d`.
 
 Implementation notes:
 
 - The supervisor spawns `python -m rag.cli _worker-run --worker-id <id>` as a subprocess and tracks PID, status, exit code, and log path in the `worker_processes` table.
 - Logs are written to `data/worker_logs/<worker-id>.log` (appended, line-buffered) and tailed via Server-Sent Events.
 - On backend startup, any rows in `running` state with dead PIDs are reconciled to `crashed` so the operator can see the failure.
-- Worker management requires the `admin` scope.
+- Worker endpoints require an authenticated principal (API key or session). They are meant for `admin` keys, but scopes are not enforced on these routes yet (see [Authentication](#authentication)), so any valid key can launch or stop workers.
 
 ## MCP server
 
@@ -441,10 +464,10 @@ The backend mounts an MCP (Model Context Protocol) server at `/mcp` using Stream
 Connect from a compatible client (e.g. Claude Desktop, Claude Code) with the URL `https://your-server/mcp/` and `Authorization: Bearer <token>`. Quick probe:
 
 ```bash
-python scripts/mcp_probe.py --server https://your-server --api-key TOKEN
+venv/bin/python scripts/mcp_probe.py --server https://your-server --api-key TOKEN
 ```
 
-The MCP server reuses the same `data/api_keys.toml` file as the REST API. Ingest, jobs, and worker management are deliberately not exposed via MCP — use the CLI for those.
+The MCP server reuses the same `data/api_keys.toml` file as the REST API; any valid key is accepted and scopes are not checked. All 14 tools are read-only: ingest, jobs, and worker management are deliberately not exposed via MCP — use the CLI for those.
 
 ## Ingestion
 
@@ -541,16 +564,14 @@ Image descriptions use the backend's `MODEL_IMAGE_DESCRIPTION` and
 
 ### Worker
 
-Start the worker:
+Workers run on the server under the backend's supervisor; see [Worker management](#worker-management):
 
 ```bash
-venv/bin/rag worker --poll-interval 1 --stuck-minutes 30
+venv/bin/rag worker launch 2
+venv/bin/rag worker list
 ```
 
-Options:
-
-- `--poll-interval INTEGER`: seconds between polls when the queue is empty
-- `--stuck-minutes INTEGER`: age after which a processing job is treated as stuck
+`rag worker launch` takes only the number of workers. The poll interval (5s) and stuck-job age (30 min) of supervised workers are fixed by the hidden `_worker-run` defaults; see `WORKER_POLL_INTERVAL` and `WORKER_STUCK_JOB_MINUTES`.
 
 ## Job Operations
 
@@ -713,9 +734,9 @@ venv/bin/rag sources delete <source_id> --hard
 Backfill insight extraction for the newest sources that already have chunks but no `chunk_insights` rows. `--batch-size` is a hard cap for one run; for example, `--batch-size 10` processes the newest 10 eligible sources and exits.
 
 ```bash
-python scripts/remediate_insights.py --batch-size 10
-python scripts/remediate_insights.py --source-id <source_id>
-python scripts/remediate_insights.py --source-id <source_id> --force
+venv/bin/python scripts/remediate_insights.py --batch-size 10
+venv/bin/python scripts/remediate_insights.py --source-id <source_id>
+venv/bin/python scripts/remediate_insights.py --source-id <source_id> --force
 ```
 
 The remediation script runs insight extraction directly in the script process; it does not create or rerun ingestion jobs and does not require `rag worker`. With `--source-id`, the script skips the source if it already has insight links. Add `--force` to delete that source's existing insight links, remove orphan insights, and rebuild insights from its chunks. The script prints source counts, chunk counts, cleanup steps, extraction progress, and storage progress as it runs. It calls the same `extract_and_store_insights` path the ingestion pipeline uses, so storage runs as the same phased, set-based batch passes (batch dedup, then batch mutual top-K linking), not per-insight.
@@ -809,34 +830,14 @@ Example:
 
 ```bash
 curl -X POST http://localhost:8000/api/search \
+  -H "Authorization: Bearer $RAG_API_KEY" \
   -H 'content-type: application/json' \
   -d '{"query":"quarterly roadmap","limit":5,"min_score":0.75}'
 ```
 
+Every `/api/*` route except `GET /api/health` and `POST /api/auth/login` needs `Authorization: Bearer <key>` (or a session cookie); the examples below assume `RAG_API_KEY` holds an API key from `data/api_keys.toml`.
+
 The response contains a `results` object with `chunks` and `insights` arrays matching the CLI shape above.
-
-## Community
-
-`rag community retrieve` resolves source scope with a lightweight retrieval-stage pass before running community graphing. It does not run the full graph-expanded retrieval result assembly just to collect source IDs, which keeps community detection substantially faster on retrieval-scoped runs.
-
-Response body:
-
-```json
-{
-  "results": [
-    {
-      "score": 0.93,
-      "chunk": "Chunk text...",
-      "chunk_id": "chunk-uuid",
-      "source_id": "source-uuid",
-      "source_path": "data/documents/source-uuid/1/original_report.pdf",
-      "source_metadata": {
-        "kind": "report"
-      }
-    }
-  ]
-}
-```
 
 ## Retrieval
 
@@ -1002,6 +1003,7 @@ Example:
 
 ```bash
 curl -X POST http://localhost:8000/api/retrieve \
+  -H "Authorization: Bearer $RAG_API_KEY" \
   -H 'content-type: application/json' \
   -d '{
     "query": "What changed?",
@@ -1013,37 +1015,53 @@ curl -X POST http://localhost:8000/api/retrieve \
 
 The REST API returns the same JSON structure as the CLI, without trace lines.
 
-## Community
+## Answer generation
 
-Community analysis groups connected entities into communities and returns representative chunks for each group. Scope can come from:
+Answer generation runs the full retrieval pipeline for a question, then asks an OpenCode Go model to write an answer from the retrieved chunks and insights (prompt: `ANSWER_GENERATION`). It is exposed through REST only (and the frontend's Answer view); there is no `rag` command that generates an answer. Saved answers are managed separately, see [Saved Answers](#saved-answers).
 
-- explicit source IDs
-- sources matched by search
-- sources matched by retrieval
-- a named working set (resolved to its member source IDs at dispatch)
+```text
+GET  /api/answer/models   → {"models": [{"id", "label", "default"}, ...]}
+POST /api/answer/stream   → text/event-stream
+```
 
-Optional summarization adds an LLM-written summary per community.
-
-Cross-source community detection uses the binary-quantized HNSW index on `entities.embedding` (migration 013) as a fast prefilter, combined with a persistent `entity_semantic_edges` cache for read-through reuse across runs. Virtual entity resolution merges near-duplicate entities within a run's subgraph without mutating stored data. Leiden uses `RBConfigurationVertexPartition` with a configurable `resolution` parameter and a fixed random seed (`42`) for reproducible partitions.
-
-Every community execution is persisted as a run with a stable `run_id`, and progress streams over SSE so the frontend can show live stage counts. A synchronous `POST /api/community` is kept for CLI/MCP compatibility and records a run the same way. Async `POST /api/community/runs` + `GET .../events` are the new frontend flow.
-
-### CLI
-
-**Community detection commands** support new options alongside all existing ones:
-
-- `--resolution FLOAT`: Leiden resolution; 1.0 balanced, below 1.0 merges into fewer communities, above 1.0 splits into more
-- `--source-cooc-weight FLOAT`: extra weight added when entities co-occur in the same source
-- `--cross-source-top-k INTEGER`: max cross-source semantic neighbors fetched per entity via bq-indexed ANN
-- `--max-cross-source-queries INTEGER`: hard cap on per-entity ANN queries; entities prioritized by chunk-mention count
-- `--working-set UUID`: resolve scope from a working set instead of explicit IDs
-
-**New subcommands:**
+`POST /api/answer/stream` takes every field of the `/api/retrieve` request body (see [Retrieval](#retrieval); `query`, `source_ids`, `filters`, `seed_count`, `result_count`, `rrf_k`, `entity_confidence_threshold`, `first_hop_similarity_threshold`, `second_hop_similarity_threshold`) plus a required `model` that must be one of the ids from `GET /api/answer/models`:
 
 ```bash
-rag community runs list
-rag community runs show <run_id>
+curl -N -X POST http://localhost:8000/api/answer/stream \
+  -H "Authorization: Bearer $RAG_API_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"query":"What changed?","model":"gpt-6-luna","result_count":5}'
 ```
+
+Server-sent events, in order:
+
+| Event | Payload | Meaning |
+| --- | --- | --- |
+| `answer_delta` | `{"delta": "text..."}` | One chunk of generated answer text; sent repeatedly. |
+| `results` | the `/api/retrieve` response (`retrieval_results`, `insights`) | The evidence the answer was written from; sent once, last. |
+
+Retrieval runs to completion first, so the first `answer_delta` arrives only after retrieval finishes (typically tens of seconds on a large corpus). An unsupported `model`, or a missing `OPENCODE_API_KEY`, raises inside the stream: the connection ends without an `answer_delta` or `results` event and the error is in the backend log.
+
+Supported models (all served by OpenCode Go; the list lives in `src/rag/answer_models.py`, and exactly one entry is flagged `default`):
+
+| Id | Label | Default |
+| --- | --- | --- |
+| `gpt-6-luna` | GPT 6 Luna | yes |
+| `deepseek-v4-pro` | DeepSeek V4 Pro | |
+| `deepseek-v4-flash` | DeepSeek V4 Flash | |
+| `glm-5`, `glm-5.1` | GLM-5, GLM-5.1 | |
+| `kimi-k2.5`, `kimi-k2.6` | Kimi K2.5, Kimi K2.6 | |
+| `mimo-v2-pro`, `mimo-v2-omni`, `mimo-v2.5-pro`, `mimo-v2.5` | MiMo-V2-Pro, MiMo-V2-Omni, MiMo-V2.5-Pro, MiMo-V2.5 | |
+| `minimax-m2.5`, `minimax-m2.7` | MiniMax M2.5, MiniMax M2.7 | |
+| `qwen3.5-plus`, `qwen3.6-plus` | Qwen3.5 Plus, Qwen3.6 Plus | |
+
+The shared client picks the endpoint by model family: `gpt-*` use `/responses` with `reasoning.effort` set from `ANSWER_REASONING_EFFORT` (default `low`; a larger output cap leaves room for reasoning tokens), `minimax-*` use `/messages`, and everything else uses `/chat/completions` at temperature `0.2`. If the chosen model hits its OpenCode Go quota or spend cap (a hard cap applies to `gpt-6-luna`), the call is retried once on `OPENCODE_FALLBACK_MODEL`, but only if nothing has been streamed yet.
+
+## Research workspace
+
+Working sets, theme reports, saved answers and source facets sit around [Community](#community) analysis. They are available from the CLI, the REST API and (read-only) the MCP server.
+
+### CLI
 
 #### `rag working-set`
 
@@ -1083,18 +1101,7 @@ rag sources facets
 
 ### REST API
 
-**Community runs (async):**
-
-```text
-POST /api/community/runs         → {run_id}  (starts background thread)
-GET  /api/community/runs          → {runs, total, limit, offset}
-GET  /api/community/runs/{id}     → full run row
-GET  /api/community/runs/{id}/events  → SSE stream of stage_log events
-```
-
-The `events` endpoint polls the run row every 0.5s and emits one SSE event per new `stage_log` entry. On terminal status (`completed` or `failed`) it emits a final `result` event and closes. Reconnecting replays progress from the persisted `stage_log`.
-
-### Working Sets
+#### Working Sets
 
 ```text
 GET    /api/working-sets           → list working sets
@@ -1106,7 +1113,7 @@ DELETE /api/working-sets/{id}      → delete
 
 Working sets are named, persisted collections of source IDs usable as scope for community, search, retrieve, answer, and theme report generation. Scope resolution snapshots member IDs at dispatch; later edits to the set do not change in-flight or completed runs.
 
-### Theme Reports
+#### Theme Reports
 
 ```text
 GET    /api/themes                 → list theme reports
@@ -1117,7 +1124,7 @@ POST   /api/themes/{id}/regenerate → retry failed per-community calls {model?}
 
 A Theme Report is an LLM analysis generated from a persisted community run. Parallel per-community calls produce label, community_type, confidence (1-5), summary, key entities/sources; a synthesis pass produces higher-order thematic buckets, cross-community narrative, and cleanup recommendations. If some community calls fail, the report saves with status `partial` and regeneration retries only the failed parts.
 
-### Saved Answers
+#### Saved Answers
 
 ```text
 GET    /api/answers                → list saved answers
@@ -1128,7 +1135,7 @@ DELETE /api/answers/{id}           → delete
 
 Answers are saved with denormalized evidence snapshots (source_id, source_name, chunk text at save time) so they survive later source deletion. The evidence payload is validated against a bounded Pydantic model.
 
-### Source Facets
+#### Source Facets
 
 ```text
 GET /api/sources/facets            → {facets: {kind: [{value, count}], ...}}
@@ -1136,9 +1143,37 @@ GET /api/sources/facets            → {facets: {kind: [{value, count}], ...}}
 
 Returns distinct values with counts for `kind`, `author`, `source`, `domain` metadata keys over non-deleted sources. Each key includes an explicit `(none)` bucket for sources missing the key.
 
+## Community
+
+Community analysis groups connected entities into communities and returns representative chunks for each group. Scope can come from:
+
+- explicit source IDs
+- sources matched by search
+- sources matched by retrieval
+- a named working set (resolved to its member source IDs at dispatch)
+
+`rag community retrieve` resolves source scope with a lightweight retrieval-stage pass before running community graphing. It does not run the full graph-expanded retrieval result assembly just to collect source IDs, which keeps community detection substantially faster on retrieval-scoped runs.
+
+Optional summarization adds an LLM-written summary per community (an OpenRouter model you name per request; see [Model selection](#model-selection)).
+
+Cross-source community detection uses the binary-quantized HNSW index on `entities.embedding` (migration 013) as a fast prefilter, combined with a persistent `entity_semantic_edges` cache for read-through reuse across runs. Virtual entity resolution merges near-duplicate entities within a run's subgraph without mutating stored data. Leiden uses `RBConfigurationVertexPartition` with a configurable `resolution` parameter and a fixed random seed (`42`) for reproducible partitions.
+
+Every community execution is persisted as a run with a stable `run_id`, and progress streams over SSE so the frontend can show live stage counts. A synchronous `POST /api/community` is kept for CLI/MCP compatibility and records a run the same way. Async `POST /api/community/runs` + `GET .../events` are the frontend flow.
+
 ### CLI
 
-The community surface has three subcommands.
+The community surface has three scope subcommands (`ids`, `search`, `retrieve`) plus run history. Besides the per-command options below, all three accept:
+
+- `--resolution FLOAT`: Leiden resolution; 1.0 balanced, below 1.0 merges into fewer communities, above 1.0 splits into more
+- `--source-cooc-weight FLOAT`: extra weight added when entities co-occur in the same source
+- `--working-set UUID`: resolve scope from a working set instead of explicit IDs / criteria
+
+Run history:
+
+```bash
+rag community runs list
+rag community runs show <run_id>
+```
 
 #### `rag community ids`
 
@@ -1342,57 +1377,80 @@ Notes:
 - use `criteria` with `search` or `retrieve`
 - the response body matches the CLI JSON
 
+Async runs (the frontend flow):
+
+```text
+POST /api/community/runs         → {run_id}  (starts background thread)
+GET  /api/community/runs          → {runs, total, limit, offset}
+GET  /api/community/runs/{id}     → full run row
+GET  /api/community/runs/{id}/events  → SSE stream of stage_log events
+```
+
+The `events` endpoint polls the run row every 0.5s and emits one SSE event per new `stage_log` entry. On terminal status (`completed` or `failed`) it emits a final `result` event and closes. Reconnecting replays progress from the persisted `stage_log`.
+
 ## Prompts
 
-Prompt templates live in [src/rag/prompts/__init__.py](/Users/estebanf/development/knowledge-graphrag/src/rag/prompts/__init__.py).
+Prompt templates live in [src/rag/prompts/__init__.py](src/rag/prompts/__init__.py).
 
 That module is the canonical place to maintain prompt text for:
 
-- document profiling
-- chunk validation
-- entity extraction
-- proposition decomposition
-- answer generation
-- community summarization
-- retrieval query variants
-- graph-stage entity selection and entity query generation
+- document profiling (`DOCUMENT_PROFILING`) and chunk validation (`CHUNK_VALIDATION`), used by the `llm` backends
+- entity extraction (`ENTITY_EXTRACTION`) and insight extraction (`INSIGHT_EXTRACTION`)
+- proposition decomposition (`PROPOSITION_DECOMPOSITION`)
+- retrieval query variants for chunks (`QUERY_VARIANTS`) and insights (`INSIGHT_QUERY_VARIANTS`), and the insight second-hop sub-query (`INSIGHT_SUB_QUERY`)
+- graph-stage entity selection (`ENTITY_SELECTION`, `SECOND_HOP_ENTITY_SELECTION`) and entity query generation (`ENTITY_QUERY_GENERATION`)
+- answer generation (`ANSWER_GENERATION`)
+- community summarization (`COMMUNITY_SUMMARIZATION`)
+- theme reports: per-community analysis (`THEME_COMMUNITY_ANALYSIS`) and cross-community synthesis (`THEME_SYNTHESIS`)
+
+There is no relationship-extraction prompt (relationship extraction was removed). Two prompts live next to their callers instead: metadata extraction (`src/rag/metadata_extraction.py`) and image description (`src/rag/image_description.py`). Jev does not use prompts; its questions are defined in code (`src/rag/jev_profiling.py`, `src/rag/chunk_validation.py`, `src/rag/entity_audit.py`, `src/rag/entity_names.py`, `src/rag/jev_dedup.py` and the entity-selection step in `src/rag/retrieval.py`).
 
 Maintenance rules:
 
 - add or update prompt strings in `src/rag/prompts/__init__.py`
 - keep prompt call sites formatting values through `.format(...)` where needed
-- if prompt behavior changes, update or add tests in [tests/test_prompts.py](/Users/estebanf/development/knowledge-graphrag/tests/test_prompts.py)
+- if prompt behavior changes, update or add tests in [tests/test_prompts.py](tests/test_prompts.py)
 - if you need a deployment-specific community summary prompt without changing code, set `COMMUNITY_SUMMARIZATION_PROMPT`
 
 ## Migrations and Existing Databases
 
-If your local database predates the current code, apply the repo migrations in `scripts/migrate/`.
-
-The migrations most likely to matter for current code are:
-
-- `scripts/migrate/001_add_markdown_content.sql`
-- `scripts/migrate/002_update_vector_dimensions.sql`
-- `scripts/migrate/004_job_improvements.sql`
-- `scripts/migrate/006_search_performance_indexes.sql`
-- `scripts/migrate/007_insights.sql`
-- `scripts/migrate/009_binary_vector_prefilter_indexes.sql`
-- `scripts/migrate/010_entities_autovacuum_tuning.sql`
-- `scripts/migrate/012_stage_duration_baseline.sql`
-- `scripts/migrate/013_research_workspace.sql`
-- `scripts/migrate/015_entity_audit.sql` (Jev entity-audit tables `entity_mention_audit`, `entity_merge_review`, `insight_pair_review`; required before the weekly-maintenance entity audit phase is enabled)
-
-Example:
+If your database predates the current code, apply the repo migrations in `scripts/migrate/` in numeric order. The Postgres container only mounts `scripts/init/postgres`, so `psql -f scripts/migrate/...` inside the container does not work; always feed the file on stdin from the repo root on the host:
 
 ```bash
-docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/004_job_improvements.sql
-docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/006_search_performance_indexes.sql
-docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/007_insights.sql
-docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/009_binary_vector_prefilter_indexes.sql
-docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/010_entities_autovacuum_tuning.sql
-docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/012_stage_duration_baseline.sql
-docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/013_research_workspace.sql
-docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/015_entity_audit.sql
+docker compose exec -T postgres psql -U rag -d rag < scripts/migrate/NNN_name.sql
 ```
+
+All migrations are idempotent except `002`. A fresh install already has the effect of `001`, `002`, `005`, `006`, `010`, `011`, `013` and `015` through `scripts/init/postgres/`; see [Server installation](#server-installation) for the ones it still needs.
+
+| Migration | Purpose |
+| --- | --- |
+| `001_add_markdown_content.sql` | Adds `sources.markdown_content`. |
+| `002_update_vector_dimensions.sql` | Resizes `chunks.embedding`/`entities.embedding` to `vector(4096)`. **Destructive and one-shot**: it drops existing embeddings. Only for databases still on the old 1536-dimension schema. |
+| `003_add_entity_source_tracking.sql` | Adds `entities.source_id` (per-source cleanup on retry/delete) and normalizes legacy `stage_log` values. |
+| `004_job_improvements.sql` | Adds `jobs.error_detail`, a unique partial index on `sources.md5` for active sources (duplicate detection) and the stuck-job index. |
+| `005_entity_embeddings.sql` | Adds `entities.embedding vector(4096)`. |
+| `006_search_performance_indexes.sql` | Sparse-search GIN index on `chunks.content` and the `(source_id, chunk_index)` index. |
+| `007_insights.sql` | `insights` and `chunk_insights` tables. |
+| `008_auth_and_workers.sql` | `users`, `user_sessions`, `worker_processes` and `api_key_audit` (the last is not written to yet). |
+| `009_binary_vector_prefilter_indexes.sql` | Binary-quantized HNSW prefilter indexes for chunks and insights, and the insights full-text index. Dense search, insight dedup and linking depend on these. |
+| `010_entities_autovacuum_tuning.sql` | Tighter autovacuum thresholds on `entities`. |
+| `011_pg_prewarm.sql` | Creates the `pg_prewarm` extension used by startup index prewarming. Also needs the compose `shared_preload_libraries` setting. |
+| `012_stage_duration_baseline.sql` | `stage_duration_baseline` table for `rag jobs stats --set-baseline` and the drift warning. |
+| `013_research_workspace.sql` | Binary-quantized HNSW index on `entities.embedding` and the `community_runs`, `theme_reports`, `saved_answers`, `working_sets` and `entity_semantic_edges` tables. |
+| `014_theme_reports_async.sql` | Adds the `generating` status to `theme_reports` for background generation. |
+| `015_entity_audit.sql` | Jev audit tables `entity_mention_audit`, `entity_merge_review` and `insight_pair_review`. Required before the weekly-maintenance entity audit and Jev merge phases run; harmless otherwise. |
+
+Example for an older database, in order:
+
+```bash
+for n in 003_add_entity_source_tracking 004_job_improvements 005_entity_embeddings 006_search_performance_indexes \
+         007_insights 008_auth_and_workers 009_binary_vector_prefilter_indexes 010_entities_autovacuum_tuning \
+         011_pg_prewarm 012_stage_duration_baseline 013_research_workspace 014_theme_reports_async 015_entity_audit; do
+  docker compose exec -T postgres psql -U rag -d rag < scripts/migrate/$n.sql
+done
+```
+
+Skip any migration you already applied (the loop is safe to repeat) and apply `001` and `002` only if your schema needs them. `011` needs the `pg_prewarm` library preloaded, which `docker-compose.yml` already does for a recreated Postgres container.
 
 ### Storage maintenance
 
@@ -1411,11 +1469,11 @@ Prefer `pg_repack -t entities` over `VACUUM FULL` if the exclusive lock is too d
 
 ### Weekly corpus maintenance
 
-`scripts/weekly_maintenance.py` runs the full maintenance sweep in one command: entity duplicate merge (reuses `scripts/merge_semantic_duplicates.py`), insight duplicate merge, an orphan/consistency sweep, and index/stats health (`VACUUM ANALYZE` + vector-index prewarm). Run it weekly:
+`scripts/weekly_maintenance.py` runs the full maintenance sweep in one command: entity duplicate merge (reuses `scripts/merge_semantic_duplicates.py`), insight duplicate merge, an orphan/consistency sweep, and index/stats health (`VACUUM ANALYZE` + vector-index prewarm). Run it weekly from the repo root on the Docker host (it connects through `POSTGRES_URL`/`MEMGRAPH_URL` from `.env`; exactly one of `--dry-run` or `--execute` is required):
 
 ```bash
-uv run python scripts/weekly_maintenance.py --dry-run   # safe default: reports counts, writes nothing
-uv run python scripts/weekly_maintenance.py --execute    # applies merges/cleanup/vacuum
+venv/bin/python scripts/weekly_maintenance.py --dry-run   # safe default: reports counts, writes nothing
+venv/bin/python scripts/weekly_maintenance.py --execute    # applies merges/cleanup/vacuum
 ```
 
 Each phase is independently skippable (`--skip-entities`, `--skip-insights`, `--skip-consistency`, `--skip-health`). The insight-merge phase is scoped by default to insights created in the last `--since` days (default 7) probed against the full corpus via the same binary-HNSW prefilter + full-precision rerank pattern intake uses (U1) — this keeps a weekly run index-assisted and fast even at 100k+ insights. Pass `--full` for an occasional whole-corpus sweep; it is slower and not meant for the routine weekly cadence.
@@ -1451,10 +1509,10 @@ Cost and time: about $6 and about 2 hours for `--full` over ~160k chunks at `JEV
 **Recommended rollout.**
 
 1. Apply migration 015 and set `OPENROUTER_API_KEY`.
-2. Pilot on a small window: `uv run python scripts/weekly_maintenance.py --dry-run --jev --score --since 1 --skip-entities --skip-insights --skip-consistency --skip-health`. This scores yesterday's chunks and prints the plan; nothing but `entity_mention_audit` is written.
+2. Pilot on a small window: `venv/bin/python scripts/weekly_maintenance.py --dry-run --jev --score --since 1 --skip-entities --skip-insights --skip-consistency --skip-health`. This scores yesterday's chunks and prints the plan; nothing but `entity_mention_audit` is written.
 3. Inspect the plan and the table (`SELECT * FROM entity_mention_audit WHERE is_entity < 0.2 LIMIT 50`). Adjust `ENTITY_AUDIT_INVALID_THRESHOLD` / `ENTITY_AUDIT_RETYPE_CONFIDENCE` if the dropped examples look wrong.
 4. **Check `RETRIEVAL_ENTITY_CONFIDENCE_THRESHOLD` before the first `--execute`** against the salience distribution the dry-run prints (see the threshold note in the settings table). `--execute --jev` changes retrieval behavior: as soon as apply writes salience into `MENTIONS.confidence`, mentions below the threshold stop being used in graph expansion. The default `0.2` drops only passing mentions (level 0). If your `.env` still sets the old `0.75`, change it (a value that high would hide almost every audited mention) and restart the backend. The Retrieve view in the frontend starts at `0.2` and always sends its own value, which overrides the environment setting for UI requests; change it there too if you calibrate to another value.
-5. Run the first full backfill when no jobs are running: `uv run python scripts/weekly_maintenance.py --execute --jev --full` (scores everything, then applies). It is resumable: if interrupted, rerun the same command. Then set `MAINTENANCE_JEV_ENABLED=true` so the weekly `--execute` run keeps new chunks audited.
+5. Run the first full backfill when no jobs are running: `venv/bin/python scripts/weekly_maintenance.py --execute --jev --full` (scores everything, then applies). It is resumable: if interrupted, rerun the same command. Then set `MAINTENANCE_JEV_ENABLED=true` so the weekly `--execute` run keeps new chunks audited.
 
 #### Jev-confirmed merges, names and near-duplicates (opt-in)
 
@@ -1498,13 +1556,52 @@ ORDER BY r.score DESC LIMIT 50;
 
 Set a row's `status` (for example `'rejected'`) to record your decision; any row, whatever its status, keeps that pair out of future Jev judging and auto-merging.
 
-**Recommended rollout.** (1) Finish the entity audit rollout above (the `0.2` retrieval threshold is part of it). (2) `uv run python scripts/weekly_maintenance.py --dry-run --jev --skip-consistency --skip-health` and read the printed proposals: Jev-confirmed merges (with mention counts), proposed renames and merges into existing rows, blocked renames, review-band counts, and the cost line. (3) Query the review tables as above. (4) When the proposals look right, run `uv run python scripts/weekly_maintenance.py --execute --jev` with no jobs running; then set `MAINTENANCE_JEV_ENABLED=true` for the weekly run. Only review-band pairs are remembered (in the review tables); pairs Jev dropped are judged again on later runs, which costs a few Jev calls per pair.
+**Recommended rollout.** (1) Finish the entity audit rollout above (the `0.2` retrieval threshold is part of it). (2) `venv/bin/python scripts/weekly_maintenance.py --dry-run --jev --skip-consistency --skip-health` and read the printed proposals: Jev-confirmed merges (with mention counts), proposed renames and merges into existing rows, blocked renames, review-band counts, and the cost line. (3) Query the review tables as above. (4) When the proposals look right, run `venv/bin/python scripts/weekly_maintenance.py --execute --jev` with no jobs running; then set `MAINTENANCE_JEV_ENABLED=true` for the weekly run. Only review-band pairs are remembered (in the review tables); pairs Jev dropped are judged again on later runs, which costs a few Jev calls per pair.
 
 Two notes on side effects. Scoring runs before the advisory lock (it must, so it can overlap intake), so two overlapping `--execute --jev` runs would both spend Jev credits (they cannot corrupt data: only the apply phase mutates, and it is serialized by the lock). And `_invalidate_entity_edge_cache` now commits its deletes (it previously did not, so the entity-merge phase left stale `entity_semantic_edges` rows behind); the first `--execute` after upgrading clears whatever orphaned cache rows built up.
 
 ### Memgraph schema reconciliation
 
 The backend re-applies `src/rag/graph_db.py`'s `SCHEMA_STATEMENTS` (the same index/constraint statements as `scripts/init/memgraph_init.cypher`) idempotently on every startup, so a live instance can't silently drift out of sync with statements added after its initial setup (this is how the `Insight(insight_id)` index/constraint gap was found and fixed). No manual migration step is needed for future schema additions to that list — just add the statement and restart the backend.
+
+## Rolling out this release
+
+Ordered checklist for deploying this branch (shared OpenCode client, GPT 6 Luna defaults, Jev switches and Jev maintenance) onto an existing server. Run it from the repo checkout on the Docker host, with the CLI configured against the server for the `rag` commands. Nothing here runs by itself.
+
+1. **Apply migration 015** (idempotent; harmless until the Jev maintenance phases are enabled):
+
+   ```bash
+   docker compose exec -T postgres psql -U rag -d rag < scripts/migrate/015_entity_audit.sql
+   ```
+
+2. **Update `.env`** so the new defaults actually apply. A value pinned in `.env` wins over the code default:
+   - Remove `MODEL_ENTITY_EXTRACTION` if it pins an OpenRouter model (for example `qwen/qwen-2.5-7b-instruct`). Entity extraction now goes to OpenCode Go, which does not know that name, so every chunk would fail. The default is `gpt-6-luna`.
+   - Remove `MODEL_RETRIEVAL_QUERY_VARIANTS` if it pins `deepseek-v4-flash`; the default is `deepseek-v4.1-flash`.
+   - Remove `RETRIEVAL_ENTITY_CONFIDENCE_THRESHOLD` if it is set to `0.75`. The default is now `0.2`, and `0.75` would hide almost every audited mention once the entity audit has run.
+   - Make sure `OPENCODE_API_KEY` is set (it is the only OpenCode key variable) and delete any other keys that are no longer in `.env.example`; unknown keys are ignored.
+   - Add `OPENCODE_FALLBACK_MODEL=deepseek-v4.1-flash` (or leave it unset to use that default; set it empty to disable the quota fallback).
+   - Keep the Jev switches at their defaults for now: `ENTITY_SELECTION_BACKEND=llm`, `PROFILING_BACKEND=llm`, `CHUNK_VALIDATION_BACKEND=llm`, `MAINTENANCE_JEV_ENABLED=false`.
+
+3. **Rebuild and restart.** Stop workers first so no job is mid-flight on old code, then recreate the containers (recreation is what makes the backend re-read `.env`), then relaunch workers:
+
+   ```bash
+   rag worker stop --all
+   docker compose build backend frontend
+   docker compose up -d backend frontend
+   rag worker launch 2
+   ```
+
+4. **Run the smoke script** with freshly generated secrets (see [Verification](#verification)). It mutates the live stack and cleans up after itself.
+
+5. **Ingest a few test documents** and read their stage logs with `rag jobs status <job_id>`: `graph_extraction` should show `entities_stored` > 0, `insight_extraction` should show `insights_extracted` / `insights_reused`, and `failed_chunks` should be empty or small. A `skipped: true` with `skip_reason` means the OpenCode key is missing in the backend container.
+
+6. **Flip the Jev switches one at a time**, after running the matching read-only pilot (`scripts/pilot_jev_profiling.py`, `scripts/pilot_jev_chunk_validation.py`; they only SELECT, but spend a little Jev credit). For each switch: set it in `.env`, recreate the backend (`docker compose up -d backend`), relaunch workers (they inherit settings at start, so the two ingestion switches only take effect on newly launched workers), and ingest a few documents before moving on. Suggested order: `ENTITY_SELECTION_BACKEND=jev`, then `PROFILING_BACKEND=jev`, then `CHUNK_VALIDATION_BACKEND=jev`. Pilot results on the reference corpus: chunk validation at the `0.3` threshold skipped about 1.2% of chunks (mostly outros, share links and disclaimers), and Jev profiling agreed with the LLM profiler on 98% of chunking decisions at roughly 3x lower latency.
+
+7. **Weekly maintenance with Jev.** Start with `venv/bin/python scripts/weekly_maintenance.py --dry-run --jev`: it spends a small amount of Jev credit and writes nothing. Review the printed proposals and the review tables, then `venv/bin/python scripts/weekly_maintenance.py --execute --jev` with no jobs running. Run the first full audit with `--execute --jev --full --score` (about 2 hours and about $6 at the reference corpus size; resumable). Read [Jev entity audit](#jev-entity-audit-phase-0-opt-in) before the first `--execute`: it changes which entities retrieval uses. Set `MAINTENANCE_JEV_ENABLED=true` afterwards for the routine weekly run.
+
+8. **After intake looks stable**, pin the stage-timing baseline: `rag jobs stats --set-baseline`.
+
+9. **Rollback.** Revert the `.env` model and backend values (the three `*_BACKEND` switches back to `llm`, any model pins you changed) and run `docker compose up -d backend`, then relaunch workers. For a full code rollback, `git checkout main`, `docker compose build backend frontend`, `docker compose up -d backend frontend`, and relaunch workers. Migration 015 only adds tables, so it does not need reverting. Data written by the Jev maintenance phases (renames, merges, deleted mentions, `MENTIONS.confidence` salience) is not undone by a code rollback.
 
 ## Verification
 
@@ -1532,19 +1629,43 @@ Prompt regression coverage:
 pytest -q tests/test_prompts.py
 ```
 
-Insight extraction coverage:
+Insight and entity extraction coverage:
 
 ```bash
-pytest -q tests/test_insight_extraction.py tests/test_config.py tests/test_prompts.py tests/test_cli_sources.py
+pytest -q tests/test_insight_extraction.py tests/test_graph_extraction.py tests/test_config.py tests/test_prompts.py tests/test_cli_sources.py
 ```
 
-Full suite:
+OpenCode client, answers and theme reports (endpoint dispatch, quota fallback, answer models and streaming):
 
 ```bash
-pytest -q
+pytest -q tests/test_opencode_client.py tests/test_answering.py tests/test_themes.py tests/test_config.py
 ```
 
-Live end-to-end smoke (mutates the running stack, so use a non-production server). `API_KEY` and `ADMIN_PASSWORD` are required and have no defaults; generate fresh random values for each run:
+Jev client and switchable backends (retrieval entity selection is in `tests/test_retrieval.py`):
+
+```bash
+pytest -q tests/test_jev.py tests/test_jev_profiling.py tests/test_jev_ingestion_stages.py tests/test_chunk_validation.py tests/test_pilot_jev_scripts.py tests/test_retrieval.py tests/test_config.py
+```
+
+Entity audit and weekly maintenance, including the Jev phases, entity names, merge survivor rule and migration 015:
+
+```bash
+pytest -q tests/test_entity_audit.py tests/test_weekly_maintenance.py tests/test_weekly_maintenance_jev.py tests/test_entity_names.py tests/test_jev_dedup.py tests/test_entity_survivor.py tests/test_merge_vacuum.py tests/test_migration_015.py
+```
+
+Auth, server APIs, migrations and operator scripts:
+
+```bash
+pytest -q tests/test_api_auth_apikey.py tests/test_api_auth_session.py tests/test_api_gating.py tests/test_api_ingest.py tests/test_api_jobs.py tests/test_api_workers.py tests/test_worker_supervisor.py tests/test_mcp_server.py tests/test_migration_008.py tests/test_migration_009.py tests/test_remove_api_key_script.py
+```
+
+Full offline suite (everything except the live integration file `tests/test_ingestion.py`, which needs the running stack and real documents):
+
+```bash
+pytest -q --ignore=tests/test_ingestion.py
+```
+
+Live end-to-end smoke (mutates the running stack, so use a non-production server; needs `curl`, `jq`, `docker compose` and the host `venv`). `API_KEY` and `ADMIN_PASSWORD` are required and have no defaults; generate fresh random values for each run:
 
 ```bash
 API_KEY=$(python3 -c 'import secrets;print("smoke-"+secrets.token_urlsafe(24))') \
@@ -1552,7 +1673,7 @@ ADMIN_PASSWORD=$(python3 -c 'import secrets;print(secrets.token_urlsafe(24))') \
 scripts/smoke_e2e.sh
 ```
 
-Run it from the repo root on the Docker host (it creates the test user with the host-run `scripts/create_user.py`). It refuses to run if `ADMIN_USERNAME` (default `smoke`) already exists. On exit, pass or fail, it deletes the smoke source, stops its worker, removes its `smoke-cli` block from `data/api_keys.toml` in place (`scripts/remove_api_key.py`, which preserves the inode because the file is bind-mounted into the backend container), and deletes the test user.
+Optional variables: `ADMIN_USERNAME` (default `smoke`) and `BASE_URL` (default `http://localhost:8000`). `API_KEY` must be at least 16 characters of `[A-Za-z0-9._~-]`. Run it from the repo root on the Docker host (it creates the test user with the host-run `scripts/create_user.py`). It applies migration 008, ingests a tiny markdown file, launches a worker, waits for the job, searches, and runs the MCP probe. It refuses to run if `ADMIN_USERNAME` already exists. On exit, pass or fail, it hard-deletes the smoke source (found through the job's `Source ID` in `rag jobs status`), stops its worker, removes its `smoke-cli` block from `data/api_keys.toml` in place (`scripts/remove_api_key.py`, which preserves the inode because the file is bind-mounted into the backend container), and deletes the test user.
 
 Live integration:
 
@@ -1567,14 +1688,32 @@ venv/bin/rag retrieve "What topics are covered in the ingested reports?" --resul
 - `rag health` fails:
   - confirm `docker compose ps`
   - confirm `POSTGRES_URL` and `MEMGRAPH_URL`
-- Search or retrieval fails before ranking:
-  - confirm `OPENROUTER_API_KEY`
-  - confirm embedding and retrieval model env vars are set
+- `rag search` fails before ranking:
+  - confirm `OPENROUTER_API_KEY` (query embeddings) and that the OpenRouter account has credits
+  - confirm `MODEL_EMBEDDING` is an OpenRouter embedding model
+- `rag retrieve` or an answer fails:
+  - retrieval also needs `OPENCODE_API_KEY` (query variants run on OpenCode Go), plus `OPENROUTER_API_KEY` for embeddings and reranking; answers need the key too
+  - a model name pinned in `.env` must belong to the right provider (`MODEL_RETRIEVAL_QUERY_VARIANTS` is an OpenCode name such as `deepseek-v4.1-flash`; `MODEL_RETRIEVAL_GRAPH` and `MODEL_RETRIEVAL_RERANKER` are OpenRouter names)
+- Entities or insights are missing after ingestion:
+  - a completed job with `skipped: true` and `skip_reason: OPENCODE_API_KEY not configured` in its stage log means the backend container has no key; set it and recreate the backend and workers
+  - check `failed_chunks` in the stage log; the stage fails outright above `STAGE_FAILURE_RATE_THRESHOLD`. A pinned `MODEL_ENTITY_EXTRACTION` or `MODEL_INSIGHT_EXTRACTION` that OpenCode does not serve fails every chunk
+- OpenCode quota errors (429, or "quota"/"limit" in the message) on `gpt-6-luna`:
+  - `gpt-6-luna` has a hard spend cap on the Go plan. The shared client retries once on `OPENCODE_FALLBACK_MODEL` (default `deepseek-v4.1-flash`); if both are exhausted the call fails
+  - to stay off the cap, set `MODEL_ENTITY_EXTRACTION` / `MODEL_INSIGHT_EXTRACTION` to `deepseek-v4.1-flash` (large backfills especially) and choose a non-`gpt-*` answer model
+  - an empty `OPENCODE_FALLBACK_MODEL` disables the fallback
+- Jev-related problems (`ENTITY_SELECTION_BACKEND`, `PROFILING_BACKEND`, `CHUNK_VALIDATION_BACKEND`, `--jev` maintenance):
+  - HTTP `402` from Jev means the OpenRouter account is out of credits; top up and rerun
+  - Jev failures never fail retrieval or ingestion: entity selection falls back to the first `RETRIEVAL_ENTITY_SELECTION_COUNT` entities, profiling falls back to the LLM calls, chunk validation passes the affected chunks. Look for `Jev` warnings in the backend and worker logs (`rag worker log <id>`) and for `profile_source: llm_fallback` or `jev_errors` in stage logs
+  - weekly maintenance never merges, renames or deletes on a Jev error; it stops scoring after three consecutive fully failed batches
+  - an unrecognized `*_BACKEND` value stops the backend at startup
+  - `typesafe/jev-1.13` must be available to your OpenRouter account; override `JEV_MODEL` if the slug changes
 - Retrieval returns roots with empty `related`:
   - some chunks still have no useful linked graph evidence
   - retrieval may still return the reranked root chunk alone
+  - if you ran the entity audit, `RETRIEVAL_ENTITY_CONFIDENCE_THRESHOLD` (or a UI/CLI override) may be filtering mentions; lower it or set `0`
+- Jobs stay `pending`: no worker is running. `rag worker list`, then `rag worker launch`. Workers do not survive a backend container recreation.
 - Markdown images are not described:
   - only local relative image paths are copied and described
   - remote URLs, `data:` URLs, and missing files are left untouched
 - Hard delete breaks:
-  - dependent rows must be removed in this order: `entities`, `chunks`, `jobs`, `sources`
+  - dependent rows must be removed in this order: insight links (`chunk_insights`) and orphan insights, `entities`, `chunks`, `jobs`, then `sources`. `rag sources delete <id> --hard` does this for you
