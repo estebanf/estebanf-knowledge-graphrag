@@ -6,22 +6,27 @@ import requests
 from rag import prompts
 from rag.config import settings
 from rag.db import get_connection
+from rag.opencode import SESSION_HEADER, new_session_id
 
 
-def _call_llm(prompt_text: str, model: str) -> str:
+def _call_llm(prompt_text: str, model: str, session_id: str | None = None) -> str:
     api_key = settings.OPENCODE_API_KEY or settings.OPENROUTER_API_KEY
     if not api_key:
         raise RuntimeError("No LLM API key configured (set OPENCODE_API_KEY or OPENROUTER_API_KEY)")
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
     if settings.OPENCODE_API_KEY:
         url = "https://opencode.ai/zen/go/v1/chat/completions"
+        # OpenCode Go requires the session header; the OpenRouter fallback
+        # below has no such concept, so it is scoped to this branch.
+        headers[SESSION_HEADER] = session_id or new_session_id("themes")
     else:
         url = "https://openrouter.ai/api/v1/chat/completions"
     response = requests.post(
         url,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
+        headers=headers,
         json={
             "model": model,
             "messages": [{"role": "user", "content": prompt_text}],
@@ -76,6 +81,10 @@ def _create_report_row(run_id: str, model: str, placeholder_status: str) -> tupl
 def _run_analysis(report_id: str, communities: list[dict], model: str) -> None:
     prompt_override = settings.THEME_REPORT_PROMPT
     failed_ids: list[int] = []
+    # One session for this whole report: community analyses plus the synthesis
+    # call below. Captured by the `analyze_one` closure so it survives the
+    # thread-pool hand-off.
+    session_id = new_session_id("themes")
     max_workers = settings.COMMUNITY_SUMMARY_MAX_WORKERS
 
     def analyze_one(i: int, community: dict):
@@ -93,7 +102,7 @@ def _run_analysis(report_id: str, communities: list[dict], model: str) -> None:
                 chunks=chunks_json,
                 cross_source=str(is_cross),
             )
-            raw = _call_llm(text, model)
+            raw = _call_llm(text, model, session_id)
             result = _parse_json(raw)
             result["evidence_chunks"] = chunks
             result["all_entities"] = [e.get("canonical_name", "") for e in community.get("entities", [])]
@@ -138,7 +147,7 @@ def _run_analysis(report_id: str, communities: list[dict], model: str) -> None:
             synthesis_prompt = prompts.THEME_SYNTHESIS.format(
                 analyses=json.dumps(ordered),
             )
-            raw = _call_llm(synthesis_prompt, model)
+            raw = _call_llm(synthesis_prompt, model, session_id)
             synthesis = _parse_json(raw)
         except Exception:
             synthesis = {"buckets": [], "narrative": "", "cleanup_recommendations": []}

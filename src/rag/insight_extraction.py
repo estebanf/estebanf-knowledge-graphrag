@@ -11,6 +11,7 @@ from rag import prompts
 from rag.config import settings
 from rag.db import set_hnsw_ef_search
 from rag.embedding import get_embeddings
+from rag.opencode import new_session_id, opencode_headers
 
 log = logging.getLogger(__name__)
 ProgressCallback = Callable[[str, dict], None]
@@ -48,8 +49,13 @@ def _normalized_insights(raw_insights: list[dict]) -> list[dict]:
     return normalized
 
 
-def extract_insights_from_chunk(content: str) -> list[dict]:
+def extract_insights_from_chunk(content: str, session_id: str | None = None) -> list[dict]:
     """Call the LLM to extract insights from one chunk's content.
+
+    `session_id` is the OpenCode Go conversation ID (`x-opencode-session`).
+    Callers pass the ID minted for the whole source so every chunk of one
+    ingestion shares a session; a direct caller that omits it gets a fresh
+    single-call session rather than an HTTP 400.
 
     Contract (R7): a missing API key is the documented graceful dev/CI/smoke
     path and returns `[]` rather than raising. Any other failure (HTTP error,
@@ -63,10 +69,10 @@ def extract_insights_from_chunk(content: str) -> list[dict]:
     prompt = prompts.INSIGHT_EXTRACTION.format(chunk=content[:_MAX_CHUNK_CHARS])
     resp = httpx.post(
         _OPENCODE_URL,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {settings.OPENCODE_API_KEY}",
-        },
+        headers=opencode_headers(
+            settings.OPENCODE_API_KEY,
+            session_id or new_session_id("insight"),
+        ),
         json={"model": _MODEL, "messages": [{"role": "user", "content": prompt}]},
         timeout=(10, 120),
     )
@@ -387,6 +393,7 @@ def link_related_insights(
 def _extract_chunk_insights_parallel(
     chunk_rows: list[tuple[str, str]],
     progress_callback: ProgressCallback | None = None,
+    session_id: str | None = None,
 ) -> tuple[list[tuple[str, str, list[dict]]], list[str]]:
     """Phase A: fan out `extract_insights_from_chunk` across a thread pool.
 
@@ -400,9 +407,12 @@ def _extract_chunk_insights_parallel(
     if not chunk_rows:
         return [], []
 
+    # The session ID is captured by the closure rather than read from a
+    # ContextVar: these calls run in pool threads, which do not inherit the
+    # submitting thread's context.
     def _extract(row: tuple[str, str]) -> tuple[str, str, list[dict]]:
         chunk_id, content = row
-        raw_insights = extract_insights_from_chunk(content)
+        raw_insights = extract_insights_from_chunk(content, session_id)
         return chunk_id, content, _normalized_insights(raw_insights)
 
     max_workers = min(settings.INSIGHT_EXTRACTION_CONCURRENCY, len(chunk_rows))
@@ -503,8 +513,10 @@ def extract_and_store_insights(
             "skip_reason": "OPENCODE_API_KEY not configured",
         }
 
+    # One OpenCode Go session for this source's whole extraction pass — every
+    # chunk below is part of the same logical conversation.
     extracted_rows, failed_chunks = _extract_chunk_insights_parallel(
-        chunk_rows, progress_callback
+        chunk_rows, progress_callback, new_session_id("insight")
     )
 
     if total_chunks and (len(failed_chunks) / total_chunks) > settings.STAGE_FAILURE_RATE_THRESHOLD:

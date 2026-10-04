@@ -426,7 +426,7 @@ def test_extract_chunk_insights_parallel_preserves_chunk_order(monkeypatch):
 
     monkeypatch.setattr("rag.insight_extraction.settings.INSIGHT_EXTRACTION_CONCURRENCY", 3)
 
-    def fake_extract(content):
+    def fake_extract(content, session_id=None):
         return [{"insight": f"insight {content}", "topics": [content.upper()]}]
 
     monkeypatch.setattr("rag.insight_extraction.extract_insights_from_chunk", fake_extract)
@@ -453,7 +453,7 @@ def test_extract_chunk_insights_parallel_reports_progress(monkeypatch):
     monkeypatch.setattr("rag.insight_extraction.settings.INSIGHT_EXTRACTION_CONCURRENCY", 2)
     monkeypatch.setattr(
         "rag.insight_extraction.extract_insights_from_chunk",
-        lambda content: [{"insight": f"insight {content}", "topics": []}],
+        lambda content, session_id=None: [{"insight": f"insight {content}", "topics": []}],
     )
     events = []
 
@@ -475,7 +475,7 @@ def test_extract_chunk_insights_parallel_records_failed_chunks(monkeypatch):
 
     monkeypatch.setattr("rag.insight_extraction.settings.INSIGHT_EXTRACTION_CONCURRENCY", 2)
 
-    def fake_extract(content):
+    def fake_extract(content, session_id=None):
         if content == "beta":
             raise RuntimeError("llm call failed")
         return [{"insight": f"insight {content}", "topics": []}]
@@ -527,7 +527,7 @@ def _patch_happy_path(monkeypatch, events=None):
 def test_extract_and_store_insights_returns_counts(monkeypatch):
     events = _patch_happy_path(monkeypatch)
     monkeypatch.setattr("rag.insight_extraction.extract_insights_from_chunk",
-                        lambda content: [{"insight": "insight A", "topics": ["AI Adoption"]}])
+                        lambda content, session_id=None: [{"insight": "insight A", "topics": ["AI Adoption"]}])
     monkeypatch.setattr("rag.insight_extraction.get_embeddings", lambda texts: [[0.1] * 4096])
 
     from rag.insight_extraction import extract_and_store_insights
@@ -549,7 +549,7 @@ def test_extract_and_store_insights_batches_embeddings_across_chunks(monkeypatch
     events = _patch_happy_path(monkeypatch)
     monkeypatch.setattr(
         "rag.insight_extraction._extract_chunk_insights_parallel",
-        lambda rows, progress_callback=None: (
+        lambda rows, progress_callback=None, session_id=None: (
             [
                 ("chunk-1", "content 1", [{"insight": "insight A", "topics": ["AI Adoption"]}]),
                 ("chunk-2", "content 2", [{"insight": "insight B", "topics": ["Business Outcomes"]}]),
@@ -584,7 +584,7 @@ def test_extract_and_store_insights_within_batch_duplicate_pair(monkeypatch):
     events = _patch_happy_path(monkeypatch)
     monkeypatch.setattr(
         "rag.insight_extraction._extract_chunk_insights_parallel",
-        lambda rows, progress_callback=None: (
+        lambda rows, progress_callback=None, session_id=None: (
             [
                 ("chunk-1", "content 1", [{"insight": "AI reduces costs", "topics": []}]),
                 ("chunk-2", "content 2", [{"insight": "AI reduces expenses", "topics": []}]),
@@ -631,7 +631,7 @@ def test_extract_and_store_insights_failure_gate_allows_below_threshold(monkeypa
     ]
     monkeypatch.setattr(
         "rag.insight_extraction._extract_chunk_insights_parallel",
-        lambda rows, progress_callback=None: (succeeded, ["chunk-0", "chunk-1"]),
+        lambda rows, progress_callback=None, session_id=None: (succeeded, ["chunk-0", "chunk-1"]),
     )
     monkeypatch.setattr(
         "rag.insight_extraction.get_embeddings",
@@ -666,7 +666,7 @@ def test_extract_and_store_insights_failure_gate_raises_above_threshold(monkeypa
     ]
     monkeypatch.setattr(
         "rag.insight_extraction._extract_chunk_insights_parallel",
-        lambda rows, progress_callback=None: (succeeded, failed),
+        lambda rows, progress_callback=None, session_id=None: (succeeded, failed),
     )
 
     from rag.insight_extraction import extract_and_store_insights
@@ -687,7 +687,7 @@ def test_extract_and_store_insights_reuse_path_no_linking_contribution(monkeypat
     events = _patch_happy_path(monkeypatch)
     monkeypatch.setattr(
         "rag.insight_extraction._extract_chunk_insights_parallel",
-        lambda rows, progress_callback=None: (
+        lambda rows, progress_callback=None, session_id=None: (
             [("chunk-1", "content 1", [{"insight": "existing insight", "topics": []}])],
             [],
         ),
@@ -743,7 +743,7 @@ def test_extract_and_store_insights_reports_storage_progress(monkeypatch):
     events = _patch_happy_path(monkeypatch)
     monkeypatch.setattr(
         "rag.insight_extraction._extract_chunk_insights_parallel",
-        lambda rows, progress_callback=None: (
+        lambda rows, progress_callback=None, session_id=None: (
             [
                 ("chunk-1", "content 1", [{"insight": "insight A", "topics": []}]),
                 ("chunk-2", "content 2", []),
@@ -772,7 +772,7 @@ def test_extract_and_store_insights_skips_blank_insight(monkeypatch):
     monkeypatch.setattr("rag.insight_extraction.settings.OPENCODE_API_KEY", "test-key")
     monkeypatch.setattr(
         "rag.insight_extraction.extract_insights_from_chunk",
-        lambda content: [
+        lambda content, session_id=None: [
             {"insight": "", "topics": ["AI Adoption"]},
             {"topics": ["AI Adoption"]},
         ],
@@ -793,3 +793,45 @@ def test_extract_and_store_insights_skips_blank_insight(monkeypatch):
     assert result["insights_reused"] == 0
     assert result["failed_chunks"] == []
     mock_embeddings.assert_not_called()
+
+
+def test_extract_sends_session_header(monkeypatch):
+    """OpenCode Go rejects requests without `x-opencode-session` (HTTP 400
+    MissingSessionID), which is what stalled the insight_extraction stage."""
+    monkeypatch.setattr("rag.insight_extraction.settings.OPENCODE_API_KEY", "test-key")
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"choices": [{"message": {"content": '{"insights": []}'}}]}
+    mock_resp.raise_for_status = MagicMock()
+
+    from rag.opencode import SESSION_HEADER
+
+    with patch("rag.insight_extraction.httpx.post", return_value=mock_resp) as post:
+        from rag.insight_extraction import extract_insights_from_chunk
+        extract_insights_from_chunk("some text", "session-abc")
+        assert post.call_args.kwargs["headers"][SESSION_HEADER] == "session-abc"
+
+        # A direct caller that omits the ID still gets a valid header rather
+        # than a 400.
+        extract_insights_from_chunk("some text")
+        assert post.call_args.kwargs["headers"][SESSION_HEADER]
+
+
+def test_all_chunks_of_one_source_share_a_session(monkeypatch):
+    """One ingestion pass is one conversation: every chunk fanned out by the
+    pool must carry the same session ID."""
+    monkeypatch.setattr("rag.insight_extraction.settings.OPENCODE_API_KEY", "test-key")
+    monkeypatch.setattr("rag.insight_extraction.settings.INSIGHT_EXTRACTION_CONCURRENCY", 3)
+    seen = []
+
+    monkeypatch.setattr(
+        "rag.insight_extraction.extract_insights_from_chunk",
+        lambda content, session_id=None: seen.append(session_id) or [],
+    )
+
+    from rag.insight_extraction import _extract_chunk_insights_parallel
+    _extract_chunk_insights_parallel(
+        [("chunk-1", "alpha"), ("chunk-2", "beta"), ("chunk-3", "gamma")],
+        session_id="session-xyz",
+    )
+
+    assert seen == ["session-xyz"] * 3

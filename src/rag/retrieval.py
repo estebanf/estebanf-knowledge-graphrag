@@ -16,6 +16,7 @@ from rag.config import settings
 from rag.db import get_connection, set_hnsw_ef_search
 from rag.embedding import get_embeddings
 from rag.graph_db import get_graph_driver
+from rag.opencode import new_session_id, opencode_headers
 
 
 @dataclass
@@ -262,16 +263,25 @@ def _parse_json_response(content: str) -> dict:
     return json.loads(_strip_code_fences(content))
 
 
-def _chat_json_opencode(model: str, prompt: str, *, timeout: int = 90) -> dict:
+def _chat_json_opencode(
+    model: str, prompt: str, *, timeout: int = 90, session_id: str | None = None
+) -> dict:
+    """One-shot JSON chat call against OpenCode Go.
+
+    Query-variant generation fans out through several thread pools, so rather
+    than thread a session ID down every path each call mints its own by
+    default. Grouping is a routing hint on the provider's side; presence of the
+    header is what is mandatory.
+    """
     if not settings.OPENCODE_API_KEY:
         raise ValueError("OPENCODE_API_KEY is required for OpenCode calls")
     with httpx.Client(timeout=httpx.Timeout(timeout)) as client:
         response = client.post(
             _OPENCODE_URL,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {settings.OPENCODE_API_KEY}",
-            },
+            headers=opencode_headers(
+                settings.OPENCODE_API_KEY,
+                session_id or new_session_id("retrieval"),
+            ),
             json={
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],

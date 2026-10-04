@@ -6,6 +6,7 @@ import requests
 from rag import prompts
 from rag.answer_models import get_supported_answer_models
 from rag.config import settings
+from rag.opencode import new_session_id, opencode_headers
 from rag.retrieval import retrieve
 
 
@@ -24,11 +25,8 @@ def _opencode_go_key() -> str:
     return settings.OPENCODE_GO_API_KEY or settings.OPENCODE_API_KEY
 
 
-def _opencode_go_headers() -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {_opencode_go_key()}",
-        "Content-Type": "application/json",
-    }
+def _opencode_go_headers(session_id: str) -> dict[str, str]:
+    return opencode_headers(_opencode_go_key(), session_id)
 
 
 def _is_anthropic_model(model: str) -> bool:
@@ -114,6 +112,9 @@ def stream_answer(
 
     _require_api_key()
 
+    # One session for this answer request.
+    session_id = new_session_id("answer")
+
     if _is_anthropic_model(model):
         url = _OPENCODE_GO_MESSAGES_URL
         body = {
@@ -133,7 +134,7 @@ def stream_answer(
 
     response = requests.post(
         url,
-        headers=_opencode_go_headers(),
+        headers=_opencode_go_headers(session_id),
         json=body,
         timeout=300,
         stream=True,
