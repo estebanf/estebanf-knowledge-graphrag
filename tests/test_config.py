@@ -66,6 +66,33 @@ def test_jev_and_entity_selection_defaults(monkeypatch):
     assert s.ENTITY_SELECTION_JEV_THRESHOLD == 0.5
 
 
+def test_entity_audit_and_maintenance_jev_defaults(monkeypatch):
+    import pytest
+    from pydantic import ValidationError
+    from rag.config import Settings
+
+    for key in [
+        "MAINTENANCE_JEV_ENABLED",
+        "ENTITY_AUDIT_INVALID_THRESHOLD",
+        "ENTITY_AUDIT_RETYPE_CONFIDENCE",
+    ]:
+        monkeypatch.delenv(key, raising=False)
+    s = Settings(_env_file=None)
+    assert s.MAINTENANCE_JEV_ENABLED is False
+    assert s.ENTITY_AUDIT_INVALID_THRESHOLD == 0.2
+    assert s.ENTITY_AUDIT_RETYPE_CONFIDENCE == 0.8
+
+    monkeypatch.setenv("MAINTENANCE_JEV_ENABLED", "true")
+    monkeypatch.setenv("ENTITY_AUDIT_INVALID_THRESHOLD", "0.35")
+    s = Settings(_env_file=None)
+    assert s.MAINTENANCE_JEV_ENABLED is True
+    assert s.ENTITY_AUDIT_INVALID_THRESHOLD == 0.35
+
+    monkeypatch.setenv("ENTITY_AUDIT_RETYPE_CONFIDENCE", "1.5")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
 def test_profiling_and_chunk_validation_backend_defaults(monkeypatch):
     for key in [
         "PROFILING_BACKEND",

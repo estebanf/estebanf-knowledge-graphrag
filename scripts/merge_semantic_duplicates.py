@@ -177,7 +177,10 @@ def merge_memgraph(session, survivor_id: str, dup_ids: list[str]) -> int:
         result = session.run(
             "MATCH (c:Chunk)-[old:MENTIONS]->(e:Entity {entity_id: $dup_id}) "
             "MATCH (s:Entity {entity_id: $survivor_id}) "
-            "MERGE (c)-[:MENTIONS {confidence: old.confidence}]->(s) "
+            # Match on the endpoints only: MERGE-ing on the confidence value would
+            # create a parallel edge once salience (entity audit) makes the
+            # confidences of the two mentions differ.
+            "MERGE (c)-[m:MENTIONS]->(s) ON CREATE SET m.confidence = old.confidence "
             "WITH e, count(old) AS repointed "
             "DETACH DELETE e "
             "RETURN repointed",

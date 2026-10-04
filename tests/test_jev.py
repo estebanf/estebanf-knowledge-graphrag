@@ -302,6 +302,25 @@ def test_system_one_many_preserves_order_and_captures_exceptions(monkeypatch):
     assert values == pytest.approx([0.0, 0.1, 0.2, 0.3, 0.4, 0.5])
 
 
+def test_system_one_many_with_usage_returns_full_responses(monkeypatch):
+    def handler(request):
+        if json.loads(request.content)["state"] == "boom":
+            return httpx.Response(422, text="bad")
+        return _ok({"q": {"type": "noul", "noul": 0.5}})
+
+    Recorder(monkeypatch, handler)
+    results = jev.system_one_many(
+        [("a", {"q": jev.noul("x")}), ("boom", {"q": jev.noul("x")})],
+        max_workers=2,
+        with_usage=True,
+    )
+
+    assert isinstance(results[0], jev.JevResponse)
+    assert results[0].answers["q"]["noul"] == 0.5
+    assert results[0].usage["cost"] == pytest.approx(0.000002)
+    assert isinstance(results[1], jev.JevError)
+
+
 def test_system_one_many_empty_makes_no_calls(monkeypatch):
     rec = Recorder(monkeypatch, lambda request: _ok({}))
     assert jev.system_one_many([]) == []

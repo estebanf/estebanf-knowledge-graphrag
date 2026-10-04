@@ -164,3 +164,42 @@ CREATE TABLE IF NOT EXISTS entity_semantic_edges (
 );
 
 CREATE INDEX IF NOT EXISTS entity_semantic_edges_entity_b_idx ON entity_semantic_edges(entity_b);
+
+-- Jev corpus audit (scripts/migrate/015_entity_audit.sql). No foreign keys on
+-- purpose: entities/chunks are hard-deleted by merge and source-delete paths.
+CREATE TABLE IF NOT EXISTS entity_mention_audit (
+  chunk_id        uuid NOT NULL,
+  entity_id       uuid NOT NULL,
+  is_entity       double precision,
+  entity_type     text,
+  type_confidence double precision,
+  salience        double precision,
+  model           text,
+  scored_at       timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (chunk_id, entity_id)
+);
+
+CREATE INDEX IF NOT EXISTS entity_mention_audit_entity_id_idx ON entity_mention_audit(entity_id);
+CREATE INDEX IF NOT EXISTS entity_mention_audit_scored_at_idx ON entity_mention_audit(scored_at);
+
+CREATE TABLE IF NOT EXISTS entity_merge_review (
+  id          bigserial PRIMARY KEY,
+  entity_a    uuid NOT NULL,
+  entity_b    uuid NOT NULL,
+  score       double precision,
+  reason      text,
+  status      text NOT NULL DEFAULT 'pending',
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (entity_a, entity_b)
+);
+
+CREATE TABLE IF NOT EXISTS insight_pair_review (
+  id          bigserial PRIMARY KEY,
+  insight_a   uuid NOT NULL,
+  insight_b   uuid NOT NULL,
+  cosine      double precision,
+  score       double precision,
+  status      text NOT NULL DEFAULT 'pending',
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (insight_a, insight_b)
+);

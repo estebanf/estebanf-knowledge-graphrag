@@ -135,7 +135,7 @@ def merge_memgraph(session, survivor_id: str, dup_ids: list[str]) -> int:
         result = session.run(
             "MATCH (c:Chunk)-[old:MENTIONS]->(e:Entity {entity_id: $dup_id}) "
             "MATCH (s:Entity {entity_id: $survivor_id}) "
-            "MERGE (c)-[:MENTIONS {confidence: old.confidence}]->(s) "
+            "MERGE (c)-[m:MENTIONS]->(s) ON CREATE SET m.confidence = old.confidence "
             "WITH e, count(old) AS repointed "
             "DETACH DELETE e "
             "RETURN repointed",

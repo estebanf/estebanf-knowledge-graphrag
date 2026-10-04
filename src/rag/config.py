@@ -77,6 +77,17 @@ class Settings(BaseSettings):
     # Parallel Jev calls for batch users (rag.jev.system_one_many).
     JEV_CONCURRENCY: Annotated[int, Field(gt=0)] = 8
 
+    # Jev corpus audit in weekly maintenance (scripts/weekly_maintenance.py).
+    # Master switch for every Jev maintenance phase; off keeps weekly
+    # maintenance exactly as it was. `--jev` / `--no-jev` override per run.
+    MAINTENANCE_JEV_ENABLED: bool = False
+    # Entity-mention audit apply: drop a MENTIONS edge when the Jev "is this a
+    # specific named entity" probability is below this value.
+    ENTITY_AUDIT_INVALID_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.2
+    # Retype an off-schema entity only when the mean type probability of the
+    # mentions voting for the winning type is at least this value.
+    ENTITY_AUDIT_RETYPE_CONFIDENCE: Annotated[float, Field(ge=0.0, le=1.0)] = 0.8
+
     # Insight extraction
     MODEL_INSIGHT_EXTRACTION: str = "gpt-6-luna"
     INSIGHT_DEDUP_COSINE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.95

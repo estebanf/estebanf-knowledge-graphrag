@@ -193,20 +193,27 @@ def system_one_many(
     max_workers: int | None = None,
     session_id: str | None = None,
     timeout: float | None = None,
-) -> list[dict[str, dict] | Exception]:
+    with_usage: bool = False,
+) -> list[Any]:
     """Run many independent System One calls concurrently.
 
     Each item is `(state, questions)`. The result list preserves input order;
     an item whose call failed holds the exception instead of raising, so one
-    bad item never discards the rest of a batch.
+    bad item never discards the rest of a batch. By default each successful
+    item is the `answers` dict; with `with_usage=True` it is the full
+    `JevResponse` (answers plus usage/cost) for callers that account cost.
     """
     if not items:
         return []
     workers = max(1, min(max_workers or settings.JEV_CONCURRENCY, len(items)))
 
-    def _run(item: tuple[Any, dict[str, dict]]) -> dict[str, dict] | Exception:
+    def _run(item: tuple[Any, dict[str, dict]]) -> Any:
         state, questions = item
         try:
+            if with_usage:
+                return system_one_response(
+                    state, questions, session_id=session_id, timeout=timeout
+                )
             return system_one(state, questions, session_id=session_id, timeout=timeout)
         except Exception as exc:
             return exc

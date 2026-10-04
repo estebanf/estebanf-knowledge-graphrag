@@ -553,7 +553,12 @@ def retrieve_command(
     rrf_k: Annotated[Optional[int], typer.Option(help="RRF k override")] = None,
     entity_confidence_threshold: Annotated[
         Optional[float],
-        typer.Option(help="Relationship confidence threshold override"),
+        typer.Option(
+            help=(
+                "Minimum MENTIONS salience/confidence (0-1) for an entity to be used in graph "
+                "expansion override"
+            )
+        ),
     ] = None,
     first_hop_similarity_threshold: Annotated[
         Optional[float],

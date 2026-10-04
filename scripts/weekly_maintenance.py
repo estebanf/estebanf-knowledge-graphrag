@@ -3,6 +3,18 @@
 
 One command keeps the corpus deduplicated and the vector indexes healthy:
 
+  0. Entity audit        — OPTIONAL, Jev-backed (off unless
+                           MAINTENANCE_JEV_ENABLED=true or `--jev`; see
+                           src/rag/entity_audit.py). Scores every chunk->entity
+                           MENTIONS edge with Jev into `entity_mention_audit`
+                           (scoring writes ONLY that table, so it also runs
+                           while intake jobs are active), then applies the
+                           audit: drop mentions that are not real named
+                           entities (and entities left with no mention),
+                           retype off-schema entities, and write salience into
+                           MENTIONS.confidence. Apply mutates the corpus, so it
+                           follows the same --execute gate as every other
+                           mutating phase. Runs before the entity merge.
   1. Entity merge       — reuses scripts/merge_semantic_duplicates.py's
                            run_entity_merge() (fuzzy + cosine candidate
                            detection, union-find clustering, Postgres +
@@ -45,6 +57,15 @@ race. The lock is held for the entire `--execute` run, including phase 4
 (VACUUM ANALYZE is safe to run concurrently with intake on its own, but
 holding the same lock through phase 4 keeps the guard's semantics simple:
 one lock, one full `--execute` run).
+
+Jev scoring is the one exception to "nothing runs before the guard": it only
+inserts into `entity_mention_audit`, never touches entities/chunks/Memgraph,
+so it runs BEFORE the active-job check and may proceed while jobs are in
+flight (a 2-hour `--full` scoring run can overlap intake). Every corpus
+mutation (including the audit apply) still happens only after the guard and
+under the advisory lock. By default scoring runs under `--execute` and not
+under `--dry-run`; `--dry-run --score` spends Jev credits but still writes only
+the audit table.
 """
 import argparse
 import sys
@@ -52,6 +73,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from rag import entity_audit
 from rag.config import settings
 from rag.db import (
     get_connection,
@@ -446,6 +468,9 @@ def _invalidate_entity_edge_cache(merged_entity_ids: set[str]) -> None:
                    WHERE NOT EXISTS (SELECT 1 FROM entities e WHERE e.id = entity_semantic_edges.entity_a)
                       OR NOT EXISTS (SELECT 1 FROM entities e WHERE e.id = entity_semantic_edges.entity_b)"""
             )
+            # get_connection() is not autocommit and closes without committing,
+            # so without this the DELETE is silently rolled back.
+            conn.commit()
         print(f"Cache invalidation: {orphan_count} orphaned edge row(s) deleted.")
         return
 
@@ -462,6 +487,7 @@ def _invalidate_entity_edge_cache(merged_entity_ids: set[str]) -> None:
                WHERE NOT EXISTS (SELECT 1 FROM entities e WHERE e.id = entity_semantic_edges.entity_a)
                   OR NOT EXISTS (SELECT 1 FROM entities e WHERE e.id = entity_semantic_edges.entity_b)"""
         ).rowcount or 0
+        conn.commit()  # not autocommit: see the note above
 
     total = touched + orphan
     if total > 0:
@@ -471,6 +497,59 @@ def _invalidate_entity_edge_cache(merged_entity_ids: set[str]) -> None:
         )
     else:
         print("Cache invalidation: nothing to delete (merged entities had no cached edges).")
+
+
+# ── Phase 0: Jev entity audit ─────────────────────────────────────────────────
+
+
+def jev_enabled(args: argparse.Namespace) -> bool:
+    """`--no-jev` forces off, `--jev` forces on, otherwise MAINTENANCE_JEV_ENABLED."""
+    if args.no_jev:
+        return False
+    return bool(args.jev or settings.MAINTENANCE_JEV_ENABLED)
+
+
+def entity_audit_active(args: argparse.Namespace) -> bool:
+    return jev_enabled(args) and not args.skip_entity_audit
+
+
+def should_score(args: argparse.Namespace) -> bool:
+    """Explicit `--score`/`--no-score` wins; otherwise score under --execute only."""
+    if args.score is not None:
+        return bool(args.score)
+    return bool(args.execute)
+
+
+def run_entity_audit_scoring(args: argparse.Namespace):
+    """Jev-score unscored mentions in scope. Writes ONLY `entity_mention_audit`
+    (resumable, committed per batch), so it is safe with intake jobs running.
+    Returns the `ScoreStats`, or None when scoring cannot start."""
+    if not settings.OPENROUTER_API_KEY:
+        print("Entity audit scoring needs OPENROUTER_API_KEY (Jev runs on OpenRouter); not set.")
+        return None
+    since_days = None if args.full else args.since
+    with get_connection() as conn, get_graph_driver() as driver:
+        with driver.session() as session:
+            return entity_audit.score_mentions(
+                conn, session, since_days, rescore=args.rescore
+            )
+
+
+def run_entity_audit_apply(dry_run: bool, since_days: int | None, rescore: bool) -> None:
+    """Apply (or, in dry-run, report) the audit. Corpus mutations: callers
+    must hold the maintenance lock with no active jobs."""
+    if dry_run:
+        with get_connection() as conn, get_graph_driver() as driver:
+            with driver.session() as session:
+                entity_audit.dry_run_report(conn, session, since_days, rescore=rescore)
+        return
+
+    with get_connection() as conn, get_graph_driver() as driver:
+        with driver.session() as session:
+            result = entity_audit.apply_audit(conn, session, since_days)
+    _invalidate_entity_edge_cache(result.deleted_entity_ids)
+    if result.deleted_entity_ids:
+        vacuum_analyze_entities()
 
 
 # ── Community-run concurrency guard ───────────────────────────────────────────
@@ -512,6 +591,32 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--dry-run", action="store_true", help="Report counts, write nothing (default-safe mode).")
     mode.add_argument("--execute", action="store_true", help="Apply merges/cleanup/vacuum for real.")
 
+    jev_group = parser.add_mutually_exclusive_group()
+    jev_group.add_argument(
+        "--jev", action="store_true",
+        help="Enable the Jev entity audit phase for this run (default: MAINTENANCE_JEV_ENABLED).",
+    )
+    jev_group.add_argument(
+        "--no-jev", action="store_true",
+        help="Force every Jev maintenance phase off for this run.",
+    )
+    parser.add_argument(
+        "--skip-entity-audit", action="store_true",
+        help="Skip phase 0 (Jev entity audit) even when Jev maintenance is enabled.",
+    )
+    parser.add_argument(
+        "--score", action=argparse.BooleanOptionalAction, default=None,
+        help=(
+            "Entity audit: Jev-score unscored mentions (writes only entity_mention_audit and "
+            "spends Jev credits; ~$6 / ~2h for --full over ~160k chunks at concurrency 8). "
+            "Default: score under --execute, do not score under --dry-run. "
+            "--dry-run --score is allowed and still writes only the audit table."
+        ),
+    )
+    parser.add_argument(
+        "--rescore", action="store_true",
+        help="Entity audit: re-score mentions that already have an audit row.",
+    )
     parser.add_argument("--skip-entities", action="store_true", help="Skip phase 1 (entity merge).")
     parser.add_argument("--skip-insights", action="store_true", help="Skip phase 2 (insight merge).")
     parser.add_argument("--skip-consistency", action="store_true", help="Skip phase 3 (orphan/consistency sweep).")
@@ -522,14 +627,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Insight-merge phase 2 default scoping: only insights created in the last "
             "N days are used as probes against the full corpus (R12/doc-review P2). "
+            "Also scopes the entity audit (chunks created in the last N days). "
             "Ignored if --full is given."
         ),
     )
     parser.add_argument(
         "--full", action="store_true",
         help=(
-            "Insight-merge phase 2: probe every insight against the whole corpus "
-            "instead of scoping to --since. Slower, occasional operation — not the "
+            "Insight-merge phase 2 (and entity audit phase 0): probe every insight / "
+            "audit every chunk instead of scoping to --since. Slower, occasional operation — not the "
             "weekly default; do not schedule this as the routine weekly run at corpus "
             "sizes around 100k+ insights."
         ),
@@ -545,6 +651,10 @@ def build_parser() -> argparse.ArgumentParser:
 def _run_phases(args: argparse.Namespace) -> int:
     dry_run = not args.execute
     since_days = None if args.full else args.since
+
+    if entity_audit_active(args):
+        print("== Phase 0: entity audit ==", flush=True)
+        run_entity_audit_apply(dry_run=dry_run, since_days=since_days, rescore=args.rescore)
 
     if not args.skip_entities:
         print("== Phase 1: entity merge ==", flush=True)
@@ -585,6 +695,33 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    scoring_aborted = False
+    if entity_audit_active(args) and should_score(args):
+        # Scoring only inserts into entity_mention_audit, so it deliberately
+        # runs BEFORE (and outside) the active-job guard and the lock.
+        print("== Phase 0: entity audit scoring (writes only entity_mention_audit) ==", flush=True)
+        stats = run_entity_audit_scoring(args)
+        if stats is None:
+            return 1
+        scoring_aborted = stats.aborted
+    elif not entity_audit_active(args) and (args.score or args.rescore):
+        print(
+            "Note: --score/--rescore have no effect "
+            + ("(entity audit skipped via --skip-entity-audit)."
+               if jev_enabled(args)
+               else "(Jev maintenance is off; pass --jev or set MAINTENANCE_JEV_ENABLED=true).")
+        )
+
+    rc = _run_guarded(args)
+    if rc == 0 and scoring_aborted:
+        print("Entity audit scoring stopped early (Jev calls kept failing); exiting non-zero.")
+        return 1
+    return rc
+
+
+def _run_guarded(args: argparse.Namespace) -> int:
+    """Run the phases; under --execute only after the active-job/community-run
+    guard and with the advisory lock held."""
     if not args.execute:
         return _run_phases(args)
 

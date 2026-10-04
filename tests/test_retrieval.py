@@ -267,7 +267,9 @@ def test_expand_seed_candidate_uses_per_seed_wall_clock_budget(monkeypatch):
 
     monkeypatch.setattr("rag.retrieval.time", _Time())
     monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_MAX_GRAPH_EXPANSION_MS_PER_SEED", 4000)
-    monkeypatch.setattr("rag.retrieval._load_seed_entities", lambda driver, chunk_id: [])
+    monkeypatch.setattr(
+        "rag.retrieval._load_seed_entities", lambda driver, chunk_id, min_confidence=0.0: []
+    )
 
     traces: list[str] = []
     result = expand_seed_candidate(
@@ -309,7 +311,10 @@ def test_expand_seed_candidate_falls_back_to_same_source_neighbors(monkeypatch):
     )
 
     monkeypatch.setattr("rag.retrieval.time.monotonic", lambda: 10.0)
-    monkeypatch.setattr("rag.retrieval._load_seed_entities", lambda driver, chunk_id: [entity])
+    monkeypatch.setattr(
+        "rag.retrieval._load_seed_entities",
+        lambda driver, chunk_id, min_confidence=0.0: [entity],
+    )
     monkeypatch.setattr("rag.retrieval._select_entity_names", lambda *args, **kwargs: ["agentic identity"])
     monkeypatch.setattr("rag.retrieval._generate_entity_query", lambda *args, **kwargs: "agentic identity security")
     monkeypatch.setattr("rag.retrieval.get_embeddings", lambda texts: [[0.1] * 3 for _ in texts])
@@ -368,7 +373,10 @@ def test_expand_seed_candidate_generates_first_hop_queries_concurrently(monkeypa
             assert first_started.wait(0.5)
         return f"{query} {entity_name}"
 
-    monkeypatch.setattr("rag.retrieval._load_seed_entities", lambda driver, chunk_id: entities)
+    monkeypatch.setattr(
+        "rag.retrieval._load_seed_entities",
+        lambda driver, chunk_id, min_confidence=0.0: entities,
+    )
     monkeypatch.setattr("rag.retrieval._select_entity_names", lambda *args, **kwargs: ["insurance", "triage"])
     monkeypatch.setattr("rag.retrieval._generate_entity_query", fake_generate)
     monkeypatch.setattr("rag.retrieval.get_embeddings", lambda texts: [[0.1] * 3 for _ in texts])
@@ -738,6 +746,96 @@ def test_load_seed_entities_uses_mentions_only():
     assert "MENTIONED_IN" not in driver.session_obj.query
 
 
+class _RecordingDriver:
+    """Memgraph driver double that records every query + params."""
+
+    def __init__(self, rows=()):
+        self.calls: list[tuple[str, dict]] = []
+        self._rows = list(rows)
+
+    def session(self):
+        driver = self
+
+        class _Session:
+            def run(self, query, **params):
+                driver.calls.append((query, params))
+                return list(driver._rows)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        return _Session()
+
+
+def test_load_seed_entities_filters_mentions_on_confidence():
+    driver = _RecordingDriver(
+        rows=[{"entity_id": "e1", "name": "Acme", "entity_type": "ORGANIZATION"}]
+    )
+
+    entities = _load_seed_entities(driver, "chunk-1", min_confidence=0.33)
+
+    query, params = driver.calls[0]
+    assert "-[r:MENTIONS]->" in query
+    assert "coalesce(r.confidence, 1.0) >= $min_confidence" in query
+    assert params["min_confidence"] == 0.33
+    assert params["chunk_id"] == "chunk-1"
+    assert [e.name for e in entities] == ["Acme"]
+
+
+def test_load_entities_for_chunks_filters_mentions_on_confidence():
+    from rag.retrieval import _load_entities_for_chunks
+
+    driver = _RecordingDriver(
+        rows=[
+            {"chunk_id": "c1", "entity_id": "e1", "name": "Acme", "entity_type": "ORGANIZATION"},
+            {"chunk_id": "c1", "entity_id": "e1", "name": "Acme", "entity_type": "ORGANIZATION"},
+        ]
+    )
+
+    result = _load_entities_for_chunks(driver, ["c1"], min_confidence=0.5)
+
+    query, params = driver.calls[0]
+    assert "-[r:MENTIONS]->" in query
+    assert "coalesce(r.confidence, 1.0) >= $min_confidence" in query
+    assert params["min_confidence"] == 0.5
+    assert params["chunk_ids"] == ["c1"]
+    assert [e.name for e in result["c1"]] == ["Acme"]
+
+
+def test_entity_loaders_default_keeps_every_mention():
+    """Default min_confidence 0.0 keeps all edges (including unaudited 1.0 and
+    property-less ones via coalesce), i.e. behaviour is unchanged until the
+    entity audit writes salience."""
+    from rag.retrieval import _load_entities_for_chunks
+
+    seed_driver = _RecordingDriver()
+    _load_seed_entities(seed_driver, "chunk-1")
+    assert seed_driver.calls[0][1]["min_confidence"] == 0.0
+
+    chunk_driver = _RecordingDriver()
+    _load_entities_for_chunks(chunk_driver, ["c1"])
+    assert chunk_driver.calls[0][1]["min_confidence"] == 0.0
+
+
+def test_retrieval_params_keep_explicit_zero_threshold(monkeypatch):
+    from rag.retrieval import _resolved_params
+
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_ENTITY_CONFIDENCE_THRESHOLD", 0.75)
+    common = dict(
+        seed_count=None,
+        result_count=None,
+        rrf_k=None,
+        first_hop_similarity_threshold=None,
+        second_hop_similarity_threshold=None,
+    )
+    assert _resolved_params(entity_confidence_threshold=0.0, **common).entity_confidence_threshold == 0.0
+    assert _resolved_params(entity_confidence_threshold=None, **common).entity_confidence_threshold == 0.75
+    assert _resolved_params(entity_confidence_threshold=0.4, **common).entity_confidence_threshold == 0.4
+
+
 def test_load_chunk_ids_for_entity_matches_name_and_type_via_mentions():
     class FakeSession:
         def __init__(self):
@@ -985,7 +1083,13 @@ def test_expand_seed_candidate_uses_chunk_mediated_second_hop(monkeypatch):
     second_hop_queries = []
 
     monkeypatch.setattr("rag.retrieval.time.monotonic", lambda: 10.0)
-    monkeypatch.setattr("rag.retrieval._load_seed_entities", lambda driver, chunk_id: [entity1])
+    loader_thresholds: list[tuple[str, float]] = []
+
+    def _fake_seed_loader(driver, chunk_id, min_confidence=0.0):
+        loader_thresholds.append(("seed", min_confidence))
+        return [entity1]
+
+    monkeypatch.setattr("rag.retrieval._load_seed_entities", _fake_seed_loader)
     monkeypatch.setattr("rag.retrieval._select_entity_names", lambda *args, **kwargs: ["identity"])
     monkeypatch.setattr(
         "rag.retrieval._generate_entity_query",
@@ -1004,10 +1108,11 @@ def test_expand_seed_candidate_uses_chunk_mediated_second_hop(monkeypatch):
             [first_hop_chunk] if chunk_ids == ["chunk-2"] else [second_hop_chunk]
         ),
     )
-    monkeypatch.setattr(
-        "rag.retrieval._load_entities_for_chunks",
-        lambda driver, chunk_ids: {"chunk-2": [entity1, entity2]},
-    )
+    def _fake_chunk_loader(driver, chunk_ids, min_confidence=0.0):
+        loader_thresholds.append(("second_hop", min_confidence))
+        return {"chunk-2": [entity1, entity2]}
+
+    monkeypatch.setattr("rag.retrieval._load_entities_for_chunks", _fake_chunk_loader)
     monkeypatch.setattr(
         "rag.retrieval._select_second_hop_entities_from_chunks",
         lambda query, seed, entity_name, chunk_entity_map, trace_logger=None: [(first_hop_chunk, entity2)],
@@ -1031,6 +1136,9 @@ def test_expand_seed_candidate_uses_chunk_mediated_second_hop(monkeypatch):
     assert second_hop_queries[1][0] == "policy"
     assert second_hop_queries[1][1]["entity_context"]["entity1"] == "identity"
     assert second_hop_queries[1][1]["entity_context"]["entity2"] == "policy"
+    # The expansion threshold reaches both MENTIONS loaders (seed + second-hop path).
+    assert ("seed", 0.8) in loader_thresholds
+    assert ("second_hop", 0.8) in loader_thresholds
 
 
 def test_expand_neighbor_contexts_expands_roots_and_related_chunks(monkeypatch):

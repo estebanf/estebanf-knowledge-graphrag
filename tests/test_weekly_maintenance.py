@@ -23,6 +23,16 @@ def wm():
     return _load_script("weekly_maintenance_script", "weekly_maintenance.py")
 
 
+@pytest.fixture(autouse=True)
+def _jev_maintenance_off_by_default(monkeypatch):
+    """Never let a developer's real `.env` (MAINTENANCE_JEV_ENABLED, a live
+    OPENROUTER_API_KEY) turn the Jev entity audit on inside these tests."""
+    from rag.config import settings
+
+    monkeypatch.setattr(settings, "MAINTENANCE_JEV_ENABLED", False)
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "")
+
+
 def _conn_ctx(conn):
     """Wrap a MagicMock conn as the object returned by `with get_connection() as conn`."""
     ctx = MagicMock()
@@ -395,3 +405,383 @@ def test_dry_run_bypasses_guard_even_with_active_jobs(wm, monkeypatch):
     assert rc == 0
     count_active_mock.assert_not_called()
     run_phases_mock.assert_called_once()
+
+
+# ── Jev entity audit phase ───────────────────────────────────────────────────
+
+_ONLY_AUDIT = ["--skip-entities", "--skip-insights", "--skip-consistency", "--skip-health"]
+
+
+def _parse(wm, *flags):
+    return wm.build_parser().parse_args(list(flags))
+
+
+def _stub_audit(wm, monkeypatch, *, stats=None):
+    apply_mock = MagicMock()
+    score_mock = MagicMock(return_value=stats if stats is not None else MagicMock(aborted=False))
+    monkeypatch.setattr(wm, "run_entity_audit_apply", apply_mock)
+    monkeypatch.setattr(wm, "run_entity_audit_scoring", score_mock)
+    return apply_mock, score_mock
+
+
+def _stub_guard_clear(wm, monkeypatch, *, active_jobs=0):
+    guard_conn = MagicMock()
+    monkeypatch.setattr(wm, "get_connection", MagicMock(side_effect=lambda: _conn_ctx(guard_conn)))
+    monkeypatch.setattr(wm, "count_active_jobs", MagicMock(return_value=active_jobs))
+    monkeypatch.setattr(wm, "_reap_stale_community_runs", MagicMock(return_value=0))
+    monkeypatch.setattr(wm, "_count_active_community_runs", MagicMock(return_value=0))
+    monkeypatch.setattr(wm, "try_acquire_maintenance_lock", MagicMock(return_value=True))
+    monkeypatch.setattr(wm, "release_maintenance_lock", MagicMock())
+    return guard_conn
+
+
+def test_jev_audit_is_off_by_default(wm, monkeypatch, capsys):
+    apply_mock, score_mock = _stub_audit(wm, monkeypatch)
+    monkeypatch.setattr(wm.entity_merge, "run_entity_merge", MagicMock(return_value=(0, set())))
+    monkeypatch.setattr(wm, "_invalidate_entity_edge_cache", MagicMock())
+    monkeypatch.setattr(wm, "run_insight_merge", MagicMock(return_value=0))
+    monkeypatch.setattr(wm, "run_consistency_sweep", MagicMock(return_value={}))
+    monkeypatch.setattr(wm, "run_health_phase", MagicMock())
+    _stub_guard_clear(wm, monkeypatch)
+
+    assert wm.main(["--dry-run"]) == 0
+    assert wm.main(["--execute"]) == 0
+
+    apply_mock.assert_not_called()
+    score_mock.assert_not_called()
+    assert "Phase 0" not in capsys.readouterr().out
+
+
+def test_score_flag_without_jev_is_ignored_with_a_note(wm, monkeypatch, capsys):
+    apply_mock, score_mock = _stub_audit(wm, monkeypatch)
+    monkeypatch.setattr(wm, "_run_phases", MagicMock(return_value=0))
+
+    assert wm.main(["--dry-run", "--score"]) == 0
+
+    score_mock.assert_not_called()
+    apply_mock.assert_not_called()
+    assert "Jev maintenance is off" in capsys.readouterr().out
+
+
+def test_jev_flag_enables_audit_phase_with_the_shared_scope(wm, monkeypatch):
+    apply_mock, _ = _stub_audit(wm, monkeypatch)
+
+    assert wm._run_phases(_parse(wm, "--dry-run", "--jev", *_ONLY_AUDIT)) == 0
+    apply_mock.assert_called_once_with(dry_run=True, since_days=7, rescore=False)
+
+    apply_mock.reset_mock()
+    wm._run_phases(_parse(wm, "--dry-run", "--jev", "--since", "3", "--rescore", *_ONLY_AUDIT))
+    apply_mock.assert_called_once_with(dry_run=True, since_days=3, rescore=True)
+
+    apply_mock.reset_mock()
+    wm._run_phases(_parse(wm, "--execute", "--jev", "--full", *_ONLY_AUDIT))
+    apply_mock.assert_called_once_with(dry_run=False, since_days=None, rescore=False)
+
+
+def test_setting_enables_audit_and_no_jev_overrides_it(wm, monkeypatch):
+    apply_mock, _ = _stub_audit(wm, monkeypatch)
+    monkeypatch.setattr(wm.settings, "MAINTENANCE_JEV_ENABLED", True)
+
+    wm._run_phases(_parse(wm, "--dry-run", *_ONLY_AUDIT))
+    assert apply_mock.call_count == 1
+
+    apply_mock.reset_mock()
+    wm._run_phases(_parse(wm, "--dry-run", "--no-jev", *_ONLY_AUDIT))
+    apply_mock.assert_not_called()
+
+
+def test_jev_and_no_jev_are_mutually_exclusive(wm):
+    with pytest.raises(SystemExit):
+        _parse(wm, "--dry-run", "--jev", "--no-jev")
+
+
+def test_skip_entity_audit_skips_scoring(wm, monkeypatch):
+    _, score_mock = _stub_audit(wm, monkeypatch)
+    _stub_guard_clear(wm, monkeypatch)
+    monkeypatch.setattr(wm, "_run_phases", MagicMock(return_value=0))
+
+    assert wm.entity_audit_active(_parse(wm, "--execute", "--jev", "--skip-entity-audit")) is False
+    assert wm.main(["--execute", "--jev", "--skip-entity-audit"]) == 0
+
+    score_mock.assert_not_called()
+
+
+def test_skip_entity_audit_skips_apply(wm, monkeypatch):
+    apply_mock, _ = _stub_audit(wm, monkeypatch)
+
+    wm._run_phases(_parse(wm, "--dry-run", "--jev", "--skip-entity-audit", *_ONLY_AUDIT))
+
+    apply_mock.assert_not_called()
+
+
+def test_audit_apply_runs_before_the_entity_merge(wm, monkeypatch):
+    order: list[str] = []
+    monkeypatch.setattr(wm, "run_entity_audit_apply", lambda **kw: order.append("audit"))
+    monkeypatch.setattr(
+        wm.entity_merge, "run_entity_merge", lambda dry_run: order.append("merge") or (0, set())
+    )
+    args = _parse(wm, "--dry-run", "--jev", "--skip-insights", "--skip-consistency", "--skip-health")
+
+    wm._run_phases(args)
+
+    assert order == ["audit", "merge"]
+
+
+def test_scoring_default_follows_the_mode(wm, monkeypatch):
+    assert wm.should_score(_parse(wm, "--execute")) is True
+    assert wm.should_score(_parse(wm, "--dry-run")) is False
+    assert wm.should_score(_parse(wm, "--dry-run", "--score")) is True
+    assert wm.should_score(_parse(wm, "--execute", "--no-score")) is False
+
+
+def test_dry_run_does_not_score_by_default_and_skips_the_guard(wm, monkeypatch):
+    _, score_mock = _stub_audit(wm, monkeypatch)
+    count_active_mock = MagicMock(return_value=9)
+    monkeypatch.setattr(wm, "count_active_jobs", count_active_mock)
+    run_phases_mock = MagicMock(return_value=0)
+    monkeypatch.setattr(wm, "_run_phases", run_phases_mock)
+
+    assert wm.main(["--dry-run", "--jev"]) == 0
+
+    score_mock.assert_not_called()
+    count_active_mock.assert_not_called()
+    run_phases_mock.assert_called_once()
+
+
+def test_dry_run_with_score_scores_before_reporting_and_skips_the_guard(wm, monkeypatch):
+    order: list[str] = []
+    monkeypatch.setattr(
+        wm, "run_entity_audit_scoring",
+        lambda args: order.append("score") or MagicMock(aborted=False),
+    )
+    count_active_mock = MagicMock(return_value=9)
+    monkeypatch.setattr(wm, "count_active_jobs", count_active_mock)
+    monkeypatch.setattr(wm, "_run_phases", lambda args: order.append("phases") or 0)
+
+    assert wm.main(["--dry-run", "--jev", "--score"]) == 0
+
+    assert order == ["score", "phases"]
+    count_active_mock.assert_not_called()
+
+
+def test_execute_scores_even_with_active_jobs_but_mutations_stay_refused(wm, monkeypatch, capsys):
+    order: list[str] = []
+    monkeypatch.setattr(
+        wm, "run_entity_audit_scoring",
+        lambda args: order.append("score") or MagicMock(aborted=False),
+    )
+    guard_conn = MagicMock()
+    monkeypatch.setattr(wm, "get_connection", MagicMock(side_effect=lambda: _conn_ctx(guard_conn)))
+    monkeypatch.setattr(
+        wm, "count_active_jobs", lambda conn: order.append("guard") or 2
+    )
+    try_lock_mock = MagicMock()
+    monkeypatch.setattr(wm, "try_acquire_maintenance_lock", try_lock_mock)
+    run_phases_mock = MagicMock(return_value=0)
+    monkeypatch.setattr(wm, "_run_phases", run_phases_mock)
+    apply_mock = MagicMock()
+    monkeypatch.setattr(wm, "run_entity_audit_apply", apply_mock)
+
+    rc = wm.main(["--execute", "--jev"])
+
+    assert rc == 1
+    assert order == ["score", "guard"]  # scoring ran first, outside the gate
+    try_lock_mock.assert_not_called()
+    run_phases_mock.assert_not_called()  # no corpus mutation (apply, merges, ...) happened
+    apply_mock.assert_not_called()
+    assert "Refusing --execute" in capsys.readouterr().out
+
+
+def test_execute_no_score_skips_scoring_but_still_applies(wm, monkeypatch):
+    apply_mock, score_mock = _stub_audit(wm, monkeypatch)
+    _stub_guard_clear(wm, monkeypatch)
+    monkeypatch.setattr(wm.entity_merge, "run_entity_merge", MagicMock(return_value=(0, set())))
+    monkeypatch.setattr(wm, "_invalidate_entity_edge_cache", MagicMock())
+    monkeypatch.setattr(wm, "run_insight_merge", MagicMock(return_value=0))
+    monkeypatch.setattr(wm, "run_consistency_sweep", MagicMock(return_value={}))
+    monkeypatch.setattr(wm, "run_health_phase", MagicMock())
+
+    assert wm.main(["--execute", "--jev", "--no-score"]) == 0
+
+    score_mock.assert_not_called()
+    apply_mock.assert_called_once_with(dry_run=False, since_days=7, rescore=False)
+
+
+def test_execute_with_jev_scores_then_applies_under_the_lock(wm, monkeypatch):
+    order: list[str] = []
+    _stub_guard_clear(wm, monkeypatch)
+    monkeypatch.setattr(
+        wm, "try_acquire_maintenance_lock", lambda conn: order.append("lock") or True
+    )
+    monkeypatch.setattr(wm, "release_maintenance_lock", lambda conn: order.append("unlock"))
+    monkeypatch.setattr(
+        wm, "run_entity_audit_scoring",
+        lambda args: order.append("score") or MagicMock(aborted=False),
+    )
+    monkeypatch.setattr(wm, "run_entity_audit_apply", lambda **kw: order.append("apply"))
+    monkeypatch.setattr(wm, "_invalidate_entity_edge_cache", MagicMock())
+    for name, value in (
+        ("run_insight_merge", 0), ("run_consistency_sweep", {}), ("run_health_phase", None),
+    ):
+        monkeypatch.setattr(wm, name, MagicMock(return_value=value))
+    monkeypatch.setattr(wm.entity_merge, "run_entity_merge", MagicMock(return_value=(0, set())))
+
+    assert wm.main(["--execute", "--jev"]) == 0
+
+    assert order == ["score", "lock", "apply", "unlock"]
+
+
+def test_scoring_without_api_key_stops_before_any_mutation(wm, monkeypatch, capsys):
+    monkeypatch.setattr(wm.settings, "OPENROUTER_API_KEY", "")
+    get_conn = MagicMock()
+    monkeypatch.setattr(wm, "get_connection", get_conn)
+    run_phases_mock = MagicMock(return_value=0)
+    monkeypatch.setattr(wm, "_run_phases", run_phases_mock)
+
+    assert wm.main(["--execute", "--jev"]) == 1
+
+    get_conn.assert_not_called()
+    run_phases_mock.assert_not_called()
+    assert "OPENROUTER_API_KEY" in capsys.readouterr().out
+
+
+def test_aborted_scoring_still_runs_phases_but_exits_non_zero(wm, monkeypatch):
+    _stub_audit(wm, monkeypatch, stats=MagicMock(aborted=True))
+    run_phases_mock = MagicMock(return_value=0)
+    monkeypatch.setattr(wm, "_run_phases", run_phases_mock)
+
+    assert wm.main(["--dry-run", "--jev", "--score"]) == 1
+    run_phases_mock.assert_called_once()
+
+
+def test_run_entity_audit_apply_execute_invalidates_cache_and_vacuums(wm, monkeypatch):
+    from rag.entity_audit import ApplyResult
+
+    conn, driver = MagicMock(), MagicMock()
+    monkeypatch.setattr(wm, "get_connection", MagicMock(side_effect=lambda: _conn_ctx(conn)))
+    monkeypatch.setattr(wm, "get_graph_driver", MagicMock(side_effect=lambda: _driver_ctx(driver)))
+    apply_mock = MagicMock(return_value=ApplyResult(deleted_entity_ids={"e1", "e2"}))
+    monkeypatch.setattr(wm.entity_audit, "apply_audit", apply_mock)
+    invalidate_mock, vacuum_mock = MagicMock(), MagicMock()
+    monkeypatch.setattr(wm, "_invalidate_entity_edge_cache", invalidate_mock)
+    monkeypatch.setattr(wm, "vacuum_analyze_entities", vacuum_mock)
+
+    wm.run_entity_audit_apply(dry_run=False, since_days=7, rescore=False)
+
+    session = driver.session.return_value.__enter__.return_value
+    apply_mock.assert_called_once_with(conn, session, 7)
+    invalidate_mock.assert_called_once_with({"e1", "e2"})
+    vacuum_mock.assert_called_once()
+
+
+def test_run_entity_audit_apply_dry_run_only_reports(wm, monkeypatch):
+    conn, driver = MagicMock(), MagicMock()
+    monkeypatch.setattr(wm, "get_connection", MagicMock(side_effect=lambda: _conn_ctx(conn)))
+    monkeypatch.setattr(wm, "get_graph_driver", MagicMock(side_effect=lambda: _driver_ctx(driver)))
+    apply_mock, report_mock = MagicMock(), MagicMock()
+    monkeypatch.setattr(wm.entity_audit, "apply_audit", apply_mock)
+    monkeypatch.setattr(wm.entity_audit, "dry_run_report", report_mock)
+    invalidate_mock = MagicMock()
+    monkeypatch.setattr(wm, "_invalidate_entity_edge_cache", invalidate_mock)
+
+    wm.run_entity_audit_apply(dry_run=True, since_days=None, rescore=True)
+
+    session = driver.session.return_value.__enter__.return_value
+    report_mock.assert_called_once_with(conn, session, None, rescore=True)
+    apply_mock.assert_not_called()
+    invalidate_mock.assert_not_called()
+
+
+def test_dry_run_with_score_writes_only_the_audit_table(wm, monkeypatch):
+    """`--dry-run --score` runs the real scoring + report code against
+    doubles: the only write anywhere is the upsert into entity_mention_audit."""
+    from audit_fakes import FakeConn, FakeDriver, FakeSession, ctx
+    from rag import jev
+    from rag.jev import JevResponse
+
+    def conn_responder(sql, params):
+        if "SELECT id::text FROM chunks" in sql:
+            return [("c1",)]
+        if "SELECT id::text, content FROM chunks" in sql:
+            return [("c1", "Acme ships AI to customers.")]
+        if "SELECT count(*)" in sql:
+            return [(0,)]
+        return []
+
+    def graph(query, params):
+        if "UNWIND $chunk_ids" in query:
+            return [
+                {"chunk_id": "c1", "entity_id": "e1", "name": "Acme", "entity_type": "ORGANIZATION"},
+                {"chunk_id": "c1", "entity_id": "e2", "name": "AI", "entity_type": "CONCEPT"},
+            ]
+        return []
+
+    conn, session = FakeConn(conn_responder), FakeSession(graph)
+    monkeypatch.setattr(wm, "get_connection", lambda: ctx(conn))
+    monkeypatch.setattr(wm, "get_graph_driver", lambda: ctx(FakeDriver(session)))
+    monkeypatch.setattr(wm.settings, "OPENROUTER_API_KEY", "or-test")
+
+    def fake_many(items, **kwargs):
+        out = []
+        for _state, questions in items:
+            n = sum(1 for key in questions if key.endswith("_is_entity"))
+            answers = {}
+            for i in range(n):
+                answers[f"e{i}_is_entity"] = {"noul": 0.1 if i else 0.95}
+                choice = {"choice": "ORGANIZATION", "probabilities": {"ORGANIZATION": 0.9, "PRODUCT": 0.1}}
+                answers[f"e{i}_type__a"] = choice
+                answers[f"e{i}_type__b"] = choice
+                answers[f"e{i}_salience"] = {"score": 3.0}
+            out.append(JevResponse(answers=answers, usage={"cost": 0.00001}))
+        return out
+
+    monkeypatch.setattr(jev, "system_one_many", fake_many)
+    monkeypatch.setattr(wm.entity_merge, "run_entity_merge", MagicMock())
+    guard = MagicMock()
+    monkeypatch.setattr(wm, "count_active_jobs", guard)
+
+    rc = wm.main(["--dry-run", "--jev", "--score", "--skip-insights", "--skip-consistency", "--skip-health", "--skip-entities"])
+
+    assert rc == 0
+    guard.assert_not_called()
+    (sql, rows), = conn.executemany_calls
+    assert "INSERT INTO entity_mention_audit" in sql
+    assert [(r[1], r[2]) for r in rows] == [("e1", 0.95), ("e2", 0.1)]
+    # nothing but that upsert writes to Postgres, and Memgraph is read-only
+    assert conn.write_statements() == [sql]
+    assert session.write_queries() == []
+
+
+def test_entity_merge_repoints_mentions_matching_endpoints_only(wm):
+    """Once salience makes MENTIONS confidences differ, MERGE-ing on the
+    confidence value would create a parallel edge instead of merging."""
+    from audit_fakes import FakeSession
+
+    session = FakeSession(lambda q, p: [])
+    session.run = lambda query, **params: (
+        FakeSession.run(session, query, **params) or MagicMock(single=lambda: {"repointed": 1})
+    )
+
+    wm.entity_merge.merge_memgraph(session, "survivor", ["dup"])
+
+    query, params = next(c for c in session.calls if "old:MENTIONS" in c[0])
+    assert "MERGE (c)-[m:MENTIONS]->(s) ON CREATE SET m.confidence = old.confidence" in query
+    assert "{confidence" not in query
+    assert params == {"dup_id": "dup", "survivor_id": "survivor"}
+
+
+def test_invalidate_entity_edge_cache_commits_its_deletes(wm, monkeypatch):
+    """get_connection() is not autocommit and closes without committing, so the
+    cache DELETEs are silently rolled back unless explicitly committed."""
+    from audit_fakes import FakeConn, ctx
+
+    conn = FakeConn(lambda sql, params: [(2,)] if "SELECT count(*)" in sql else 2)
+    monkeypatch.setattr(wm, "get_connection", lambda: ctx(conn))
+
+    wm._invalidate_entity_edge_cache({"e1"})
+    assert conn.commits == 1
+    assert conn.sql_matching("DELETE FROM entity_semantic_edges")
+
+    conn.commits = 0
+    wm._invalidate_entity_edge_cache(set())  # orphan-only sweep
+    assert conn.commits == 1

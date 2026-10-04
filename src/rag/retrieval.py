@@ -1165,14 +1165,23 @@ def _generate_entity_query(
     return fallback_query
 
 
-def _load_seed_entities(driver, chunk_id: str) -> list[EntityCandidate]:
+def _load_seed_entities(
+    driver,
+    chunk_id: str,
+    min_confidence: float = 0.0,
+) -> list[EntityCandidate]:
+    """Entities a seed chunk MENTIONS, keeping only edges whose
+    `confidence` (the entity-audit salience; 1.0 when never audited) is at
+    least `min_confidence`."""
     with driver.session() as session:
         rows = session.run(
             """
-            MATCH (c:Chunk {chunk_id: $chunk_id})-[:MENTIONS]->(e:Entity)
+            MATCH (c:Chunk {chunk_id: $chunk_id})-[r:MENTIONS]->(e:Entity)
+            WHERE coalesce(r.confidence, 1.0) >= $min_confidence
             RETURN e.entity_id AS entity_id, e.canonical_name AS name, e.entity_type AS entity_type
             """,
             chunk_id=chunk_id,
+            min_confidence=min_confidence,
         )
         return [
             EntityCandidate(
@@ -1187,18 +1196,23 @@ def _load_seed_entities(driver, chunk_id: str) -> list[EntityCandidate]:
 def _load_entities_for_chunks(
     driver,
     chunk_ids: list[str],
+    min_confidence: float = 0.0,
 ) -> dict[str, list[EntityCandidate]]:
+    """Entities each chunk MENTIONS, with the same `min_confidence` edge filter
+    as `_load_seed_entities` (used for second-hop candidate entities)."""
     with driver.session() as session:
         rows = session.run(
             """
             UNWIND $chunk_ids AS chunk_id
-            MATCH (c:Chunk {chunk_id: chunk_id})-[:MENTIONS]->(e:Entity)
+            MATCH (c:Chunk {chunk_id: chunk_id})-[r:MENTIONS]->(e:Entity)
+            WHERE coalesce(r.confidence, 1.0) >= $min_confidence
             RETURN c.chunk_id AS chunk_id,
                    e.entity_id AS entity_id,
                    e.canonical_name AS name,
                    e.entity_type AS entity_type
             """,
             chunk_ids=chunk_ids,
+            min_confidence=min_confidence,
         )
         entities_by_chunk: dict[str, dict[tuple[str, str], EntityCandidate]] = {}
         for record in rows:
@@ -1613,7 +1627,9 @@ def expand_seed_candidate(
             trace_logger.emit(f"graph time budget exhausted before expanding seed {seed.chunk_id}")
         return root_result
 
-    entities = _load_seed_entities(driver, seed.chunk_id)
+    entities = _load_seed_entities(
+        driver, seed.chunk_id, min_confidence=entity_confidence_threshold
+    )
     if trace_logger:
         trace_logger.emit(
             f"loaded {len(entities)} entities for seed {seed.chunk_id}: "
@@ -1694,6 +1710,7 @@ def expand_seed_candidate(
         first_hop_entity_map = _load_entities_for_chunks(
             driver,
             [candidate.chunk_id for candidate in first_hop_candidates],
+            min_confidence=entity_confidence_threshold,
         )
         candidate_entity_map = {
             candidate.chunk_id: {
@@ -2005,8 +2022,11 @@ def _resolved_params(
         seed_count=seed_count or settings.RETRIEVAL_SEED_COUNT,
         result_count=result_count or settings.RETRIEVAL_RESULT_COUNT,
         rrf_k=rrf_k or settings.RETRIEVAL_RRF_K,
+        # `is None`, not `or`: an explicit 0.0 means "keep every mention".
         entity_confidence_threshold=(
-            entity_confidence_threshold or settings.RETRIEVAL_ENTITY_CONFIDENCE_THRESHOLD
+            settings.RETRIEVAL_ENTITY_CONFIDENCE_THRESHOLD
+            if entity_confidence_threshold is None
+            else entity_confidence_threshold
         ),
         first_hop_similarity_threshold=(
             first_hop_similarity_threshold or settings.RETRIEVAL_FIRST_HOP_SIMILARITY_THRESHOLD

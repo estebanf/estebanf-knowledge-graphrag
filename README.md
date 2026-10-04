@@ -193,6 +193,9 @@ Jev is a question-answering model that returns calibrated probabilities instead 
 | `JEV_CONCURRENCY` | `8` | Parallel Jev calls for batch callers (`system_one_many`). |
 | `ENTITY_SELECTION_BACKEND` | `llm` | How first-hop graph entities are chosen per retrieval seed: `llm` (graph LLM, legacy behavior), `jev` (one Jev call per seed scoring every candidate entity), or `off` (first `RETRIEVAL_ENTITY_SELECTION_COUNT` entities, no network call). Any other value fails at startup. |
 | `ENTITY_SELECTION_JEV_THRESHOLD` | `0.5` | With `jev`, minimum yes-probability for an entity to be followed; the best `RETRIEVAL_ENTITY_SELECTION_COUNT` above it are kept, highest first. At most 60 candidate entities are sent per seed. |
+| `MAINTENANCE_JEV_ENABLED` | `false` | Master switch for the Jev phases of `scripts/weekly_maintenance.py` (currently the entity audit). Off keeps weekly maintenance exactly as before; `--jev` / `--no-jev` override it per run. See [Jev entity audit](#jev-entity-audit-phase-0-opt-in). |
+| `ENTITY_AUDIT_INVALID_THRESHOLD` | `0.2` | Entity audit apply: a `MENTIONS` edge whose "is a specific named entity" probability is below this is deleted (and entities left with no mention are removed). |
+| `ENTITY_AUDIT_RETYPE_CONFIDENCE` | `0.8` | Entity audit apply: an off-schema entity is retyped only when the mean type probability of the mentions voting for the winning type reaches this value. |
 
 If a Jev call fails for any reason (no credits, rate limit, timeout, missing key), entity selection logs a warning and falls back to the first `RETRIEVAL_ENTITY_SELECTION_COUNT` entities; retrieval never fails because of Jev. The default stays `llm` until you flip `ENTITY_SELECTION_BACKEND` in `.env` after a pilot.
 
@@ -287,7 +290,7 @@ The embedding dimension is fixed at 4096 by the Postgres schema (`vector(4096)` 
 | `RETRIEVAL_SECOND_HOP_CHUNK_COUNT` | `5` | Max chunk candidates pulled per second-hop entity query. |
 | `RETRIEVAL_FIRST_HOP_SIMILARITY_THRESHOLD` | `0.5` | Minimum similarity for first-hop entity-linked chunks. |
 | `RETRIEVAL_SECOND_HOP_SIMILARITY_THRESHOLD` | `0.5` | Minimum similarity for second-hop entity-linked chunks. |
-| `RETRIEVAL_ENTITY_CONFIDENCE_THRESHOLD` | `0.75` | Minimum relationship confidence used during graph expansion. |
+| `RETRIEVAL_ENTITY_CONFIDENCE_THRESHOLD` | `0.75` | Minimum `MENTIONS` edge confidence (salience written by the [Jev entity audit](#jev-entity-audit-phase-0-opt-in); `1.0` for mentions never audited) for an entity to be used in graph expansion. It filters the seed chunk's entities and the second-hop candidate entities (`coalesce(confidence, 1.0) >= threshold`), not the chunks reached through a followed entity. All edges are `1.0` until the first audit, so nothing is filtered before then. **Calibrate after the first audit:** salience is the probability-weighted Jev score divided by 3 (levels 0, 0.33, 0.67, 1.0, with values in between), so the default `0.75` would keep only mentions scoring about 2.25 or higher (between important and central); `0.33` keeps everything above a passing mention, `0.67` keeps important and central mentions. Do not change the default blindly; pick the value from the audit's salience distribution. An explicit `0` keeps every mention. |
 | `RETRIEVAL_MAX_GRAPH_LLM_CALLS` | `100` | Shared safety cap on graph-stage LLM calls across a retrieval request. |
 | `RETRIEVAL_MAX_GRAPH_EXPANSION_MS_PER_SEED` | `4000` | Wall-clock budget applied to each seed during graph expansion. |
 | `RETRIEVAL_TEXT_SEARCH_CONFIG` | `english` | Postgres full-text search configuration for sparse retrieval. |
@@ -870,7 +873,7 @@ Options:
 - `--seed-count INTEGER`: override the number of seeds expanded
 - `--result-count INTEGER`: override the number of final root results
 - `--rrf-k INTEGER`: override reciprocal rank fusion `k`
-- `--entity-confidence-threshold FLOAT`: override graph relationship confidence threshold
+- `--entity-confidence-threshold FLOAT`: override the minimum `MENTIONS` salience/confidence (0-1) an entity needs to be used in graph expansion (see `RETRIEVAL_ENTITY_CONFIDENCE_THRESHOLD`)
 - `--first-hop-similarity-threshold FLOAT`: override first-hop chunk similarity threshold
 - `--second-hop-similarity-threshold FLOAT`: override second-hop chunk similarity threshold
 - `--trace`: print live trace lines to stdout before the final JSON block
@@ -989,6 +992,8 @@ Request body:
   "trace": false
 }
 ```
+
+`entity_confidence_threshold` is the minimum `MENTIONS` salience/confidence for an entity to be used in graph expansion. It has no effect until the entity audit has written salience (every edge is `1.0` before that); after an audit, `0.8` keeps only central mentions. An explicit `0` keeps every mention.
 
 Example:
 
@@ -1371,6 +1376,7 @@ The migrations most likely to matter for current code are:
 - `scripts/migrate/010_entities_autovacuum_tuning.sql`
 - `scripts/migrate/012_stage_duration_baseline.sql`
 - `scripts/migrate/013_research_workspace.sql`
+- `scripts/migrate/015_entity_audit.sql` (Jev entity-audit tables `entity_mention_audit`, `entity_merge_review`, `insight_pair_review`; required before the weekly-maintenance entity audit phase is enabled)
 
 Example:
 
@@ -1382,6 +1388,7 @@ docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/009_binary
 docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/010_entities_autovacuum_tuning.sql
 docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/012_stage_duration_baseline.sql
 docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/013_research_workspace.sql
+docker compose exec -T postgres psql -U rag -d rag -f scripts/migrate/015_entity_audit.sql
 ```
 
 ### Storage maintenance
@@ -1410,7 +1417,43 @@ uv run python scripts/weekly_maintenance.py --execute    # applies merges/cleanu
 
 Each phase is independently skippable (`--skip-entities`, `--skip-insights`, `--skip-consistency`, `--skip-health`). The insight-merge phase is scoped by default to insights created in the last `--since` days (default 7) probed against the full corpus via the same binary-HNSW prefilter + full-precision rerank pattern intake uses (U1) — this keeps a weekly run index-assisted and fast even at 100k+ insights. Pass `--full` for an occasional whole-corpus sweep; it is slower and not meant for the routine weekly cadence.
 
-**Concurrency guard:** `--execute` refuses to run while any `jobs` row is non-terminal (`status = 'pending'` or `status LIKE 'processing:%'`) and holds a fixed Postgres advisory lock for the duration of the run, so it can never race an in-flight intake job (which could otherwise hold or re-create an insight id the maintenance run is merging away) or another concurrent `--execute` run. `--dry-run` performs no writes and skips this check entirely.
+**Concurrency guard:** `--execute` refuses to run while any `jobs` row is non-terminal (`status = 'pending'` or `status LIKE 'processing:%'`) and holds a fixed Postgres advisory lock for the duration of the run, so it can never race an in-flight intake job (which could otherwise hold or re-create an insight id the maintenance run is merging away) or another concurrent `--execute` run. `--dry-run` performs no writes and skips this check entirely. The one thing that runs outside this guard is the Jev entity-audit *scoring* described below, because it writes only the `entity_mention_audit` table.
+
+#### Jev entity audit (phase 0, opt-in)
+
+The graph has known quality problems: most entities are mentioned in a single chunk, generic terms such as "AI" are stored as entities, some entities are mistyped (LinkedIn as `CONCEPT`), and ~1,300 legacy entities carry off-schema types (`EVENT`, `DATE`, `ROLE`, ...). The entity audit uses Jev (see [Jev](#jev-typesafe-system-one-via-openrouter)) to judge every chunk-to-entity `MENTIONS` edge and then cleans the graph from those judgments. It is **off by default**: with it off, weekly maintenance behaves exactly as described above. Enable it per run with `--jev`, or permanently with `MAINTENANCE_JEV_ENABLED=true` (`--no-jev` forces it off for one run). Apply migration `015_entity_audit.sql` first.
+
+**Scoring.** One Jev call per chunk (the chunk text, truncated to 4,000 characters, is the state; a chunk with more than 40 entities uses extra calls). For every entity mentioned in the chunk it asks: `is_entity` (yes/no: is the name a specific real-world named entity as used in the passage, as opposed to a generic term, role, date or phrase), `type` (one of the 7 schema types, asked twice with the options in reversed order and averaged, because Jev is biased toward the first option; the helper is shared with `src/rag/jev_profiling.py`) and `salience` (4 levels: 0 only mentioned in passing, 1 minor supporting role, 2 important to the passage, 3 a central subject; stored as `score / 3`, so 0..1). Results are upserted into `entity_mention_audit` (one row per chunk/entity pair, with the model and timestamp), committed after every batch of chunks. Scoring is **resumable** (pairs already in the table are skipped unless `--rescore`), runs `JEV_CONCURRENCY` calls in parallel, logs and counts a failed call without aborting (it only stops after three consecutive batches in which every call failed, for example out of credits), and prints progress and the cost reported by Jev. It writes **only** `entity_mention_audit`: never `entities`, `chunks` or Memgraph. That is why it also runs while intake jobs are active, ahead of the active-job check.
+
+Cost and time: about $6 and about 2 hours for `--full` over ~160k chunks at `JEV_CONCURRENCY=8` (state is billed once per call, output is free); a weekly `--since 7` run is a small fraction of that.
+
+**Apply** (mutates the corpus; only under `--execute`, after the active-job guard, under the advisory lock), using the audit rows in scope:
+
+- a. Delete `MENTIONS` edges whose `is_entity` probability is below `ENTITY_AUDIT_INVALID_THRESHOLD` (default `0.2`). Entities left with no `MENTIONS` edge at all are deleted from Memgraph (`DETACH DELETE`) and Postgres, their `entity_semantic_edges` cache rows are invalidated, and `entities` is vacuumed. The audit rows of dropped mentions are removed afterwards, so the table describes live mentions.
+- b. Retype only entities whose *current* `entity_type` is **not** one of the 7 schema types: the majority audited type across their (kept) mentions wins when the mean type probability of the mentions voting for it is at least `ENTITY_AUDIT_RETYPE_CONFIDENCE` (default `0.8`). In-schema entities are never retyped.
+- c. Write `salience` into `MENTIONS.confidence` for every audited, kept mention. Unaudited mentions keep `1.0`. This is what `entity_confidence_threshold` filters on at retrieval time (see below).
+
+**Modes and flags.**
+
+| Flag | Meaning |
+| --- | --- |
+| `--jev` / `--no-jev` | Enable / force off the Jev phase for this run (default: `MAINTENANCE_JEV_ENABLED`). |
+| `--skip-entity-audit` | Skip phase 0 even when Jev maintenance is enabled. |
+| `--score` / `--no-score` | Whether to Jev-score unscored mentions. Default: score under `--execute`, do **not** score under `--dry-run`. `--dry-run --score` is allowed: it spends Jev credits and writes only to `entity_mention_audit`. |
+| `--rescore` | Re-score mentions that already have an audit row. |
+| `--since N` / `--full` | Scope: chunks created in the last N days (default 7), or every chunk. Shared with the insight-merge phase. |
+
+`--dry-run` (the default-safe mode) prints what apply *would* do from the existing audit rows, without writing anything: mentions that would be dropped (with examples), entities that would be deleted, off-schema entities that would be retyped (with examples), the salience distribution that would be written, and how many in-scope mentions are still unscored.
+
+**Recommended rollout.**
+
+1. Apply migration 015 and set `OPENROUTER_API_KEY`.
+2. Pilot on a small window: `uv run python scripts/weekly_maintenance.py --dry-run --jev --score --since 1 --skip-entities --skip-insights --skip-consistency --skip-health`. This scores yesterday's chunks and prints the plan; nothing but `entity_mention_audit` is written.
+3. Inspect the plan and the table (`SELECT * FROM entity_mention_audit WHERE is_entity < 0.2 LIMIT 50`). Adjust `ENTITY_AUDIT_INVALID_THRESHOLD` / `ENTITY_AUDIT_RETYPE_CONFIDENCE` if the dropped examples look wrong.
+4. **Before the first `--execute`, decide `RETRIEVAL_ENTITY_CONFIDENCE_THRESHOLD`** from the salience distribution the dry-run prints (see the threshold note in the settings table). `--execute --jev` changes retrieval behavior: as soon as apply writes salience into `MENTIONS.confidence`, the default `0.75` starts hiding every mention below it from graph expansion. Set the variable (for example `0.33`, or `0` to keep every mention) in `.env` and restart the backend first. The Retrieve view in the frontend always sends its own value (it starts at `0.75`), which overrides the environment setting for UI requests; lower it there too, or you will not see the effect of the calibration in the UI.
+5. Run the first full backfill when no jobs are running: `uv run python scripts/weekly_maintenance.py --execute --jev --full` (scores everything, then applies). It is resumable: if interrupted, rerun the same command. Then set `MAINTENANCE_JEV_ENABLED=true` so the weekly `--execute` run keeps new chunks audited.
+
+Two notes on side effects. Scoring runs before the advisory lock (it must, so it can overlap intake), so two overlapping `--execute --jev` runs would both spend Jev credits (they cannot corrupt data: only the apply phase mutates, and it is serialized by the lock). And `_invalidate_entity_edge_cache` now commits its deletes (it previously did not, so the entity-merge phase left stale `entity_semantic_edges` rows behind); the first `--execute` after upgrading clears whatever orphaned cache rows built up.
 
 ### Memgraph schema reconciliation
 
