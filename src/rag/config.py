@@ -1,7 +1,7 @@
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     # Reasoning effort for entity and insight extraction (none|low|medium|high).
     EXTRACTION_REASONING_EFFORT: str = "none"
 
+    # Jev (TypeSafe System One) via OpenRouter, using OPENROUTER_API_KEY. See rag.jev.
+    JEV_MODEL: str = "typesafe/jev-1.13"
+    JEV_TIMEOUT_SECONDS: Annotated[float, Field(gt=0)] = 20
+    # Parallel Jev calls for batch users (rag.jev.system_one_many).
+    JEV_CONCURRENCY: Annotated[int, Field(gt=0)] = 8
+
     # Insight extraction
     MODEL_INSIGHT_EXTRACTION: str = "gpt-6-luna"
     INSIGHT_DEDUP_COSINE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.95
@@ -84,6 +90,12 @@ class Settings(BaseSettings):
     RETRIEVAL_FIRST_STAGE_TOP_N: Annotated[int, Field(gt=0)] = 20
     RETRIEVAL_FUSED_CANDIDATE_COUNT: Annotated[int, Field(gt=0)] = 50
     RETRIEVAL_ENTITY_SELECTION_COUNT: Annotated[int, Field(gt=0)] = 5
+    # First-hop entity selection per seed: "llm" (graph LLM, legacy), "jev"
+    # (one System One call per seed, falls back to top-N on error) or "off"
+    # (deterministic first N entities, no network call).
+    ENTITY_SELECTION_BACKEND: Literal["jev", "llm", "off"] = "llm"
+    # Minimum Jev probability for an entity to be followed (backend "jev").
+    ENTITY_SELECTION_JEV_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.5
     RETRIEVAL_SECOND_HOP_SELECTION_COUNT: Annotated[int, Field(gt=0)] = 5
     RETRIEVAL_FIRST_HOP_CHUNK_COUNT: Annotated[int, Field(gt=0)] = 5
     RETRIEVAL_SECOND_HOP_CHUNK_COUNT: Annotated[int, Field(gt=0)] = 5
@@ -152,6 +164,13 @@ class Settings(BaseSettings):
     RAG_COOKIE_SECURE: bool = False
     RAG_SESSION_TTL_HOURS: Annotated[int, Field(gt=0)] = 24 * 7
     RAG_SESSION_COOKIE_NAME: str = "rag_session"
+
+    @field_validator("ENTITY_SELECTION_BACKEND", mode="before")
+    @classmethod
+    def _normalise_backend(cls, value):
+        # Tolerate `.env` casing/whitespace ("Jev "); anything else still
+        # fails the Literal check at settings load.
+        return value.strip().lower() if isinstance(value, str) else value
 
     def retrieval_variant_weight(self, variant_name: str) -> float:
         if variant_name.startswith("decomposed_"):

@@ -182,6 +182,20 @@ All runtime settings are env-backed. The CLI, backend, worker, and Docker servic
 | `MODEL_INSIGHT_EXTRACTION` | `gpt-6-luna` | OpenCode Go. Extracts insights from chunk text. For large backfills (`scripts/remediate_insights.py`) set `MODEL_INSIGHT_EXTRACTION=deepseek-v4.1-flash`. |
 | `MODEL_RETRIEVAL_QUERY_VARIANTS` | `deepseek-v4.1-flash` | OpenCode Go. Generates retrieval query variants and insight sub-queries. |
 
+### Jev (TypeSafe System One) via OpenRouter
+
+Jev is a question-answering model that returns calibrated probabilities instead of text: you send one `state` plus several typed questions (yes/no, choice, score) and get every answer back in a single ~0.3s call. It is reached through OpenRouter (`POST /api/v1/systemone`) using the existing `OPENROUTER_API_KEY`; the client lives in `src/rag/jev.py`. Calls retry on 429/500/502/503/529 and transport errors (max 3 attempts, short capped backoff, `Retry-After` honoured); a 402 means the OpenRouter account is out of credits.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `JEV_MODEL` | `typesafe/jev-1.13` | Jev model slug on OpenRouter. |
+| `JEV_TIMEOUT_SECONDS` | `20` | Per-call HTTP timeout. |
+| `JEV_CONCURRENCY` | `8` | Parallel Jev calls for batch callers (`system_one_many`). |
+| `ENTITY_SELECTION_BACKEND` | `llm` | How first-hop graph entities are chosen per retrieval seed: `llm` (graph LLM, legacy behavior), `jev` (one Jev call per seed scoring every candidate entity), or `off` (first `RETRIEVAL_ENTITY_SELECTION_COUNT` entities, no network call). Any other value fails at startup. |
+| `ENTITY_SELECTION_JEV_THRESHOLD` | `0.5` | With `jev`, minimum yes-probability for an entity to be followed; the best `RETRIEVAL_ENTITY_SELECTION_COUNT` above it are kept, highest first. At most 60 candidate entities are sent per seed. |
+
+If a Jev call fails for any reason (no credits, rate limit, timeout, missing key), entity selection logs a warning and falls back to the first `RETRIEVAL_ENTITY_SELECTION_COUNT` entities; retrieval never fails because of Jev. The default stays `llm` until you flip `ENTITY_SELECTION_BACKEND` in `.env` after a pilot.
+
 ### Embedding, chunking, and graph extraction
 
 The embedding dimension is fixed at 4096 by the Postgres schema (`vector(4096)` columns and `bit(4096)` prefilter indexes); it is not configurable, and switching `MODEL_EMBEDDING` to a model with a different output size requires a schema migration.

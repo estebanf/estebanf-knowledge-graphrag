@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 import threading
 import time
@@ -15,7 +16,9 @@ from rag.config import settings
 from rag.db import get_connection, set_hnsw_ef_search
 from rag.embedding import get_embeddings
 from rag.graph_db import get_graph_driver
-from rag import opencode
+from rag import jev, opencode
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -1038,6 +1041,57 @@ def rerank_candidates(
     return reranked
 
 
+_JEV_MAX_ENTITY_CANDIDATES = 60
+
+_JEV_ENTITY_TRUE = (
+    "The entity is specific and central to what the query asks about, so other "
+    "documents mentioning it are likely to help answer the query."
+)
+_JEV_ENTITY_FALSE = (
+    "The entity is generic, incidental to the passage, or unrelated to what the "
+    "query asks about."
+)
+
+
+def _top_entity_names(entities: list[EntityCandidate]) -> list[str]:
+    return [entity.name for entity in entities[: settings.RETRIEVAL_ENTITY_SELECTION_COUNT]]
+
+
+def _jev_select_entities(
+    query: str,
+    seed: RetrievalCandidate,
+    entities: list[EntityCandidate],
+) -> list[tuple[str, float]]:
+    """One Jev call per seed: one Noul per candidate entity.
+
+    Returns `(name, probability)` for entities at or above
+    `ENTITY_SELECTION_JEV_THRESHOLD`, highest probability first, capped at
+    `RETRIEVAL_ENTITY_SELECTION_COUNT`. Entity names may contain any characters,
+    so questions are keyed `e0..eN` and mapped back by index.
+    """
+    candidates = entities[:_JEV_MAX_ENTITY_CANDIDATES]
+    questions = {
+        f"e{index}": jev.noul(
+            f"Would following the entity '{entity.name}' ({entity.entity_type}) to "
+            "other documents help answer the query, given this passage?",
+            true=_JEV_ENTITY_TRUE,
+            false=_JEV_ENTITY_FALSE,
+        )
+        for index, entity in enumerate(candidates)
+    }
+    answers = jev.system_one({"query": query, "passage": seed.chunk[:1500]}, questions)
+    scored: list[tuple[str, float]] = []
+    for index, entity in enumerate(candidates):
+        answer = answers.get(f"e{index}")
+        if not answer:
+            continue
+        probability = jev.noul_p(answer)
+        if probability >= settings.ENTITY_SELECTION_JEV_THRESHOLD:
+            scored.append((entity.name, probability))
+    scored.sort(key=lambda item: item[1], reverse=True)  # stable: ties keep graph order
+    return scored[: settings.RETRIEVAL_ENTITY_SELECTION_COUNT]
+
+
 def _select_entity_names(
     query: str,
     seed: RetrievalCandidate,
@@ -1046,19 +1100,39 @@ def _select_entity_names(
 ) -> list[str]:
     if not entities:
         return []
-    prompt = prompts.ENTITY_SELECTION.format(
-        max_entities=settings.RETRIEVAL_ENTITY_SELECTION_COUNT,
-        query=query,
-        seed_chunk=seed.chunk[:1500],
-        entities=json.dumps([entity.__dict__ for entity in entities], ensure_ascii=True),
-    )
-    try:
-        response = _chat_json(settings.MODEL_RETRIEVAL_GRAPH, prompt, timeout=60)
-        names = [value for value in response.get("selected_entities", []) if isinstance(value, str)]
-    except Exception:
-        names = [entity.name for entity in entities[: settings.RETRIEVAL_ENTITY_SELECTION_COUNT]]
+    backend = settings.ENTITY_SELECTION_BACKEND
+    probabilities: Optional[dict[str, float]] = None
+    if backend == "off":
+        names = _top_entity_names(entities)
+    elif backend == "jev":
+        try:
+            scored = _jev_select_entities(query, seed, entities)
+            names = [name for name, _ in scored]
+            probabilities = {name: round(probability, 4) for name, probability in scored}
+        except Exception as exc:
+            log.warning(
+                "Jev entity selection failed for seed %s; falling back to top-N: %s",
+                seed.chunk_id,
+                exc,
+            )
+            names = _top_entity_names(entities)
+    else:
+        prompt = prompts.ENTITY_SELECTION.format(
+            max_entities=settings.RETRIEVAL_ENTITY_SELECTION_COUNT,
+            query=query,
+            seed_chunk=seed.chunk[:1500],
+            entities=json.dumps([entity.__dict__ for entity in entities], ensure_ascii=True),
+        )
+        try:
+            response = _chat_json(settings.MODEL_RETRIEVAL_GRAPH, prompt, timeout=60)
+            names = [value for value in response.get("selected_entities", []) if isinstance(value, str)]
+        except Exception:
+            names = _top_entity_names(entities)
     if trace_logger:
-        trace_logger.emit(f"selected entities for seed {seed.chunk_id}: {json.dumps(names, ensure_ascii=True)}")
+        message = f"selected entities for seed {seed.chunk_id}: {json.dumps(names, ensure_ascii=True)}"
+        if probabilities is not None:
+            message += f" jev probabilities: {json.dumps(probabilities, ensure_ascii=True)}"
+        trace_logger.emit(message)
     return names[: settings.RETRIEVAL_ENTITY_SELECTION_COUNT]
 
 

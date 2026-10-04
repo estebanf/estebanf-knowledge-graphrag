@@ -394,6 +394,262 @@ def test_expand_seed_candidate_generates_first_hop_queries_concurrently(monkeypa
     assert [related["entity"] for related in result["related"]] == ["insurance", "triage"]
 
 
+def _selection_seed() -> RetrievalCandidate:
+    return RetrievalCandidate(
+        chunk_id="seed-1",
+        chunk="seed chunk about insurance triage",
+        source_id="source-1",
+        source_path="/tmp/source.md",
+        source_metadata={},
+        score=0.9,
+    )
+
+
+def _entities(*names: str) -> list[EntityCandidate]:
+    return [EntityCandidate(entity_id=f"id-{i}", name=name, entity_type="CONCEPT") for i, name in enumerate(names)]
+
+
+def _jev_answers(probabilities: dict[str, float]) -> dict:
+    return {key: {"type": "noul", "noul": value} for key, value in probabilities.items()}
+
+
+def test_entity_selection_llm_backend_still_calls_chat_json(monkeypatch):
+    from rag.retrieval import _select_entity_names
+
+    monkeypatch.setattr("rag.retrieval.settings.ENTITY_SELECTION_BACKEND", "llm")
+    calls = []
+
+    def fake_chat(model, prompt, **kwargs):
+        calls.append(prompt)
+        return {"selected_entities": ["claims", "triage"]}
+
+    def no_jev(*args, **kwargs):
+        raise AssertionError("llm backend must not call Jev")
+
+    monkeypatch.setattr("rag.retrieval._chat_json", fake_chat)
+    monkeypatch.setattr("rag.retrieval.jev.system_one", no_jev)
+
+    names = _select_entity_names("q", _selection_seed(), _entities("claims", "triage", "other"))
+
+    assert names == ["claims", "triage"]
+    assert len(calls) == 1
+
+
+def test_entity_selection_llm_backend_falls_back_to_top_n_on_error(monkeypatch):
+    from rag.retrieval import _select_entity_names
+
+    monkeypatch.setattr("rag.retrieval.settings.ENTITY_SELECTION_BACKEND", "llm")
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_ENTITY_SELECTION_COUNT", 2)
+
+    def failing_chat(*args, **kwargs):
+        raise RuntimeError("openrouter down")
+
+    monkeypatch.setattr("rag.retrieval._chat_json", failing_chat)
+
+    assert _select_entity_names("q", _selection_seed(), _entities("a", "b", "c")) == ["a", "b"]
+
+
+def test_entity_selection_off_backend_is_deterministic_without_network(monkeypatch):
+    from rag.retrieval import _select_entity_names
+
+    monkeypatch.setattr("rag.retrieval.settings.ENTITY_SELECTION_BACKEND", "off")
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_ENTITY_SELECTION_COUNT", 2)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("off backend must not touch the network")
+
+    monkeypatch.setattr("rag.retrieval._chat_json", unexpected)
+    monkeypatch.setattr("rag.retrieval.jev.system_one", unexpected)
+
+    assert _select_entity_names("q", _selection_seed(), _entities("a", "b", "c")) == ["a", "b"]
+
+
+def test_entity_selection_jev_one_call_per_seed_with_one_noul_per_entity(monkeypatch):
+    from rag.retrieval import _select_entity_names
+
+    monkeypatch.setattr("rag.retrieval.settings.ENTITY_SELECTION_BACKEND", "jev")
+    monkeypatch.setattr("rag.retrieval.settings.ENTITY_SELECTION_JEV_THRESHOLD", 0.5)
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_ENTITY_SELECTION_COUNT", 5)
+    calls = []
+
+    def fake_system_one(state, questions, **kwargs):
+        calls.append((state, questions))
+        return _jev_answers({"e0": 0.2, "e1": 0.9, "e2": 0.5, "e3": 0.7})
+
+    def unexpected_chat(*args, **kwargs):
+        raise AssertionError("jev backend must not call the graph LLM")
+
+    monkeypatch.setattr("rag.retrieval.jev.system_one", fake_system_one)
+    monkeypatch.setattr("rag.retrieval._chat_json", unexpected_chat)
+
+    seed = _selection_seed()
+    seed.chunk = "x" * 3000
+    names = _select_entity_names("insurance triage", seed, _entities("a", "b", "c", "d"))
+
+    assert len(calls) == 1
+    state, questions = calls[0]
+    assert state == {"query": "insurance triage", "passage": "x" * 1500}
+    assert list(questions) == ["e0", "e1", "e2", "e3"]
+    assert all(q["type"] == "noul" for q in questions.values())
+    assert "'b'" in questions["e1"]["instructions"] and "CONCEPT" in questions["e1"]["instructions"]
+    assert set(questions["e0"]["criteria"]) == {"true", "false"}
+    # sorted by probability desc; 0.2 is under threshold; 0.5 meets it (>=).
+    assert names == ["b", "d", "c"]
+
+
+def test_entity_selection_jev_caps_at_selection_count(monkeypatch):
+    from rag.retrieval import _select_entity_names
+
+    monkeypatch.setattr("rag.retrieval.settings.ENTITY_SELECTION_BACKEND", "jev")
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_ENTITY_SELECTION_COUNT", 2)
+    monkeypatch.setattr(
+        "rag.retrieval.jev.system_one",
+        lambda state, questions, **kw: _jev_answers({"e0": 0.6, "e1": 0.95, "e2": 0.8}),
+    )
+
+    assert _select_entity_names("q", _selection_seed(), _entities("a", "b", "c")) == ["b", "c"]
+
+
+def test_entity_selection_jev_threshold_can_exclude_everything(monkeypatch):
+    from rag.retrieval import _select_entity_names
+
+    monkeypatch.setattr("rag.retrieval.settings.ENTITY_SELECTION_BACKEND", "jev")
+    monkeypatch.setattr("rag.retrieval.settings.ENTITY_SELECTION_JEV_THRESHOLD", 0.9)
+    monkeypatch.setattr(
+        "rag.retrieval.jev.system_one",
+        lambda state, questions, **kw: _jev_answers({"e0": 0.6, "e1": 0.85}),
+    )
+
+    assert _select_entity_names("q", _selection_seed(), _entities("a", "b")) == []
+
+
+def test_entity_selection_jev_handles_quotes_and_unicode_names(monkeypatch):
+    from rag.retrieval import _select_entity_names
+
+    monkeypatch.setattr("rag.retrieval.settings.ENTITY_SELECTION_BACKEND", "jev")
+    seen = {}
+
+    def fake_system_one(state, questions, **kwargs):
+        seen.update(questions)
+        return _jev_answers({"e0": 0.4, "e1": 0.9, "e2": 0.8})
+
+    monkeypatch.setattr("rag.retrieval.jev.system_one", fake_system_one)
+    tricky = ['O\'Reilly "Media"', "Zürich – 東京", "line\nbreak {braces}"]
+
+    names = _select_entity_names("q", _selection_seed(), _entities(*tricky))
+
+    assert names == ["Zürich – 東京", "line\nbreak {braces}"]
+    assert set(seen) == {"e0", "e1", "e2"}  # keys never derived from the names
+    assert "O'Reilly \"Media\"" in seen["e0"]["instructions"]
+
+
+def test_entity_selection_jev_exception_falls_back_to_top_n(monkeypatch, caplog):
+    from rag.retrieval import _select_entity_names
+
+    monkeypatch.setattr("rag.retrieval.settings.ENTITY_SELECTION_BACKEND", "jev")
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_ENTITY_SELECTION_COUNT", 2)
+
+    def failing(*args, **kwargs):
+        raise RuntimeError("jev down")
+
+    monkeypatch.setattr("rag.retrieval.jev.system_one", failing)
+
+    with caplog.at_level("WARNING", logger="rag.retrieval"):
+        names = _select_entity_names("q", _selection_seed(), _entities("a", "b", "c"))
+
+    assert names == ["a", "b"]
+    assert any("Jev entity selection failed" in record.message for record in caplog.records)
+
+
+def test_entity_selection_jev_missing_key_falls_back(monkeypatch):
+    from rag.retrieval import _select_entity_names
+
+    monkeypatch.setattr("rag.retrieval.settings.ENTITY_SELECTION_BACKEND", "jev")
+    monkeypatch.setattr("rag.retrieval.settings.RETRIEVAL_ENTITY_SELECTION_COUNT", 1)
+    monkeypatch.setattr("rag.jev.settings.OPENROUTER_API_KEY", "")
+
+    assert _select_entity_names("q", _selection_seed(), _entities("a", "b")) == ["a"]
+
+
+def test_entity_selection_jev_ignores_unanswered_entities(monkeypatch):
+    from rag.retrieval import _select_entity_names
+
+    monkeypatch.setattr("rag.retrieval.settings.ENTITY_SELECTION_BACKEND", "jev")
+    monkeypatch.setattr(
+        "rag.retrieval.jev.system_one",
+        lambda state, questions, **kw: _jev_answers({"e1": 0.9}),
+    )
+
+    assert _select_entity_names("q", _selection_seed(), _entities("a", "b", "c")) == ["b"]
+
+
+@pytest.mark.parametrize("backend", ["jev", "llm", "off"])
+def test_entity_selection_no_entities_makes_no_call(monkeypatch, backend):
+    from rag.retrieval import _select_entity_names
+
+    monkeypatch.setattr("rag.retrieval.settings.ENTITY_SELECTION_BACKEND", backend)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("no call expected without entities")
+
+    monkeypatch.setattr("rag.retrieval.jev.system_one", unexpected)
+    monkeypatch.setattr("rag.retrieval._chat_json", unexpected)
+
+    assert _select_entity_names("q", _selection_seed(), []) == []
+
+
+def test_entity_selection_jev_candidate_cap_bounds_payload(monkeypatch):
+    from rag.retrieval import _JEV_MAX_ENTITY_CANDIDATES, _select_entity_names
+
+    monkeypatch.setattr("rag.retrieval.settings.ENTITY_SELECTION_BACKEND", "jev")
+    captured = {}
+
+    def fake_system_one(state, questions, **kwargs):
+        captured["keys"] = list(questions)
+        return _jev_answers({key: 0.9 for key in questions})
+
+    monkeypatch.setattr("rag.retrieval.jev.system_one", fake_system_one)
+    entities = _entities(*[f"entity-{i}" for i in range(_JEV_MAX_ENTITY_CANDIDATES + 25)])
+
+    names = _select_entity_names("q", _selection_seed(), entities)
+
+    assert len(captured["keys"]) == _JEV_MAX_ENTITY_CANDIDATES == 60
+    assert captured["keys"][-1] == "e59"
+    assert names == ["entity-0", "entity-1", "entity-2", "entity-3", "entity-4"]
+
+
+def test_entity_selection_jev_trace_includes_probabilities(monkeypatch):
+    from rag.retrieval import _select_entity_names
+
+    monkeypatch.setattr("rag.retrieval.settings.ENTITY_SELECTION_BACKEND", "jev")
+    monkeypatch.setattr(
+        "rag.retrieval.jev.system_one",
+        lambda state, questions, **kw: _jev_answers({"e0": 0.91, "e1": 0.2}),
+    )
+    lines: list[str] = []
+
+    _select_entity_names(
+        "q", _selection_seed(), _entities("alpha", "beta"),
+        trace_logger=TraceLogger(enabled=True, printer=lines.append),
+    )
+
+    assert len(lines) == 1
+    assert '["alpha"]' in lines[0]
+    assert '"alpha": 0.91' in lines[0]
+
+
+def test_entity_selection_backend_setting_validation(monkeypatch):
+    from pydantic import ValidationError
+    from rag.config import Settings
+
+    assert Settings(_env_file=None, ENTITY_SELECTION_BACKEND="jev").ENTITY_SELECTION_BACKEND == "jev"
+    assert Settings(_env_file=None, ENTITY_SELECTION_BACKEND=" OFF ").ENTITY_SELECTION_BACKEND == "off"
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, ENTITY_SELECTION_BACKEND="gpt")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, ENTITY_SELECTION_JEV_THRESHOLD=1.5)
+
+
 def test_generate_entity_query_uses_deterministic_default(monkeypatch):
     from rag.retrieval import _generate_entity_query
 

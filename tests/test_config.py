@@ -48,6 +48,24 @@ def test_retrieval_config_defaults(monkeypatch):
     assert s.RETRIEVAL_SAME_SOURCE_NEIGHBOR_COUNT == 3
 
 
+def test_jev_and_entity_selection_defaults(monkeypatch):
+    for key in [
+        "JEV_MODEL",
+        "JEV_TIMEOUT_SECONDS",
+        "JEV_CONCURRENCY",
+        "ENTITY_SELECTION_BACKEND",
+        "ENTITY_SELECTION_JEV_THRESHOLD",
+    ]:
+        monkeypatch.delenv(key, raising=False)
+    from rag.config import Settings
+    s = Settings(_env_file=None)
+    assert s.JEV_MODEL == "typesafe/jev-1.13"
+    assert s.JEV_TIMEOUT_SECONDS == 20
+    assert s.JEV_CONCURRENCY == 8
+    assert s.ENTITY_SELECTION_BACKEND == "llm"
+    assert s.ENTITY_SELECTION_JEV_THRESHOLD == 0.5
+
+
 def test_community_settings_have_correct_defaults():
     from rag.config import Settings
     s = Settings()
