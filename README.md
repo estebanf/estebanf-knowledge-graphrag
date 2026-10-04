@@ -365,8 +365,8 @@ Live measurements on the reference corpus (~126k chunks / ~112k insights, `rag s
 | `COMMUNITY_EDGE_CACHE_PREFETCH` | `250` | BQ HNSW prefetch count for cross-source edge ANN queries. |
 | `COMMUNITY_MAX_CONCURRENT_RUNS` | `3` | Max concurrent non-terminal community runs allowed before `create_run` rejects. |
 | `COMMUNITY_RUN_STALE_SECONDS` | `600` | Seconds before a `running` run row is marked `failed` as stale. |
-| `WORKER_POLL_INTERVAL` | `5` | Idle poll interval (seconds) used by `run_worker` when none is passed. Workers started with `rag worker launch` run the hidden `_worker-run` command, which always passes its own defaults (`5`), so changing this in `.env` does not affect them today. |
-| `WORKER_STUCK_JOB_MINUTES` | `30` | Age after which a processing job is considered stuck. Same caveat as `WORKER_POLL_INTERVAL`: supervised workers pass their own default (`30`). |
+| `WORKER_POLL_INTERVAL` | `5` | Idle poll interval (seconds) for workers, including supervised workers started with `rag worker launch`. |
+| `WORKER_STUCK_JOB_MINUTES` | `30` | Age after which a processing job is considered stuck (applies to supervised workers too). |
 
 ### Theme report settings
 
@@ -571,7 +571,7 @@ venv/bin/rag worker launch 2
 venv/bin/rag worker list
 ```
 
-`rag worker launch` takes only the number of workers. The poll interval (5s) and stuck-job age (30 min) of supervised workers are fixed by the hidden `_worker-run` defaults; see `WORKER_POLL_INTERVAL` and `WORKER_STUCK_JOB_MINUTES`.
+`rag worker launch` takes only the number of workers. Supervised workers read their poll interval and stuck-job age from `WORKER_POLL_INTERVAL` and `WORKER_STUCK_JOB_MINUTES`.
 
 ## Job Operations
 

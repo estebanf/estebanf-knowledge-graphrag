@@ -522,8 +522,8 @@ def configure_command(
 @app.command("_worker-run", hidden=True)
 def _worker_run(
     worker_id: Annotated[str, typer.Option("--worker-id", help="Supervisor-assigned worker id")] = "",
-    poll_interval: Annotated[int, typer.Option(help="Seconds between polls when queue is empty")] = 5,
-    stuck_minutes: Annotated[int, typer.Option(help="Minutes before a processing job is considered stuck")] = 30,
+    poll_interval: Annotated[Optional[int], typer.Option(help="Seconds between polls when queue is empty (default WORKER_POLL_INTERVAL)")] = None,
+    stuck_minutes: Annotated[Optional[int], typer.Option(help="Minutes before a processing job is considered stuck (default WORKER_STUCK_JOB_MINUTES)")] = None,
 ) -> None:
     """Internal: long-running worker process spawned by the API supervisor."""
     from rag.worker import run_worker
