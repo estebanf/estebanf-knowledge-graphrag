@@ -170,9 +170,9 @@ All runtime settings are env-backed. The CLI, backend, worker, and Docker servic
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MODEL_METADATA_EXTRACTION` | `google/gemma-3-4b-it` | OpenRouter. Extracts structured metadata from parsed markdown. |
-| `MODEL_DOC_PROFILING` | `google/gemma-3-4b-it` | OpenRouter. Profiles a document to guide chunking behavior. |
-| `MODEL_CHUNK_VALIDATION` | `qwen/qwen2.5-7b-instruct` | OpenRouter. Evaluates sampled chunks for quality control. |
+| `MODEL_METADATA_EXTRACTION` | `google/gemma-3-4b-it` | OpenRouter. Extracts structured metadata from parsed markdown (with `PROFILING_BACKEND=jev`, only `author` and `source`). |
+| `MODEL_DOC_PROFILING` | `google/gemma-3-4b-it` | OpenRouter. Profiles a document to guide chunking behavior. Used only when `PROFILING_BACKEND=llm` (or as the Jev fallback). |
+| `MODEL_CHUNK_VALIDATION` | `qwen/qwen2.5-7b-instruct` | OpenRouter. Evaluates sampled chunks for quality control. Used only when `CHUNK_VALIDATION_BACKEND=llm`. |
 | `MODEL_PROPOSITION_CHUNKING` | `qwen/qwen2.5-14b-instruct` | OpenRouter. Decomposes text into propositions when chunking requires it. |
 | `MODEL_EMBEDDING` | `qwen/qwen3-embedding-8b` | OpenRouter. Embedding model used to vectorize chunks, insights, entity names and search queries. |
 | `MODEL_IMAGE_DESCRIPTION` | `google/gemini-2.0-flash-lite-001` | OpenRouter. Describes inline images found during parsing. |
@@ -196,14 +196,48 @@ Jev is a question-answering model that returns calibrated probabilities instead 
 
 If a Jev call fails for any reason (no credits, rate limit, timeout, missing key), entity selection logs a warning and falls back to the first `RETRIEVAL_ENTITY_SELECTION_COUNT` entities; retrieval never fails because of Jev. The default stays `llm` until you flip `ENTITY_SELECTION_BACKEND` in `.env` after a pilot.
 
+#### Jev for ingestion: profiling/metadata and chunk validation
+
+Two more switches move ingestion quality checks onto Jev. Both default to the legacy `llm` behavior and both can be flipped in `.env` after running the matching pilot script.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PROFILING_BACKEND` | `llm` | `llm` (legacy: one OpenRouter call for metadata in `parsing`, one for the profile in `profiling`) or `jev` (see below). Any other value fails at startup. |
+| `CHUNK_VALIDATION_BACKEND` | `llm` | `llm` (legacy: sample 10%/25% of chunks, fail the job if more than 20% of the sample fails), `jev` (score every chunk and skip the low-quality ones, never fails the job) or `off` (no validation, every chunk passes). Any other value fails at startup. |
+| `CHUNK_VALIDATION_JEV_THRESHOLD` | `0.3` | With `jev`, a chunk is low quality when the minimum of its `complete` / `coherent` / `substantive` probabilities is below this value. |
+| `CHUNK_VALIDATION_MAX_SKIP_FRACTION` | `0.5` | With `jev`, safety cap: if more than this fraction of a job's scored chunks is low quality, **no** chunk is skipped (that is more likely a scoring problem than a bad document) and a warning is logged. |
+
+`MODEL_DOC_PROFILING`, `MODEL_CHUNK_VALIDATION`, `CHUNK_VALIDATION_SAMPLE_RATE` and `CHUNK_VALIDATION_SAMPLE_RATE_HIGH_STAKES` are used only by the `llm` backends. `MODEL_METADATA_EXTRACTION` is still used with `PROFILING_BACKEND=jev`, but only to extract `author` and `source`.
+
+**`PROFILING_BACKEND=jev`.** The `parsing` stage makes ONE Jev call on the first ~6000 characters of the markdown. It answers every `DocumentProfile` choice (`structure_type`, `heading_consistency`, `content_density`, `primary_content_type`, `avg_section_length`, profile `domain`) and the metadata `kind` and `domain` (metadata `domain` stays one of `legal | financial | technical | medical | general`, so `/api/sources/facets` and the frontend filters are unaffected). Jev favours the first option of a choice, so every choice is asked twice in the same call with the option order reversed, and the two probability distributions are averaged before taking the winner. `has_tables` and `has_code_blocks` are computed in code from the markdown (table separator rows, fenced code blocks), not by Jev. Jev cannot write free text, so one small LLM call (`MODEL_METADATA_EXTRACTION`) asks only for `author` and `source` and runs concurrently with the Jev call. User-submitted metadata still overrides extracted keys.
+
+The profile is stored in the parsing stage's `stage_log` output (`{"markdown_chars": ..., "profile": {...}, "profile_source": "jev"}`); the `profiling` stage reads it from there (no second call). If you retry from `profiling` the stored profile is reused; if it is absent (for example the job ran with `llm` before) the stage makes a profile-only Jev call. The profiling stage output keeps `domain` and adds `profile_source` (`jev`, `jev_cached` or `llm_fallback`). Any Jev failure logs a warning and falls back to the legacy `extract_metadata` / `profile_document` LLM calls; the job never fails because of Jev. Stage names and order are unchanged.
+
+**`CHUNK_VALIDATION_BACKEND=jev`.** The `validation` stage scores **every** chunk with one Jev call per chunk (`JEV_CONCURRENCY` in parallel) and three yes/no questions with explicit criteria: `complete` (at least one complete, self-contained thought), `coherent` (not garbled or fragmentary) and `substantive` (useful for answering questions, not boilerplate such as navigation, legal footers, tables of contents or sponsor reads). Chunks below `CHUNK_VALIDATION_JEV_THRESHOLD` are **skipped, not failed**: the job continues. Skipped chunks are soft-deleted (`chunks.deleted_at`, never hard-deleted) and removed from the embedding, graph and insight stages.
+
+- A chunk that is the parent of another chunk (hierarchical or proposition parents) is never skipped.
+- If the low-quality fraction (of successfully scored chunks) exceeds `CHUNK_VALIDATION_MAX_SKIP_FRACTION`, or would skip every chunk, nothing is skipped.
+- Fail-open: a chunk whose Jev call errored passes; if every call errors nothing is skipped and a warning is logged.
+- The `validation` stage output in `rag jobs status <job_id>` (stage log) records `validated_chunks`, `skipped_chunks` (the chunk ids), `low_quality_chunks`, `jev_errors` and `cap_triggered`.
+- Retrying from `validation` scores the job's current (non-deleted) chunks from the database. Chunks skipped earlier stay soft-deleted and are not re-scored.
+
+Both switches have read-only pilot scripts (SELECT only; no Postgres writes, no Memgraph calls; the only side effect is outbound OpenRouter/Jev calls):
+
+```bash
+python scripts/pilot_jev_profiling.py --limit 100
+python scripts/pilot_jev_chunk_validation.py --sources 200
+```
+
+`pilot_jev_profiling.py` runs both the legacy LLM profiler/metadata extractor and the Jev path over the most recent sources and compares what drives chunking (`select_strategy(profile)`, `use_hierarchical`, `use_propositions`), kind and domain agreement, Jev cost and per-path latency. `pilot_jev_chunk_validation.py` samples chunks from the most recent sources (`--chunks-per-source`, default 20), scores them with the same questions, and reports the min-probability distribution, how many chunks and sources would be skipped at thresholds 0.2/0.3/0.4/0.5, how many sources would hit the cap, example low-scoring chunk texts and the Jev cost.
+
 ### Embedding, chunking, and graph extraction
 
 The embedding dimension is fixed at 4096 by the Postgres schema (`vector(4096)` columns and `bit(4096)` prefilter indexes); it is not configurable, and switching `MODEL_EMBEDDING` to a model with a different output size requires a schema migration.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `CHUNK_VALIDATION_SAMPLE_RATE` | `0.10` | Fraction of chunks sampled for validation on standard documents. |
-| `CHUNK_VALIDATION_SAMPLE_RATE_HIGH_STAKES` | `0.25` | Higher validation sampling rate for high-stakes domains. |
+| `CHUNK_VALIDATION_SAMPLE_RATE` | `0.10` | Fraction of chunks sampled for validation on standard documents. Used only by `CHUNK_VALIDATION_BACKEND=llm`. |
+| `CHUNK_VALIDATION_SAMPLE_RATE_HIGH_STAKES` | `0.25` | Higher validation sampling rate for high-stakes domains. Used only by `CHUNK_VALIDATION_BACKEND=llm`. |
 | `GRAPH_EXTRACTION_CONCURRENCY` | `8` | Number of concurrent entity-extraction LLM calls per ingestion job; Memgraph/Postgres writes are batched afterward, not threaded. |
 | `STAGE_FAILURE_RATE_THRESHOLD` | `0.25` | Fraction of per-chunk LLM extraction failures (graph or insight extraction) tolerated before the stage fails outright instead of completing with recorded `failed_chunks`. |
 | `STAGE_DRIFT_WARN_FACTOR` | `3.0` | Multiplier over the pinned `stage_duration_baseline` (see `rag jobs stats --set-baseline`) above which a stage's duration triggers a drift warning log. |
@@ -1399,7 +1433,7 @@ pytest -q tests/test_cli_search.py tests/test_cli_community.py tests/test_api.py
 Fast ingestion-oriented suite:
 
 ```bash
-pytest -q tests/test_cli_jobs.py tests/test_job_lifecycle.py tests/test_worker.py tests/test_ingestion_submit.py tests/test_parser.py tests/test_storage.py tests/test_cli_ingest.py tests/test_chunking.py tests/test_observability.py tests/test_cli_health.py tests/test_profiling.py tests/test_chunk_validation.py tests/test_embedding.py
+pytest -q tests/test_cli_jobs.py tests/test_job_lifecycle.py tests/test_worker.py tests/test_ingestion_submit.py tests/test_parser.py tests/test_storage.py tests/test_cli_ingest.py tests/test_chunking.py tests/test_observability.py tests/test_cli_health.py tests/test_profiling.py tests/test_chunk_validation.py tests/test_embedding.py tests/test_jev_profiling.py tests/test_jev_ingestion_stages.py tests/test_pilot_jev_scripts.py
 ```
 
 Prompt regression coverage:

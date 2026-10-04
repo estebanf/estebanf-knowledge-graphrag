@@ -8,16 +8,23 @@ import psycopg
 import psycopg.types.json
 import structlog
 
-from rag.chunk_validation import validate_chunks
+from rag.chunk_validation import jev_validate_chunks, validate_chunks
 from rag.chunking import ChunkData, chunk_document
+from rag.config import settings
 from rag.db import get_connection
 from rag.embedding import embed_and_store_chunks
 from rag.graph_db import get_graph_driver
 from rag.graph_extraction import extract_and_store_graph
 from rag.insight_extraction import extract_and_store_insights
+from rag.jev_profiling import (
+    extract_profile_and_metadata,
+    jev_classify,
+    profile_from_dict,
+    profile_to_dict,
+)
 from rag.metadata_extraction import extract_metadata
 from rag.parser import ParseError, parse_document
-from rag.profiling import profile_document
+from rag.profiling import DocumentProfile, profile_document
 from rag.storage import store_file, store_markdown_images
 
 STAGE_ORDER = [
@@ -497,6 +504,50 @@ def submit_ingestion_job(
     return {"source_id": source_id, "job_id": job_id, "status": "pending"}
 
 
+def _jev_profile_for_stage(
+    conn: psycopg.Connection,
+    job_id: str,
+    markdown: str,
+    parsed_profile: DocumentProfile | None,
+    parsing_ran: bool,
+    log,
+) -> tuple[DocumentProfile | None, str | None]:
+    """`PROFILING_BACKEND=jev` profile lookup for the profiling stage.
+
+    Order: (1) the profile the parsing stage just produced in this run,
+    (2) the profile persisted in the parsing stage's `stage_log` output (retry
+    from profiling; the markdown is unchanged), (3) a fresh profile-only Jev
+    call. Returns `(None, None)` when Jev cannot supply one; the caller then
+    uses the legacy LLM profiler. Never raises for Jev reasons.
+    """
+    if parsed_profile is not None:
+        return parsed_profile, "jev"
+    if not parsing_ran:
+        row = conn.execute(
+            "SELECT stage_log -> 'parsing' -> 'output' -> 'profile' FROM jobs WHERE id = %s",
+            (job_id,),
+        ).fetchone()
+        cached = profile_from_dict(row[0] if row else None)
+        if cached is not None:
+            return cached, "jev_cached"
+    try:
+        return jev_classify(markdown, include_metadata=False).profile, "jev"
+    except Exception as exc:
+        log.warning("jev_profiling_failed", error=str(exc), fallback="llm")
+        return None, None
+
+
+def _jev_validation_protected_ids(conn: psycopg.Connection, job_id: str) -> set[str]:
+    """Chunk ids that are the parent of another chunk of this job (hierarchical
+    or proposition parents); these are never skipped by Jev validation."""
+    rows = conn.execute(
+        "SELECT DISTINCT parent_chunk_id FROM chunks "
+        "WHERE job_id = %s AND parent_chunk_id IS NOT NULL",
+        (job_id,),
+    ).fetchall()
+    return {str(row[0]) for row in rows}
+
+
 def execute_ingestion_pipeline(job_id: str, source_id: str, start_stage: str = "parsing") -> dict:
     structlog.contextvars.clear_contextvars()
 
@@ -522,6 +573,13 @@ def execute_ingestion_pipeline(job_id: str, source_id: str, start_stage: str = "
     log = structlog.get_logger()
 
     with get_connection() as conn:
+        # PROFILING_BACKEND=jev: the parsing stage classifies the document (one
+        # Jev call) and hands the profile to the profiling stage. `jev_failed`
+        # makes profiling go straight to the LLM instead of retrying Jev.
+        jev_profile: DocumentProfile | None = None
+        jev_failed = False
+        parsing_ran = start_idx <= STAGE_ORDER.index("parsing")
+
         # --- Parsing ---
         structlog.contextvars.bind_contextvars(stage="parsing")
         t0 = time.perf_counter()
@@ -536,7 +594,20 @@ def execute_ingestion_pipeline(job_id: str, source_id: str, start_stage: str = "
             except Exception as exc:
                 _fail_stage(conn, job_id, "parsing", exc)
                 raise
-            extracted = extract_metadata(markdown)
+            parsing_output: dict = {"markdown_chars": len(markdown)}
+            if settings.PROFILING_BACKEND == "jev":
+                try:
+                    extracted, classification = extract_profile_and_metadata(markdown)
+                    jev_profile = classification.profile
+                    parsing_output["profile"] = profile_to_dict(jev_profile)
+                    parsing_output["profile_source"] = "jev"
+                    parsing_output["profile_confidence"] = classification.confidence
+                except Exception as exc:
+                    log.warning("jev_profiling_failed", error=str(exc), fallback="llm")
+                    jev_failed = True
+                    extracted = extract_metadata(markdown)
+            else:
+                extracted = extract_metadata(markdown)
             stored_meta_row = conn.execute(
                 "SELECT metadata FROM sources WHERE id = %s", (source_id,)
             ).fetchone()
@@ -547,7 +618,7 @@ def execute_ingestion_pipeline(job_id: str, source_id: str, start_stage: str = "
                 (markdown, psycopg.types.json.Jsonb(combined_metadata), source_id),
             )
             conn.commit()
-            _complete_stage(conn, job_id, "parsing", {"markdown_chars": len(markdown)})
+            _complete_stage(conn, job_id, "parsing", parsing_output)
             log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
         else:
             markdown = existing_markdown
@@ -557,12 +628,24 @@ def execute_ingestion_pipeline(job_id: str, source_id: str, start_stage: str = "
         t0 = time.perf_counter()
         if start_idx <= STAGE_ORDER.index("profiling"):
             _update_stage(conn, job_id, "profiling")
+            profile_source: str | None = None
             try:
-                profile = profile_document(markdown)
+                profile = None
+                if settings.PROFILING_BACKEND == "jev" and not jev_failed:
+                    profile, profile_source = _jev_profile_for_stage(
+                        conn, job_id, markdown, jev_profile, parsing_ran, log
+                    )
+                if profile is None:
+                    profile = profile_document(markdown)
+                    if settings.PROFILING_BACKEND == "jev":
+                        profile_source = "llm_fallback"
             except Exception as exc:
                 _fail_stage(conn, job_id, "profiling", exc)
                 raise
-            _complete_stage(conn, job_id, "profiling", {"domain": profile.domain})
+            profiling_output = {"domain": profile.domain}
+            if profile_source is not None:
+                profiling_output["profile_source"] = profile_source
+            _complete_stage(conn, job_id, "profiling", profiling_output)
             log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
         else:
             from rag.profiling import _DEFAULT_PROFILE
@@ -595,21 +678,47 @@ def execute_ingestion_pipeline(job_id: str, source_id: str, start_stage: str = "
         t0 = time.perf_counter()
         if start_idx <= STAGE_ORDER.index("validation"):
             _update_stage(conn, job_id, "validation")
-            try:
-                passed = validate_chunks(chunks, domain=profile.domain)
-                if not passed:
-                    conn.execute("UPDATE chunks SET deleted_at = now() WHERE job_id = %s", (job_id,))
-                    _fail_stage(conn, job_id, "validation")
-                    raise ValueError("Chunk validation failed: too many low-quality chunks")
-            except ValueError as exc:
-                if "validation failed" in str(exc).lower():
+            validation_backend = settings.CHUNK_VALIDATION_BACKEND
+            if validation_backend == "jev":
+                # Score EVERY chunk (works on chunk_rows, so a retry from
+                # validation scores the DB rows). Low-quality chunks are
+                # soft-deleted and dropped from chunk_rows; the job never
+                # fails for quality reasons. Jev errors fail open inside
+                # jev_validate_chunks.
+                try:
+                    protected_ids = _jev_validation_protected_ids(conn, job_id)
+                    jev_result = jev_validate_chunks(chunk_rows, protected_ids)
+                    if jev_result.skipped_chunk_ids:
+                        conn.execute(
+                            "UPDATE chunks SET deleted_at = now() WHERE id = ANY(%s::uuid[])",
+                            (jev_result.skipped_chunk_ids,),
+                        )
+                        conn.commit()
+                        skipped_set = set(jev_result.skipped_chunk_ids)
+                        chunk_rows = [row for row in chunk_rows if row[0] not in skipped_set]
+                except Exception as exc:
+                    _fail_stage(conn, job_id, "validation", exc)
                     raise
-                _fail_stage(conn, job_id, "validation", exc)
-                raise
-            except Exception as exc:
-                _fail_stage(conn, job_id, "validation", exc)
-                raise
-            _complete_stage(conn, job_id, "validation", {"validated_chunks": len(chunks)})
+                validation_output = jev_result.stage_output()
+            elif validation_backend == "off":
+                validation_output = {"backend": "off", "validated_chunks": 0}
+            else:
+                try:
+                    passed = validate_chunks(chunks, domain=profile.domain)
+                    if not passed:
+                        conn.execute("UPDATE chunks SET deleted_at = now() WHERE job_id = %s", (job_id,))
+                        _fail_stage(conn, job_id, "validation")
+                        raise ValueError("Chunk validation failed: too many low-quality chunks")
+                except ValueError as exc:
+                    if "validation failed" in str(exc).lower():
+                        raise
+                    _fail_stage(conn, job_id, "validation", exc)
+                    raise
+                except Exception as exc:
+                    _fail_stage(conn, job_id, "validation", exc)
+                    raise
+                validation_output = {"validated_chunks": len(chunks)}
+            _complete_stage(conn, job_id, "validation", validation_output)
             log.info("stage_complete", action="stage_end", duration_ms=int((time.perf_counter() - t0) * 1000), status="ok")
 
         # --- Embedding ---

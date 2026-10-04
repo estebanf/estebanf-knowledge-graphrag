@@ -37,6 +37,21 @@ class Settings(BaseSettings):
     # Chunking / validation
     CHUNK_VALIDATION_SAMPLE_RATE: Annotated[float, Field(ge=0.0, le=1.0)] = 0.10
     CHUNK_VALIDATION_SAMPLE_RATE_HIGH_STAKES: Annotated[float, Field(ge=0.0, le=1.0)] = 0.25
+    # Document profiling + metadata extraction: "llm" (legacy: one OpenRouter
+    # call for metadata in parsing, one for the profile in profiling) or "jev"
+    # (ONE Jev call in parsing yields profile + kind/domain; only author/source
+    # still use the metadata LLM). Jev failures fall back to "llm".
+    PROFILING_BACKEND: Literal["jev", "llm"] = "llm"
+    # Chunk validation: "llm" (legacy: sample chunks, fail the job when >20% of
+    # the sample fails), "jev" (score EVERY chunk, soft-delete low-quality ones,
+    # never fail the job) or "off" (no validation).
+    CHUNK_VALIDATION_BACKEND: Literal["jev", "llm", "off"] = "llm"
+    # With "jev": a chunk is low quality when min(complete, coherent,
+    # substantive) probability is below this threshold.
+    CHUNK_VALIDATION_JEV_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.3
+    # With "jev": if more than this fraction of a job's scored chunks is low
+    # quality, skip NONE (likely a scoring problem, not a bad document).
+    CHUNK_VALIDATION_MAX_SKIP_FRACTION: Annotated[float, Field(ge=0.0, le=1.0)] = 0.5
 
     # Graph pipeline
     MEMGRAPH_URL: str = "bolt://localhost:7687"
@@ -165,7 +180,12 @@ class Settings(BaseSettings):
     RAG_SESSION_TTL_HOURS: Annotated[int, Field(gt=0)] = 24 * 7
     RAG_SESSION_COOKIE_NAME: str = "rag_session"
 
-    @field_validator("ENTITY_SELECTION_BACKEND", mode="before")
+    @field_validator(
+        "ENTITY_SELECTION_BACKEND",
+        "PROFILING_BACKEND",
+        "CHUNK_VALIDATION_BACKEND",
+        mode="before",
+    )
     @classmethod
     def _normalise_backend(cls, value):
         # Tolerate `.env` casing/whitespace ("Jev "); anything else still

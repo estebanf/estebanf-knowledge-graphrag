@@ -66,6 +66,63 @@ def test_jev_and_entity_selection_defaults(monkeypatch):
     assert s.ENTITY_SELECTION_JEV_THRESHOLD == 0.5
 
 
+def test_profiling_and_chunk_validation_backend_defaults(monkeypatch):
+    for key in [
+        "PROFILING_BACKEND",
+        "CHUNK_VALIDATION_BACKEND",
+        "CHUNK_VALIDATION_JEV_THRESHOLD",
+        "CHUNK_VALIDATION_MAX_SKIP_FRACTION",
+    ]:
+        monkeypatch.delenv(key, raising=False)
+    from rag.config import Settings
+    s = Settings(_env_file=None)
+    assert s.PROFILING_BACKEND == "llm"
+    assert s.CHUNK_VALIDATION_BACKEND == "llm"
+    assert s.CHUNK_VALIDATION_JEV_THRESHOLD == 0.3
+    assert s.CHUNK_VALIDATION_MAX_SKIP_FRACTION == 0.5
+
+
+def test_profiling_and_chunk_validation_backends_accept_valid_values(monkeypatch):
+    from rag.config import Settings
+    monkeypatch.setenv("PROFILING_BACKEND", " Jev ")
+    monkeypatch.setenv("CHUNK_VALIDATION_BACKEND", "OFF")
+    s = Settings(_env_file=None)
+    assert s.PROFILING_BACKEND == "jev"
+    assert s.CHUNK_VALIDATION_BACKEND == "off"
+    monkeypatch.setenv("CHUNK_VALIDATION_BACKEND", "jev")
+    assert Settings(_env_file=None).CHUNK_VALIDATION_BACKEND == "jev"
+
+
+def test_profiling_backend_rejects_unknown_and_off(monkeypatch):
+    import pytest
+    from pydantic import ValidationError
+    from rag.config import Settings
+    monkeypatch.setenv("PROFILING_BACKEND", "off")  # profiling has no "off"
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+    monkeypatch.setenv("PROFILING_BACKEND", "llm")
+    monkeypatch.setenv("CHUNK_VALIDATION_BACKEND", "sampling")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_chunk_validation_jev_numeric_settings_are_bounded(monkeypatch):
+    import pytest
+    from pydantic import ValidationError
+    from rag.config import Settings
+    monkeypatch.setenv("CHUNK_VALIDATION_JEV_THRESHOLD", "1.5")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+    monkeypatch.setenv("CHUNK_VALIDATION_JEV_THRESHOLD", "0.4")
+    monkeypatch.setenv("CHUNK_VALIDATION_MAX_SKIP_FRACTION", "-0.1")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+    monkeypatch.setenv("CHUNK_VALIDATION_MAX_SKIP_FRACTION", "0.25")
+    s = Settings(_env_file=None)
+    assert s.CHUNK_VALIDATION_JEV_THRESHOLD == 0.4
+    assert s.CHUNK_VALIDATION_MAX_SKIP_FRACTION == 0.25
+
+
 def test_community_settings_have_correct_defaults():
     from rag.config import Settings
     s = Settings()
