@@ -87,10 +87,19 @@ class Settings(BaseSettings):
     # Retype an off-schema entity only when the mean type probability of the
     # mentions voting for the winning type is at least this value.
     ENTITY_AUDIT_RETYPE_CONFIDENCE: Annotated[float, Field(ge=0.0, le=1.0)] = 0.8
+    # Canonical-name correction (src/rag/entity_names.py): only entities with at
+    # least this many aliases (the hubs) are reviewed, and a rename is applied
+    # only when both Jev option orders agree and the averaged probability of the
+    # winning spelling is at least ENTITY_NAME_MIN_CONFIDENCE.
+    ENTITY_NAME_REVIEW_MIN_ALIASES: Annotated[int, Field(ge=1)] = 3
+    ENTITY_NAME_MIN_CONFIDENCE: Annotated[float, Field(ge=0.0, le=1.0)] = 0.8
 
     # Insight extraction
     MODEL_INSIGHT_EXTRACTION: str = "gpt-6-luna"
     INSIGHT_DEDUP_COSINE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.95
+    # Lower bound of the near-duplicate band [LOW, INSIGHT_DEDUP_COSINE_THRESHOLD)
+    # that weekly maintenance sends to Jev for confirmation (Jev phases only).
+    INSIGHT_NEAR_DUP_COSINE_LOW: Annotated[float, Field(ge=0.0, le=1.0)] = 0.88
     INSIGHT_LINK_TOP_K: Annotated[int, Field(gt=0)] = 10
     INSIGHT_EXTRACTION_CONCURRENCY: Annotated[int, Field(gt=0)] = 12
     INSIGHT_PREFILTER_CANDIDATES: Annotated[int, Field(gt=0)] = 100
@@ -127,7 +136,10 @@ class Settings(BaseSettings):
     RETRIEVAL_SECOND_HOP_CHUNK_COUNT: Annotated[int, Field(gt=0)] = 5
     RETRIEVAL_FIRST_HOP_SIMILARITY_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.5
     RETRIEVAL_SECOND_HOP_SIMILARITY_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.5
-    RETRIEVAL_ENTITY_CONFIDENCE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.75
+    # Minimum MENTIONS.confidence for an entity to be used in graph expansion.
+    # Entity-audit salience is Score/3 (levels 0..3), so 0.2 drops only mentions
+    # scored as a passing mention (level 0); unaudited edges are 1.0 and always pass.
+    RETRIEVAL_ENTITY_CONFIDENCE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.2
     RETRIEVAL_MAX_GRAPH_LLM_CALLS: Annotated[int, Field(gt=0)] = 100
     RETRIEVAL_MAX_GRAPH_EXPANSION_MS_PER_SEED: Annotated[int, Field(gt=0)] = 4000
     RETRIEVAL_TEXT_SEARCH_CONFIG: str = "english"

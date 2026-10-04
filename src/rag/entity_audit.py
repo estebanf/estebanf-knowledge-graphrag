@@ -577,6 +577,19 @@ def mention_counts(session, entity_ids: list[str]) -> dict[str, int]:
     return counts
 
 
+def attach_mention_counts(session, members: list[dict]) -> None:
+    """Set `member["mentions"]` (Memgraph MENTIONS in-degree, 0 when the entity
+    has no node) on every member dict that has an `id` and no count yet. One
+    batched query for all members that still need it; a read only, so it is
+    also safe in dry-runs. Survivor selection uses this."""
+    todo = [m for m in members if "mentions" not in m]
+    if not todo:
+        return
+    counts = mention_counts(session, [m["id"] for m in todo])
+    for member in todo:
+        member["mentions"] = counts.get(member["id"], 0)
+
+
 def _salience_level(salience: float | None) -> int:
     if salience is None:
         return -1

@@ -35,7 +35,7 @@ export default function RetrieveView({ onView, onCopyChunk }: RetrieveViewProps)
   const [seedCount, setSeedCount] = useState("10");
   const [resultCount, setResultCount] = useState("5");
   const [rrfK, setRrfK] = useState("60");
-  const [entityConfidenceThreshold, setEntityConfidenceThreshold] = useState("0.75");
+  const [entityConfidenceThreshold, setEntityConfidenceThreshold] = useState("0.2");
   const [firstHopSimilarityThreshold, setFirstHopSimilarityThreshold] = useState("0.5");
   const [secondHopSimilarityThreshold, setSecondHopSimilarityThreshold] = useState("0.5");
   const [trace, setTrace] = useState(false);

@@ -5,9 +5,14 @@ Uses the same combined fuzzy + embedding approach as assess_semantic_duplicates.
 to find candidate pairs, groups them into clusters via union-find, then merges each
 cluster the same way as merge_duplicate_entities.py.
 
-Survivor selection: most-frequent entity_type in cluster wins; within that type,
-prefer has_embedding=True, then oldest created_at. Absorbed entity names are added
-to the survivor's aliases list.
+Survivor selection (`pick_survivor`): the member with the most MENTIONS edges
+wins (counted from Memgraph in one batched query); ties fall back to the cluster's
+dominant entity_type, then has_embedding=True, then oldest created_at. Absorbed
+entity names are added to the survivor's aliases list; the survivor's own
+canonical_name is left alone (spelling correction is src/rag/entity_names.py).
+
+`--jev` (and weekly_maintenance's Jev gate) additionally confirms every candidate
+pair with Jev before merging; see `confirm_pairs_with_jev`.
 """
 import argparse
 import re
@@ -20,7 +25,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import numpy as np
 
+from rag import jev_dedup
 from rag.db import get_connection, vacuum_analyze_entities
+from rag.entity_audit import attach_mention_counts
 from rag.graph_db import get_graph_driver
 
 
@@ -143,10 +150,28 @@ class UnionFind:
 # ── Merge helpers (mirrored from merge_duplicate_entities.py) ─────────────────
 
 def pick_survivor(members: list[dict]) -> dict:
+    """Pick the entity row that survives a merge cluster.
+
+    One sort key, in order: most MENTIONS edges (`member["mentions"]`, filled by
+    `attach_mention_counts`; missing counts as 0), then membership of the
+    cluster's dominant entity_type, then has_embedding, then the oldest row.
+    The row with the most mentions keeps its id (and its edges) so the merge
+    repoints the fewest edges and the best-connected name stays the hub. The
+    dominant type is now only a tie-breaker: as a hard filter it let a
+    mis-typed one-mention row beat a hub just because its type was the majority.
+    """
     type_counts = Counter(m["entity_type"] for m in members)
     dominant_type = type_counts.most_common(1)[0][0]
-    preferred = [m for m in members if m["entity_type"] == dominant_type]
-    return sorted(preferred, key=lambda m: (not m["has_embedding"], m["created_at"]))[0]
+    return sorted(
+        members,
+        key=lambda m: (
+            -m.get("mentions", 0),
+            m["entity_type"] != dominant_type,
+            not m["has_embedding"],
+            m["created_at"] is None,
+            m["created_at"],
+        ),
+    )[0]
 
 
 def merge_postgres(conn, survivor_id: str, dup_ids: list[str], all_members: list[dict]) -> None:
@@ -216,14 +241,16 @@ def merge_memgraph(session, survivor_id: str, dup_ids: list[str]) -> int:
 
 
 def merge_cluster(conn, session, cluster_members: list[dict], dry_run: bool) -> int:
+    # No-op when run_entity_merge already batched the counts for all clusters.
+    attach_mention_counts(session, cluster_members)
     survivor = pick_survivor(cluster_members)
     dup_ids = [m["id"] for m in cluster_members if m["id"] != survivor["id"]]
     dup_names = [m["canonical_name"] for m in cluster_members if m["id"] != survivor["id"]]
 
     if dry_run:
         print(
-            f"  [{survivor['entity_type']}] {survivor['canonical_name']!r} — "
-            f"absorbs: {dup_names}"
+            f"  [{survivor['entity_type']}] {survivor['canonical_name']!r} "
+            f"({survivor.get('mentions', 0)} mention(s)) — absorbs: {dup_names}"
         )
         return 0
 
@@ -242,6 +269,60 @@ def merge_cluster(conn, session, cluster_members: list[dict], dry_run: bool) -> 
     return len(dup_ids)
 
 
+# ── Jev confirmation ──────────────────────────────────────────────────────────
+
+def confirm_pairs_with_jev(
+    pairs: list[tuple[str, str, float]],
+    entity_meta: dict[str, dict],
+    dry_run: bool,
+) -> list[tuple[str, str, float]]:
+    """Confirm candidate pairs with Jev and return only the ones to merge.
+
+    Routing by the 3-level alignment score (`rag.jev_dedup`): >= 1.5 merge,
+    0.5..1.5 review (`entity_merge_review`, written only when not `dry_run`,
+    reported otherwise), < 0.5 dropped. A Jev error leaves the pair
+    unconfirmed (no merge). Pairs that already have a review row, of any status,
+    are neither re-judged nor merged. Judging calls Jev even in a dry-run (it
+    spends credits) but writes nothing to the corpus.
+    """
+    prefix = "[DRY RUN] " if dry_run else ""
+    if not pairs:
+        return []
+
+    with get_connection() as conn:
+        reviewed = jev_dedup.fetch_reviewed_entity_pairs(conn)
+    fresh = [p for p in pairs if jev_dedup.normalize_pair(p[0], p[1]) not in reviewed]
+    print(
+        f"{prefix}Jev: confirming {len(fresh)} candidate pair(s) "
+        f"({len(pairs) - len(fresh)} already in entity_merge_review, skipped)...",
+        flush=True,
+    )
+    judgements, stats = jev_dedup.judge_entity_pairs(fresh, entity_meta)
+    counts = jev_dedup.summarize(judgements)
+    print(
+        f"{prefix}Jev entity pairs: {counts['merge']} confirmed merge, {counts['review']} for review, "
+        f"{counts['drop']} dropped, {counts['error']} unconfirmed (Jev error); {stats.describe()}",
+        flush=True,
+    )
+
+    for judgement in judgements:
+        if judgement.route == jev_dedup.ROUTE_REVIEW:
+            print(f"  {prefix}review ({judgement.score:.2f}): {judgement.reason}")
+    if counts["review"]:
+        if dry_run:
+            print(f"{prefix}Would add {counts['review']} pair(s) to entity_merge_review.")
+        else:
+            with get_connection() as conn:
+                added = jev_dedup.insert_entity_reviews(conn, judgements)
+            print(f"Added {added} pair(s) to entity_merge_review.")
+
+    return [
+        (j.id_a, j.id_b, j.similarity)
+        for j in judgements
+        if j.route == jev_dedup.ROUTE_MERGE
+    ]
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def run_entity_merge(
@@ -250,8 +331,13 @@ def run_entity_merge(
     person_fuzzy_threshold: float = 0.90,
     cosine_threshold: float = 0.93,
     prefix_len: int = 3,
+    use_jev: bool = False,
 ) -> tuple[int, set[str]]:
     """Find and merge semantic-duplicate entity clusters.
+
+    With `use_jev`, every pair that passes the fuzzy + cosine filters is first
+    confirmed by Jev (see `confirm_pairs_with_jev`) and only confirmed pairs are
+    clustered; without it, behavior is unchanged.
 
     Returns (total_merged, set of all entity ids that were part of any merge
     cluster — survivors and merged-away alike — so the caller can invalidate
@@ -300,7 +386,7 @@ def run_entity_merge(
         embeddings = fetch_embeddings(conn, unique_ids)
 
     print(f"{prefix}Computing cosine similarities...", flush=True)
-    uf = UnionFind()
+    candidate_pairs: list[tuple[str, str, float]] = []
     for id_a, id_b, _ in fuzzy_pairs:
         emb_a = embeddings.get(id_a)
         emb_b = embeddings.get(id_b)
@@ -308,7 +394,18 @@ def run_entity_merge(
             continue
         cosine = float(np.dot(emb_a, emb_b))
         if cosine >= cosine_threshold:
-            uf.union(id_a, id_b)
+            candidate_pairs.append((id_a, id_b, cosine))
+
+    if use_jev:
+        # Only Jev-confirmed pairs are clustered; unconfirmed ones (review band,
+        # drops, Jev errors) are never merged.
+        merge_pairs = confirm_pairs_with_jev(candidate_pairs, entity_meta, dry_run)
+    else:
+        merge_pairs = candidate_pairs
+
+    uf = UnionFind()
+    for id_a, id_b, _ in merge_pairs:
+        uf.union(id_a, id_b)
 
     clusters = uf.groups()
     total_members = sum(len(v) for v in clusters.values())
@@ -321,8 +418,14 @@ def run_entity_merge(
     merged_entity_ids: set[str] = set()
     with get_connection() as conn, get_graph_driver() as driver:
         with driver.session() as session:
-            for cluster_ids in clusters.values():
-                members = [entity_meta[eid] for eid in cluster_ids if eid in entity_meta]
+            cluster_members = [
+                [entity_meta[eid] for eid in cluster_ids if eid in entity_meta]
+                for cluster_ids in clusters.values()
+            ]
+            # One batched MENTIONS count for every clustered entity, so survivor
+            # selection (pick_survivor) costs a single UNWIND query, dry-run included.
+            attach_mention_counts(session, [m for members in cluster_members for m in members])
+            for cluster_ids, members in zip(clusters.values(), cluster_members):
                 if len(members) < 2:
                     continue
                 total_merged += merge_cluster(conn, session, members, dry_run=dry_run)
@@ -344,6 +447,15 @@ def main() -> int:
     parser.add_argument("--person-fuzzy-threshold", type=float, default=0.90)
     parser.add_argument("--cosine-threshold", type=float, default=0.93)
     parser.add_argument("--prefix-len", type=int, default=3)
+    parser.add_argument(
+        "--jev",
+        action="store_true",
+        help=(
+            "Confirm every candidate pair with Jev before merging: confirmed pairs merge, "
+            "borderline pairs go to entity_merge_review, the rest are dropped. Spends Jev "
+            "credits even with --dry-run."
+        ),
+    )
     args = parser.parse_args()
 
     total_merged, _ = run_entity_merge(
@@ -352,6 +464,7 @@ def main() -> int:
         person_fuzzy_threshold=args.person_fuzzy_threshold,
         cosine_threshold=args.cosine_threshold,
         prefix_len=args.prefix_len,
+        use_jev=args.jev,
     )
 
     print(f"Total merged: {total_merged}. Done.")

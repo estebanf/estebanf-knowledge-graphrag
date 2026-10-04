@@ -108,6 +108,36 @@ class FakeDriver:
         return _Ctx()
 
 
+def forbid_live_stores(monkeypatch, *modules):
+    """Make any attempt to reach a real Postgres or Memgraph fail loudly.
+
+    Patches `psycopg.connect`, the neo4j driver factory and `rag.db.get_connection` /
+    `rag.graph_db.get_graph_driver`, plus the same names on any extra `modules`
+    (a script module binds them at import time). A test that needs a connection
+    must stub it itself (which overrides this guard); a test that forgets would
+    otherwise silently talk to whatever `.env` points at.
+    """
+
+    def _no_connection(*args, **kwargs):
+        raise AssertionError("test reached a real Postgres connection; stub get_connection")
+
+    def _no_driver(*args, **kwargs):
+        raise AssertionError("test reached a real Memgraph driver; stub get_graph_driver")
+
+    import psycopg
+    from neo4j import GraphDatabase
+
+    monkeypatch.setattr(psycopg, "connect", _no_connection)
+    monkeypatch.setattr(GraphDatabase, "driver", _no_driver)
+    monkeypatch.setattr("rag.db.get_connection", _no_connection)
+    monkeypatch.setattr("rag.graph_db.get_graph_driver", _no_driver)
+    for module in modules:
+        if hasattr(module, "get_connection"):
+            monkeypatch.setattr(module, "get_connection", _no_connection)
+        if hasattr(module, "get_graph_driver"):
+            monkeypatch.setattr(module, "get_graph_driver", _no_driver)
+
+
 def ctx(value):
     """Context manager yielding `value` (stands in for get_connection()/get_graph_driver())."""
 

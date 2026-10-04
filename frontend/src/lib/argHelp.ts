@@ -14,7 +14,7 @@ const argHelp: Record<string, string> = {
   retrieve_seed_count: "Maximum number of seed chunks used to start graph expansion. Default 10.",
   retrieve_result_count: "Maximum number of final results returned. Default 5.",
   retrieve_rrf_k: "Reciprocal Rank Fusion constant; higher values give more weight to dense (semantic) results over sparse (keyword) results. Default 60.",
-  retrieve_entity_confidence_threshold: "Minimum chunk-to-entity MENTIONS confidence (the entity-audit salience, 0–1; 1.0 for unaudited mentions) required for an entity to be used in graph expansion. Default 0.75; a value around 0.33 keeps everything above a passing mention.",
+  retrieve_entity_confidence_threshold: "Minimum chunk-to-entity MENTIONS confidence (the entity-audit salience, 0–1; 1.0 for unaudited mentions) required for an entity to be used in graph expansion. Default 0.2, which drops only mentions the audit scored as a passing mention; 0.33 also drops minor mentions, 0.67 keeps only important and central ones.",
   retrieve_first_hop_similarity_threshold: "Maximum similarity distance allowed for first-hop entity expansion (0–1). Default 0.5.",
   retrieve_second_hop_similarity_threshold: "Maximum similarity distance allowed for second-hop entity expansion (0–1). Default 0.5.",
   retrieve_trace: "Include a detailed step-by-step retrieval trace in the response, useful for debugging.",

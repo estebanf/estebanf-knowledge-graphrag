@@ -19,8 +19,13 @@ def _load_script(name: str, filename: str):
 
 
 @pytest.fixture
-def wm():
-    return _load_script("weekly_maintenance_script", "weekly_maintenance.py")
+def wm(monkeypatch):
+    from audit_fakes import forbid_live_stores
+
+    module = _load_script("weekly_maintenance_script", "weekly_maintenance.py")
+    # Any phase a test forgot to stub must fail, not reach the live stack.
+    forbid_live_stores(monkeypatch, module, module.entity_merge)
+    return module
 
 
 @pytest.fixture(autouse=True)
@@ -409,7 +414,9 @@ def test_dry_run_bypasses_guard_even_with_active_jobs(wm, monkeypatch):
 
 # ── Jev entity audit phase ───────────────────────────────────────────────────
 
-_ONLY_AUDIT = ["--skip-entities", "--skip-insights", "--skip-consistency", "--skip-health"]
+_ONLY_AUDIT = [
+    "--skip-entities", "--skip-entity-names", "--skip-insights", "--skip-consistency", "--skip-health",
+]
 
 
 def _parse(wm, *flags):
@@ -518,9 +525,11 @@ def test_audit_apply_runs_before_the_entity_merge(wm, monkeypatch):
     order: list[str] = []
     monkeypatch.setattr(wm, "run_entity_audit_apply", lambda **kw: order.append("audit"))
     monkeypatch.setattr(
-        wm.entity_merge, "run_entity_merge", lambda dry_run: order.append("merge") or (0, set())
+        wm.entity_merge, "run_entity_merge", lambda dry_run, **kw: order.append("merge") or (0, set())
     )
-    args = _parse(wm, "--dry-run", "--jev", "--skip-insights", "--skip-consistency", "--skip-health")
+    args = _parse(
+        wm, "--dry-run", "--jev", "--skip-entity-names", "--skip-insights", "--skip-consistency", "--skip-health"
+    )
 
     wm._run_phases(args)
 
@@ -600,6 +609,7 @@ def test_execute_no_score_skips_scoring_but_still_applies(wm, monkeypatch):
     monkeypatch.setattr(wm, "run_insight_merge", MagicMock(return_value=0))
     monkeypatch.setattr(wm, "run_consistency_sweep", MagicMock(return_value={}))
     monkeypatch.setattr(wm, "run_health_phase", MagicMock())
+    monkeypatch.setattr(wm, "run_entity_name_correction", MagicMock(return_value=set()))
 
     assert wm.main(["--execute", "--jev", "--no-score"]) == 0
 
@@ -625,6 +635,7 @@ def test_execute_with_jev_scores_then_applies_under_the_lock(wm, monkeypatch):
     ):
         monkeypatch.setattr(wm, name, MagicMock(return_value=value))
     monkeypatch.setattr(wm.entity_merge, "run_entity_merge", MagicMock(return_value=(0, set())))
+    monkeypatch.setattr(wm, "run_entity_name_correction", MagicMock(return_value=set()))
 
     assert wm.main(["--execute", "--jev"]) == 0
 
@@ -740,7 +751,10 @@ def test_dry_run_with_score_writes_only_the_audit_table(wm, monkeypatch):
     guard = MagicMock()
     monkeypatch.setattr(wm, "count_active_jobs", guard)
 
-    rc = wm.main(["--dry-run", "--jev", "--score", "--skip-insights", "--skip-consistency", "--skip-health", "--skip-entities"])
+    rc = wm.main([
+        "--dry-run", "--jev", "--score", "--skip-insights", "--skip-consistency", "--skip-health",
+        "--skip-entities", "--skip-entity-names",
+    ])
 
     assert rc == 0
     guard.assert_not_called()

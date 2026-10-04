@@ -193,9 +193,11 @@ Jev is a question-answering model that returns calibrated probabilities instead 
 | `JEV_CONCURRENCY` | `8` | Parallel Jev calls for batch callers (`system_one_many`). |
 | `ENTITY_SELECTION_BACKEND` | `llm` | How first-hop graph entities are chosen per retrieval seed: `llm` (graph LLM, legacy behavior), `jev` (one Jev call per seed scoring every candidate entity), or `off` (first `RETRIEVAL_ENTITY_SELECTION_COUNT` entities, no network call). Any other value fails at startup. |
 | `ENTITY_SELECTION_JEV_THRESHOLD` | `0.5` | With `jev`, minimum yes-probability for an entity to be followed; the best `RETRIEVAL_ENTITY_SELECTION_COUNT` above it are kept, highest first. At most 60 candidate entities are sent per seed. |
-| `MAINTENANCE_JEV_ENABLED` | `false` | Master switch for the Jev phases of `scripts/weekly_maintenance.py` (currently the entity audit). Off keeps weekly maintenance exactly as before; `--jev` / `--no-jev` override it per run. See [Jev entity audit](#jev-entity-audit-phase-0-opt-in). |
+| `MAINTENANCE_JEV_ENABLED` | `false` | Master switch for the Jev phases of `scripts/weekly_maintenance.py` (entity audit, Jev-confirmed entity merges, entity name correction, Jev-confirmed near-duplicate insights). Off keeps weekly maintenance exactly as before; `--jev` / `--no-jev` override it per run. See [Jev entity audit](#jev-entity-audit-phase-0-opt-in). |
 | `ENTITY_AUDIT_INVALID_THRESHOLD` | `0.2` | Entity audit apply: a `MENTIONS` edge whose "is a specific named entity" probability is below this is deleted (and entities left with no mention are removed). |
 | `ENTITY_AUDIT_RETYPE_CONFIDENCE` | `0.8` | Entity audit apply: an off-schema entity is retyped only when the mean type probability of the mentions voting for the winning type reaches this value. |
+| `ENTITY_NAME_REVIEW_MIN_ALIASES` | `3` | Weekly maintenance entity-name correction: only entities with at least this many aliases (the hubs) are reviewed. |
+| `ENTITY_NAME_MIN_CONFIDENCE` | `0.8` | Entity-name correction: a rename is applied only when Jev's winning spelling has at least this averaged probability (and both option orders agree). |
 
 If a Jev call fails for any reason (no credits, rate limit, timeout, missing key), entity selection logs a warning and falls back to the first `RETRIEVAL_ENTITY_SELECTION_COUNT` entities; retrieval never fails because of Jev. The default stays `llm` until you flip `ENTITY_SELECTION_BACKEND` in `.env` after a pilot.
 
@@ -257,6 +259,7 @@ The embedding dimension is fixed at 4096 by the Postgres schema (`vector(4096)` 
 | `RETRIEVAL_QUERY_VARIANTS_REASONING_EFFORT` | `none` | Reasoning effort for query-variant generation. DeepSeek v4.1 flash takes ~2.5s with `none` vs 6-14s otherwise. |
 | `ANSWER_REASONING_EFFORT` | `low` | Reasoning effort (`none`/`low`/`medium`/`high`) sent for `gpt-*` answer models such as the default `gpt-6-luna`. |
 | `INSIGHT_DEDUP_COSINE_THRESHOLD` | `0.95` | Minimum cosine similarity to reuse an existing insight instead of creating a new one. |
+| `INSIGHT_NEAR_DUP_COSINE_LOW` | `0.88` | Weekly maintenance, Jev only: insight pairs with cosine in `[this, INSIGHT_DEDUP_COSINE_THRESHOLD)` are confirmed by Jev before merging (see [Jev-confirmed merges](#jev-confirmed-merges-names-and-near-duplicates-opt-in)). |
 | `INSIGHT_LINK_TOP_K` | `10` | Number of nearest insight neighbors used for mutual top-K `RELATED_TO` edge creation. |
 | `INSIGHT_EXTRACTION_CONCURRENCY` | `12` | Number of concurrent OpenCode chunk extraction calls per ingestion job. Batched dedup/storage (below) means the LLM fan-out is the remaining serial bottleneck, so this can run wider than when storage was per-insight. |
 | `INSIGHT_PREFILTER_CANDIDATES` | `100` | Candidate pool size pulled from the binary-quantized HNSW prefilter index before full-precision rerank, for both dedup and `RELATED_TO` linking. |
@@ -290,7 +293,7 @@ The embedding dimension is fixed at 4096 by the Postgres schema (`vector(4096)` 
 | `RETRIEVAL_SECOND_HOP_CHUNK_COUNT` | `5` | Max chunk candidates pulled per second-hop entity query. |
 | `RETRIEVAL_FIRST_HOP_SIMILARITY_THRESHOLD` | `0.5` | Minimum similarity for first-hop entity-linked chunks. |
 | `RETRIEVAL_SECOND_HOP_SIMILARITY_THRESHOLD` | `0.5` | Minimum similarity for second-hop entity-linked chunks. |
-| `RETRIEVAL_ENTITY_CONFIDENCE_THRESHOLD` | `0.75` | Minimum `MENTIONS` edge confidence (salience written by the [Jev entity audit](#jev-entity-audit-phase-0-opt-in); `1.0` for mentions never audited) for an entity to be used in graph expansion. It filters the seed chunk's entities and the second-hop candidate entities (`coalesce(confidence, 1.0) >= threshold`), not the chunks reached through a followed entity. All edges are `1.0` until the first audit, so nothing is filtered before then. **Calibrate after the first audit:** salience is the probability-weighted Jev score divided by 3 (levels 0, 0.33, 0.67, 1.0, with values in between), so the default `0.75` would keep only mentions scoring about 2.25 or higher (between important and central); `0.33` keeps everything above a passing mention, `0.67` keeps important and central mentions. Do not change the default blindly; pick the value from the audit's salience distribution. An explicit `0` keeps every mention. |
+| `RETRIEVAL_ENTITY_CONFIDENCE_THRESHOLD` | `0.2` | Minimum `MENTIONS` edge confidence (salience written by the [Jev entity audit](#jev-entity-audit-phase-0-opt-in); `1.0` for mentions never audited) for an entity to be used in graph expansion. It filters the seed chunk's entities and the second-hop candidate entities (`coalesce(confidence, 1.0) >= threshold`), not the chunks reached through a followed entity. **Calibration:** salience is the probability-weighted Jev score divided by 3 (levels 0 passing mention, 0.33 minor, 0.67 important, 1.0 central, with values in between), so `0.2` drops only mentions the audit scored as a passing mention (level 0, e.g. salience 0.05) and keeps everything from minor up; unaudited edges are `1.0` and always pass, so nothing is filtered before the first audit. The previous default `0.75` would have hidden almost every audited mention. Raise it (`0.33` also drops minor mentions, `0.67` keeps only important and central ones) from the salience distribution the audit dry-run prints; an explicit `0` keeps every mention. An existing `.env` that still sets `0.75` overrides this default. |
 | `RETRIEVAL_MAX_GRAPH_LLM_CALLS` | `100` | Shared safety cap on graph-stage LLM calls across a retrieval request. |
 | `RETRIEVAL_MAX_GRAPH_EXPANSION_MS_PER_SEED` | `4000` | Wall-clock budget applied to each seed during graph expansion. |
 | `RETRIEVAL_TEXT_SEARCH_CONFIG` | `english` | Postgres full-text search configuration for sparse retrieval. |
@@ -1450,8 +1453,52 @@ Cost and time: about $6 and about 2 hours for `--full` over ~160k chunks at `JEV
 1. Apply migration 015 and set `OPENROUTER_API_KEY`.
 2. Pilot on a small window: `uv run python scripts/weekly_maintenance.py --dry-run --jev --score --since 1 --skip-entities --skip-insights --skip-consistency --skip-health`. This scores yesterday's chunks and prints the plan; nothing but `entity_mention_audit` is written.
 3. Inspect the plan and the table (`SELECT * FROM entity_mention_audit WHERE is_entity < 0.2 LIMIT 50`). Adjust `ENTITY_AUDIT_INVALID_THRESHOLD` / `ENTITY_AUDIT_RETYPE_CONFIDENCE` if the dropped examples look wrong.
-4. **Before the first `--execute`, decide `RETRIEVAL_ENTITY_CONFIDENCE_THRESHOLD`** from the salience distribution the dry-run prints (see the threshold note in the settings table). `--execute --jev` changes retrieval behavior: as soon as apply writes salience into `MENTIONS.confidence`, the default `0.75` starts hiding every mention below it from graph expansion. Set the variable (for example `0.33`, or `0` to keep every mention) in `.env` and restart the backend first. The Retrieve view in the frontend always sends its own value (it starts at `0.75`), which overrides the environment setting for UI requests; lower it there too, or you will not see the effect of the calibration in the UI.
+4. **Check `RETRIEVAL_ENTITY_CONFIDENCE_THRESHOLD` before the first `--execute`** against the salience distribution the dry-run prints (see the threshold note in the settings table). `--execute --jev` changes retrieval behavior: as soon as apply writes salience into `MENTIONS.confidence`, mentions below the threshold stop being used in graph expansion. The default `0.2` drops only passing mentions (level 0). If your `.env` still sets the old `0.75`, change it (a value that high would hide almost every audited mention) and restart the backend. The Retrieve view in the frontend starts at `0.2` and always sends its own value, which overrides the environment setting for UI requests; change it there too if you calibrate to another value.
 5. Run the first full backfill when no jobs are running: `uv run python scripts/weekly_maintenance.py --execute --jev --full` (scores everything, then applies). It is resumable: if interrupted, rerun the same command. Then set `MAINTENANCE_JEV_ENABLED=true` so the weekly `--execute` run keeps new chunks audited.
+
+#### Jev-confirmed merges, names and near-duplicates (opt-in)
+
+Three more phases use Jev and share the same gate as the entity audit (`--jev` / `MAINTENANCE_JEV_ENABLED`; **off by default**, and with them off the merge phases behave as before except for the survivor rule below). Merges are irreversible, so only the high-confidence band is applied automatically and the middle band goes to review tables for a human.
+
+**Survivor rule (always on, not Jev-gated).** When a cluster of duplicate entities is merged (`merge_semantic_duplicates.py`, `merge_duplicate_entities.py`, and phase 1), the survivor is the row with the **most `MENTIONS` edges** (counted in Memgraph in one batched query, also in dry-run), so the best-connected row keeps its id and the fewest edges move. Ties fall back to the cluster's dominant `entity_type`, then has-embedding, then oldest. The dominant type used to be a hard filter, which let a one-mention row beat a hub just because its type was the majority. Absorbed names still go into the survivor's `aliases`; the survivor's own `canonical_name` is unchanged by the merge.
+
+**Phase 1: Jev-confirmed entity merges.** Candidate pairs still come from today's fuzzy-name + embedding-cosine filters; with Jev on, each pair gets one Jev call (state `{"entity_a": {name, type, aliases[:10]}, "entity_b": {...}}`) with a 3-level alignment Score (0 two different things, 1 closely related and may or may not be the same, 2 one and the same) plus informational Nouls `same_name_variant` and `same_type`. Routing by the probability-weighted score: **>= 1.5 merge** (clustering runs over confirmed pairs only), **0.5 to 1.5 `entity_merge_review`**, **< 0.5 dropped**. A Jev error, or a missing `OPENROUTER_API_KEY`, leaves the pair unconfirmed: it is never merged. Pairs that already have a review row (any status) are neither re-judged nor merged, so a pair you rejected is not auto-merged later. The standalone `merge_semantic_duplicates.py` takes `--jev` for the same behavior.
+
+**Phase 1b: entity name correction** (`src/rag/entity_names.py`; skip with `--skip-entity-names`, bound with `--name-limit`, default 500). The biggest hubs in a long-lived corpus can be misspellings ("Open AI", "Antropic", "Googles") while correctly spelled rows exist separately, because insert-time dedup matches `canonical_name` exactly. For the entities with at least `ENTITY_NAME_REVIEW_MIN_ALIASES` aliases (most aliases first), one Jev call gets `{"entity_type", "names": [canonical_name, *aliases]}` (deduplicated, at most 120) and a Choice "which is the correct, standard real-world spelling?" over the candidates (keys `n0..nK`, asked twice in reversed order and averaged). A rename is proposed only if both orders pick the same spelling, the averaged probability is at least `ENTITY_NAME_MIN_CONFIDENCE`, and it differs from the current name. Under `--execute`: if another entity already has exactly that name (and a compatible type) the rows are **merged** (survivor = more mentions, ends up with the winning name, every other name becomes an alias, `MENTIONS` are repointed by the same code as every other merge); otherwise `canonical_name` is updated in Postgres and on the Memgraph node and the old name becomes an alias. A same-name row of an incompatible type blocks the rename (reported, never applied). `entity_semantic_edges` is invalidated for every touched entity. Not handled: the renamed entity keeps the embedding of its old name, and new extractions of the old misspelling create a fresh row until the next run.
+
+**Phase 2: Jev-confirmed near-duplicate insights** (`--near-dup-limit`, default 2000). With Jev on, the same single prefilter pass also keeps pairs with cosine in `[INSIGHT_NEAR_DUP_COSINE_LOW, --insight-cosine-threshold)` (0.88 to 0.95). Pairs are deduplicated by normalized order, pairs already in `insight_pair_review` are skipped, and the highest-cosine `--near-dup-limit` pairs are judged. One Jev call per pair (state `{"insight_a": text, "insight_b": text}`, 3-level Score: 0 different claims, 1 related claims that differ in substance or scope, 2 the same claim stated differently). **>= 1.5 merge** through the usual insight merge path (oldest survives), **0.5 to 1.5 `insight_pair_review`**, otherwise dropped; errors never merge. Pairs at or above the normal threshold merge as before without a Jev call.
+
+**Dry-run versus execute.** `--dry-run --jev` still calls Jev for all three phases (that is how it can report proposals), so it spends Jev credits, but it writes nothing: no merges, renames or review rows. `--execute` (behind the active-job check and advisory lock) applies confirmed merges and renames and inserts review rows (`ON CONFLICT DO NOTHING`, pair stored in normalized order).
+
+| Flag | Meaning |
+| --- | --- |
+| `--skip-entity-names` | Skip phase 1b even when Jev maintenance is enabled. |
+| `--name-limit N` | Phase 1b: review at most N hub entities per run (default 500, most aliases first). |
+| `--near-dup-limit N` | Phase 2: judge at most N near-duplicate insight pairs per run (default 2000, highest cosine first). |
+
+**Inspecting the review tables.** Nothing in the review tables is applied automatically; they are queues to read (`status` defaults to `pending`):
+
+```sql
+-- entity pairs Jev found closely related but not clearly the same
+SELECT r.id, r.score, a.canonical_name AS a, b.canonical_name AS b, r.reason
+FROM entity_merge_review r
+JOIN entities a ON a.id = r.entity_a
+JOIN entities b ON b.id = r.entity_b
+WHERE r.status = 'pending'
+ORDER BY r.score DESC LIMIT 50;
+
+-- near-duplicate insight pairs
+SELECT r.id, r.cosine, r.score, left(a.content, 120) AS a, left(b.content, 120) AS b
+FROM insight_pair_review r
+JOIN insights a ON a.id = r.insight_a
+JOIN insights b ON b.id = r.insight_b
+WHERE r.status = 'pending'
+ORDER BY r.score DESC LIMIT 50;
+```
+
+Set a row's `status` (for example `'rejected'`) to record your decision; any row, whatever its status, keeps that pair out of future Jev judging and auto-merging.
+
+**Recommended rollout.** (1) Finish the entity audit rollout above (the `0.2` retrieval threshold is part of it). (2) `uv run python scripts/weekly_maintenance.py --dry-run --jev --skip-consistency --skip-health` and read the printed proposals: Jev-confirmed merges (with mention counts), proposed renames and merges into existing rows, blocked renames, review-band counts, and the cost line. (3) Query the review tables as above. (4) When the proposals look right, run `uv run python scripts/weekly_maintenance.py --execute --jev` with no jobs running; then set `MAINTENANCE_JEV_ENABLED=true` for the weekly run. Only review-band pairs are remembered (in the review tables); pairs Jev dropped are judged again on later runs, which costs a few Jev calls per pair.
 
 Two notes on side effects. Scoring runs before the advisory lock (it must, so it can overlap intake), so two overlapping `--execute --jev` runs would both spend Jev credits (they cannot corrupt data: only the apply phase mutates, and it is serialized by the lock). And `_invalidate_entity_edge_cache` now commits its deletes (it previously did not, so the entity-merge phase left stale `entity_semantic_edges` rows behind); the first `--execute` after upgrading clears whatever orphaned cache rows built up.
 

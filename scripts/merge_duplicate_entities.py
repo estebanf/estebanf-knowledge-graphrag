@@ -8,17 +8,28 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 import argparse
 
 from rag.db import get_connection, vacuum_analyze_entities
+from rag.entity_audit import attach_mention_counts
 from rag.graph_db import get_graph_driver
 
 
 def pick_survivor(members: list[dict]) -> dict:
     """Pick the entity to keep.
 
-    Prefer: has_embedding=True first, then oldest created_at.
+    Prefer: most MENTIONS edges (`member["mentions"]`, set by
+    `attach_mention_counts`; missing counts as 0), then has_embedding=True,
+    then oldest created_at.
     """
     if not members:
         raise ValueError("pick_survivor requires at least one member")
-    return sorted(members, key=lambda m: (not m["has_embedding"], m["created_at"]))[0]
+    return sorted(
+        members,
+        key=lambda m: (
+            -m.get("mentions", 0),
+            not m["has_embedding"],
+            m["created_at"] is None,
+            m["created_at"],
+        ),
+    )[0]
 
 
 def fetch_cross_type_duplicate_groups(conn) -> list[dict]:
@@ -60,13 +71,22 @@ def fetch_cross_type_duplicate_groups(conn) -> list[dict]:
 def pick_survivor_cross_type(members: list[dict]) -> dict:
     """Pick the entity to keep for cross-type groups.
 
-    Prefer the most-frequent entity_type among members, then has_embedding=True, then oldest created_at.
+    Prefer the most MENTIONS edges, then the most-frequent entity_type among members
+    (tie-breaker only), then has_embedding=True, then oldest created_at.
     """
     from collections import Counter
     type_counts = Counter(m["entity_type"] for m in members)
     dominant_type = type_counts.most_common(1)[0][0]
-    preferred = [m for m in members if m["entity_type"] == dominant_type]
-    return sorted(preferred, key=lambda m: (not m["has_embedding"], m["created_at"]))[0]
+    return sorted(
+        members,
+        key=lambda m: (
+            -m.get("mentions", 0),
+            m["entity_type"] != dominant_type,
+            not m["has_embedding"],
+            m["created_at"] is None,
+            m["created_at"],
+        ),
+    )[0]
 
 
 def fetch_duplicate_groups(conn) -> list[dict]:
@@ -175,6 +195,7 @@ def merge_memgraph(session, survivor_id: str, dup_ids: list[str]) -> int:
 
 def merge_group(conn, session, group: dict, dry_run: bool, survivor_picker=None) -> int:
     picker = survivor_picker or pick_survivor
+    attach_mention_counts(session, group["members"])
     survivor = picker(group["members"])
     dup_ids = [m["id"] for m in group["members"] if m["id"] != survivor["id"]]
 

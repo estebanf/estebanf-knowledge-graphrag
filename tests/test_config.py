@@ -93,6 +93,40 @@ def test_entity_audit_and_maintenance_jev_defaults(monkeypatch):
         Settings(_env_file=None)
 
 
+def test_entity_confidence_threshold_default_is_calibrated_to_passing_mentions():
+    """Salience is Score/3 (levels 0, .33, .67, 1). 0.2 drops only passing
+    mentions (level 0); the previous 0.75 hid nearly every audited mention.
+    Reads the field default, not `settings`, so a developer's `.env` (which may
+    still carry the old 0.75) cannot mask a wrong default."""
+    from rag.config import Settings
+
+    default = Settings.model_fields["RETRIEVAL_ENTITY_CONFIDENCE_THRESHOLD"].default
+    assert default == 0.2
+    assert 0.0 < default < 1 / 3  # above level 0 salience, below level 1 (0.33)
+
+
+def test_jev_name_and_near_dup_maintenance_defaults(monkeypatch):
+    import pytest
+    from pydantic import ValidationError
+    from rag.config import Settings
+
+    for key in [
+        "ENTITY_NAME_REVIEW_MIN_ALIASES",
+        "ENTITY_NAME_MIN_CONFIDENCE",
+        "INSIGHT_NEAR_DUP_COSINE_LOW",
+    ]:
+        monkeypatch.delenv(key, raising=False)
+    s = Settings(_env_file=None)
+    assert s.ENTITY_NAME_REVIEW_MIN_ALIASES == 3
+    assert s.ENTITY_NAME_MIN_CONFIDENCE == 0.8
+    assert s.INSIGHT_NEAR_DUP_COSINE_LOW == 0.88
+    assert s.INSIGHT_NEAR_DUP_COSINE_LOW < s.INSIGHT_DEDUP_COSINE_THRESHOLD
+
+    monkeypatch.setenv("ENTITY_NAME_MIN_CONFIDENCE", "1.5")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
 def test_profiling_and_chunk_validation_backend_defaults(monkeypatch):
     for key in [
         "PROFILING_BACKEND",

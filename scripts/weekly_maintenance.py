@@ -18,7 +18,18 @@ One command keeps the corpus deduplicated and the vector indexes healthy:
   1. Entity merge       — reuses scripts/merge_semantic_duplicates.py's
                            run_entity_merge() (fuzzy + cosine candidate
                            detection, union-find clustering, Postgres +
-                           Memgraph merge). It vacuums `entities` itself.
+                           Memgraph merge). It vacuums `entities` itself. The
+                           survivor of a cluster is its row with the most
+                           MENTIONS edges. With Jev on, every candidate pair is
+                           first confirmed by Jev: only confirmed pairs merge,
+                           borderline ones go to `entity_merge_review`.
+  1b. Entity names       — OPTIONAL, Jev-backed (same gate as phase 0; skip
+                           with `--skip-entity-names`): for the hub entities
+                           (>= ENTITY_NAME_REVIEW_MIN_ALIASES aliases, at most
+                           `--name-limit`), Jev picks the correct spelling among
+                           canonical name + aliases; a confident rename either
+                           updates the name or merges into the existing row that
+                           already has it (src/rag/entity_names.py).
   2. Insight merge       — the load-bearing phase (doc-review P2): finds
                            near-duplicate insights via the same binary-HNSW
                            prefilter + full-precision rerank pattern U1 uses
@@ -29,7 +40,12 @@ One command keeps the corpus deduplicated and the vector indexes healthy:
                            unscoped corpus-wide self-join. `--full` opts into
                            a whole-corpus sweep (every insight is a probe);
                            documented as slower and occasional, not the
-                           weekly default.
+                           weekly default. With Jev on, pairs whose cosine is in
+                           [INSIGHT_NEAR_DUP_COSINE_LOW, threshold) are also
+                           collected (same single prefilter pass) and confirmed
+                           by Jev: same claim -> merge, related -> the
+                           `insight_pair_review` table, else dropped. At most
+                           `--near-dup-limit` pairs per run.
   3. Orphan/consistency  — reuses src/rag/ingestion.py's
                            _cleanup_orphan_insights() directly; additionally
                            *reports* (does not auto-fix) Postgres rows with
@@ -66,6 +82,13 @@ mutation (including the audit apply) still happens only after the guard and
 under the advisory lock. By default scoring runs under `--execute` and not
 under `--dry-run`; `--dry-run --score` spends Jev credits but still writes only
 the audit table.
+
+The other Jev phases (merge confirmation, entity names, insight near-duplicates)
+judge pairs/entities with Jev in a `--dry-run` too, which spends Jev credits, but
+a dry-run writes nothing to the corpus and nothing to the review tables. Only
+`--execute` (behind the active-job check and advisory lock) merges, renames and
+inserts review rows. A Jev error or a missing OPENROUTER_API_KEY never causes a
+merge or rename: the item stays unconfirmed.
 """
 import argparse
 import sys
@@ -73,7 +96,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from rag import entity_audit
+from rag import entity_audit, entity_names, jev_dedup
 from rag.config import settings
 from rag.db import (
     get_connection,
@@ -276,23 +299,105 @@ def merge_insights_memgraph(session, survivor_id: str, dup_ids: list[str]) -> in
     return edges_repointed
 
 
+def fetch_insight_texts(conn, ids: list[str]) -> dict[str, str]:
+    if not ids:
+        return {}
+    rows = conn.execute(
+        "SELECT id::text, content FROM insights WHERE id = ANY(%s::uuid[])",
+        (ids,),
+    ).fetchall()
+    return {r[0]: r[1] or "" for r in rows}
+
+
+def confirm_near_duplicates(
+    band_pairs: list[tuple[str, str, float]],
+    dry_run: bool,
+    near_dup_limit: int,
+) -> list[tuple[str, str, float]]:
+    """Jev-confirm insight pairs whose cosine is in the near-duplicate band.
+
+    Pairs are normalized/deduplicated first (with `--since`, both members are
+    often probes, which would double the Jev calls and slip the reversed copy
+    past the review table's UNIQUE constraint), pairs that already have an
+    `insight_pair_review` row (any status) are dropped, the rest are sorted by
+    cosine descending and capped at `near_dup_limit`. Routing (`rag.jev_dedup`):
+    score >= 1.5 -> returned for merging; 0.5..1.5 -> `insight_pair_review`
+    under --execute (only reported in a dry-run); lower -> dropped; Jev error ->
+    unconfirmed (not merged). Calls Jev even in a dry-run.
+    """
+    prefix = "[DRY RUN] " if dry_run else ""
+    pairs = jev_dedup.dedupe_pairs(band_pairs)
+    if not pairs:
+        print(f"{prefix}Insight near-duplicate band: no candidate pairs.", flush=True)
+        return []
+
+    with get_connection() as conn:
+        reviewed = jev_dedup.fetch_reviewed_insight_pairs(conn)
+    fresh = [p for p in pairs if jev_dedup.normalize_pair(p[0], p[1]) not in reviewed]
+    fresh.sort(key=lambda p: -p[2])
+    capped = fresh[:near_dup_limit]
+    print(
+        f"{prefix}Insight near-duplicate band: {len(pairs)} pair(s), "
+        f"{len(pairs) - len(fresh)} already in insight_pair_review; judging "
+        f"{len(capped)} (cap --near-dup-limit {near_dup_limit}, highest cosine first)...",
+        flush=True,
+    )
+    if not capped:
+        return []
+
+    with get_connection() as conn:
+        texts = fetch_insight_texts(conn, [i for p in capped for i in p[:2]])
+    judgements, stats = jev_dedup.judge_insight_pairs(capped, texts)
+    counts = jev_dedup.summarize(judgements)
+    print(
+        f"{prefix}Jev insight pairs: {counts['merge']} same claim (merge), {counts['review']} related "
+        f"(review), {counts['drop']} different, {counts['error']} unconfirmed (Jev error); "
+        f"{stats.describe()}",
+        flush=True,
+    )
+    if counts["review"]:
+        if dry_run:
+            print(f"{prefix}Would add {counts['review']} pair(s) to insight_pair_review.")
+        else:
+            with get_connection() as conn:
+                added = jev_dedup.insert_insight_reviews(conn, judgements)
+            print(f"Added {added} pair(s) to insight_pair_review.")
+    return [(j.id_a, j.id_b, j.similarity) for j in judgements if j.route == jev_dedup.ROUTE_MERGE]
+
+
 def run_insight_merge(
     dry_run: bool,
     since_days: int | None,
     cosine_threshold: float,
     prefilter_candidates: int = settings.INSIGHT_PREFILTER_CANDIDATES,
+    use_jev: bool = False,
+    near_dup_low: float = settings.INSIGHT_NEAR_DUP_COSINE_LOW,
+    near_dup_limit: int = 2000,
 ) -> int:
-    """Phase 2: near-duplicate insight merge. Returns total merged count."""
+    """Phase 2: near-duplicate insight merge. Returns total merged count.
+
+    With `use_jev`, one prefilter pass runs at `min(near_dup_low, cosine_threshold)`
+    and the result is split client-side: pairs at or above `cosine_threshold`
+    merge as before, the band [near_dup_low, cosine_threshold) goes to Jev
+    (`confirm_near_duplicates`) and only its confirmed pairs join the merge.
+    """
     prefix = "[DRY RUN] " if dry_run else ""
     scope_desc = "whole corpus (--full)" if since_days is None else f"last {since_days} day(s)"
     print(f"{prefix}Insight merge: probe scope = {scope_desc}.", flush=True)
 
+    search_threshold = min(near_dup_low, cosine_threshold) if use_jev else cosine_threshold
     with get_connection() as conn:
         probes = fetch_probe_insights(conn, since_days)
         print(f"{prefix}Probing {len(probes)} insight(s) against the corpus...", flush=True)
-        pairs = find_insight_candidate_pairs(conn, probes, cosine_threshold, prefilter_candidates)
+        pairs = find_insight_candidate_pairs(conn, probes, search_threshold, prefilter_candidates)
 
-    print(f"{prefix}Insight candidate pairs above threshold: {len(pairs)}.", flush=True)
+    if use_jev:
+        band_pairs = [p for p in pairs if p[2] < cosine_threshold]
+        pairs = [p for p in pairs if p[2] >= cosine_threshold]
+        print(f"{prefix}Insight candidate pairs above threshold: {len(pairs)}.", flush=True)
+        pairs = pairs + confirm_near_duplicates(band_pairs, dry_run, near_dup_limit)
+    else:
+        print(f"{prefix}Insight candidate pairs above threshold: {len(pairs)}.", flush=True)
 
     uf = UnionFind()
     for id_a, id_b, _sim in pairs:
@@ -552,6 +657,45 @@ def run_entity_audit_apply(dry_run: bool, since_days: int | None, rescore: bool)
         vacuum_analyze_entities()
 
 
+# ── Phase 1b: Jev entity name correction ──────────────────────────────────────
+
+
+def entity_names_active(args: argparse.Namespace) -> bool:
+    return jev_enabled(args) and not args.skip_entity_names
+
+
+def _merge_entities_into(session, conn, survivor_id: str, dup_ids: list[str], members: list[dict]) -> int:
+    """The existing entity merge (Memgraph MENTIONS repoint first, then
+    Postgres aliases + delete), handed to `rag.entity_names` so renames that
+    collide with an existing row merge exactly like every other merge. The
+    caller commits."""
+    edges = entity_merge.merge_memgraph(session, survivor_id, dup_ids)
+    entity_merge.merge_postgres(conn, survivor_id, dup_ids, members)
+    return edges
+
+
+def run_entity_name_correction(dry_run: bool, name_limit: int) -> set[str]:
+    """Phase 1b. Returns the entity ids touched (empty in a dry-run); the
+    semantic-edge cache is invalidated and `entities` vacuumed here when
+    anything changed."""
+    with get_connection() as conn, get_graph_driver() as driver:
+        with driver.session() as session:
+            result = entity_names.run_name_correction(
+                conn,
+                session,
+                dry_run=dry_run,
+                limit=name_limit,
+                merge_fn=_merge_entities_into,
+                pick_survivor=entity_merge.pick_survivor,
+            )
+    if dry_run or not result.touched_ids:
+        return set()
+    _invalidate_entity_edge_cache(result.touched_ids)
+    if result.deleted_ids:
+        vacuum_analyze_entities()
+    return set(result.touched_ids)
+
+
 # ── Community-run concurrency guard ───────────────────────────────────────────
 
 
@@ -594,7 +738,11 @@ def build_parser() -> argparse.ArgumentParser:
     jev_group = parser.add_mutually_exclusive_group()
     jev_group.add_argument(
         "--jev", action="store_true",
-        help="Enable the Jev entity audit phase for this run (default: MAINTENANCE_JEV_ENABLED).",
+        help=(
+            "Enable the Jev phases for this run (default: MAINTENANCE_JEV_ENABLED): entity audit, "
+            "Jev-confirmed entity merges, entity name correction, Jev-confirmed near-duplicate "
+            "insights. They spend Jev credits even with --dry-run."
+        ),
     )
     jev_group.add_argument(
         "--no-jev", action="store_true",
@@ -616,6 +764,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--rescore", action="store_true",
         help="Entity audit: re-score mentions that already have an audit row.",
+    )
+    parser.add_argument(
+        "--skip-entity-names", action="store_true",
+        help="Skip phase 1b (Jev entity name correction) even when Jev maintenance is enabled.",
+    )
+    parser.add_argument(
+        "--name-limit", type=int, default=500,
+        help=(
+            "Phase 1b: review at most this many hub entities per run (most aliases first; hubs "
+            "have >= ENTITY_NAME_REVIEW_MIN_ALIASES aliases). One Jev call each."
+        ),
+    )
+    parser.add_argument(
+        "--near-dup-limit", type=int, default=2000,
+        help=(
+            "Phase 2 with Jev: judge at most this many near-duplicate insight pairs "
+            "(cosine in [INSIGHT_NEAR_DUP_COSINE_LOW, --insight-cosine-threshold), highest "
+            "cosine first) per run. One Jev call each."
+        ),
     )
     parser.add_argument("--skip-entities", action="store_true", help="Skip phase 1 (entity merge).")
     parser.add_argument("--skip-insights", action="store_true", help="Skip phase 2 (insight merge).")
@@ -656,14 +823,22 @@ def _run_phases(args: argparse.Namespace) -> int:
         print("== Phase 0: entity audit ==", flush=True)
         run_entity_audit_apply(dry_run=dry_run, since_days=since_days, rescore=args.rescore)
 
+    use_jev = jev_enabled(args)
+
     if not args.skip_entities:
         print("== Phase 1: entity merge ==", flush=True)
-        merged_count, merged_entity_ids = entity_merge.run_entity_merge(dry_run=dry_run)
+        merged_count, merged_entity_ids = entity_merge.run_entity_merge(
+            dry_run=dry_run, use_jev=use_jev
+        )
         if not dry_run:
             _invalidate_entity_edge_cache(merged_entity_ids)
     else:
         print("== Phase 1: entity merge (skipped) ==")
         merged_count = 0
+
+    if entity_names_active(args):
+        print("== Phase 1b: entity name correction ==", flush=True)
+        run_entity_name_correction(dry_run=dry_run, name_limit=args.name_limit)
 
     if not args.skip_insights:
         print("== Phase 2: insight merge ==", flush=True)
@@ -671,6 +846,8 @@ def _run_phases(args: argparse.Namespace) -> int:
             dry_run=dry_run,
             since_days=since_days,
             cosine_threshold=args.insight_cosine_threshold,
+            use_jev=use_jev,
+            near_dup_limit=args.near_dup_limit,
         )
     else:
         print("== Phase 2: insight merge (skipped) ==")

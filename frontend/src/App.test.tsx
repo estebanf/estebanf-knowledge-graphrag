@@ -285,6 +285,37 @@ describe("App", () => {
     );
   });
 
+  test("retrieve defaults the entity confidence threshold to 0.2 and sends it", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/retrieve") {
+        return {
+          ok: true,
+          json: async () => retrieveResponse,
+        };
+      }
+      return {
+        ok: true,
+        json: async () => sourceResponse,
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderApp();
+    await goToRetrieve();
+
+    await userEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    expect(screen.getByLabelText(/entity confidence threshold/i)).toHaveValue(0.2);
+
+    await userEvent.type(screen.getByLabelText(/semantic query/i), "economics of agents{enter}");
+    await screen.findByText(/Economics of GenAI/i, { selector: ".related-group__label" });
+
+    const retrieveCall = fetchMock.mock.calls.find(([input]) => String(input) === "/api/retrieve");
+    expect(retrieveCall).toBeDefined();
+    const body = JSON.parse(String((retrieveCall![1] as RequestInit).body));
+    expect(body.entity_confidence_threshold).toBe(0.2);
+  });
+
   test("loads answer models and streams answer before showing evidence", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
