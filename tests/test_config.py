@@ -7,7 +7,6 @@ def test_graph_config_defaults(monkeypatch):
     s = Settings(_env_file=None)
     assert settings.MEMGRAPH_URL == "bolt://localhost:7687"
     assert s.MODEL_ENTITY_EXTRACTION == "gpt-6-luna"
-    assert settings.ENTITY_DEDUP_COSINE_THRESHOLD == 0.92
 
 
 def test_retrieval_config_defaults(monkeypatch):
@@ -162,3 +161,19 @@ def test_relationship_extraction_settings_removed():
     from rag.config import Settings
     assert not hasattr(Settings(_env_file=None), "MODEL_RELATIONSHIP_EXTRACTION")
     assert not hasattr(Settings(_env_file=None), "RELATIONSHIP_CONFIDENCE_THRESHOLD")
+
+
+def test_removed_settings_are_not_defined():
+    from rag.config import Settings
+
+    s = Settings(_env_file=None)
+    for name in [
+        "ENTITY_DEDUP_COSINE_THRESHOLD",
+        "EMBEDDING_DIMENSIONS",
+        "RETRIEVAL_MAX_GRAPH_EXPANSION_MS",
+        "RETRIEVAL_WEIGHT_STEP_BACK",
+        "RAG_DATA_DIR",
+        "RAG_UPLOAD_DIR",
+    ]:
+        assert not hasattr(s, name), name
+    assert s.retrieval_variant_weight("step_back") == 1.0

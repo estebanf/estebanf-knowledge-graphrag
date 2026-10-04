@@ -35,7 +35,7 @@ def test_normalize_query_variants_drops_empty_and_duplicate_values():
             "original": "What changed in the policy?",
             "hyde": "Hypothetical answer",
             "expanded": "What changed in the policy?",
-            "step_back": "  ",
+            "step_back": "organizational policy",
             "decomposed": ["What changed in the policy?", "Who changed it?", ""],
         }
     )
@@ -1024,7 +1024,6 @@ def test_generate_insight_query_variants_returns_clean_dict(monkeypatch):
             "original": "what changed",
             "hyde": "A policy amendment occurred",
             "expanded": "policy modification amendment change",
-            "step_back": "organizational policy changes",
         }
     monkeypatch.setattr("rag.retrieval._chat_json_opencode", fake_opencode)
 
@@ -1061,7 +1060,7 @@ def test_run_insight_first_stage_retrieval_fuses_per_variant_results(monkeypatch
     assert all(r.score > 0 for r in results)
 
 
-def test_run_first_stage_retrieval_omits_step_back_and_gates_expanded(monkeypatch):
+def test_run_first_stage_retrieval_gates_expanded(monkeypatch):
     from rag.retrieval import run_first_stage_retrieval
 
     calls: list[tuple[str, str]] = []
@@ -1108,7 +1107,6 @@ def test_run_first_stage_retrieval_omits_step_back_and_gates_expanded(monkeypatc
         "original": "How to optimize broker submissions with agents",
         "expanded": "insurance broker agent submission workflow optimization",
         "hyde": "Broker submissions can be optimized with agentic triage.",
-        "step_back": "insurance operations optimization",
         "decomposed": ["broker submission intake", "agent workflow bottlenecks"],
     }
 
@@ -1121,7 +1119,6 @@ def test_run_first_stage_retrieval_omits_step_back_and_gates_expanded(monkeypatc
     )
 
     queried_texts = [query_text for _, query_text in calls]
-    assert "insurance operations optimization" not in queried_texts
     assert "insurance broker agent submission workflow optimization" not in queried_texts
     assert "How to optimize broker submissions with agents" in queried_texts
     assert "Broker submissions can be optimized with agentic triage." in queried_texts
@@ -1158,7 +1155,6 @@ def test_run_first_stage_retrieval_includes_expanded_for_short_query(monkeypatch
         variants={
             "original": "insurance triage",
             "expanded": "insurance claim intake triage prioritization",
-            "step_back": "insurance operations",
         },
         source_ids=[],
         filters={},
@@ -1166,10 +1162,9 @@ def test_run_first_stage_retrieval_includes_expanded_for_short_query(monkeypatch
     )
 
     assert "insurance claim intake triage prioritization" in calls
-    assert "insurance operations" not in calls
 
 
-def test_run_insight_first_stage_retrieval_omits_step_back_and_gates_expanded(monkeypatch):
+def test_run_insight_first_stage_retrieval_gates_expanded(monkeypatch):
     from rag.retrieval import InsightSearchResult, run_insight_first_stage_retrieval
 
     calls: list[str] = []
@@ -1188,14 +1183,12 @@ def test_run_insight_first_stage_retrieval_omits_step_back_and_gates_expanded(mo
             "original": "Biggest challenges in manufacturing right now",
             "expanded": "manufacturing supply chain labor automation challenges 2024",
             "hyde": "Manufacturers face labor, cost, and supply chain pressure.",
-            "step_back": "industrial sector challenges",
         },
         source_ids=[],
         filters={},
         rrf_k=60,
     )
 
-    assert "industrial sector challenges" not in calls
     assert "manufacturing supply chain labor automation challenges 2024" not in calls
     assert "Biggest challenges in manufacturing right now" in calls
     assert "Manufacturers face labor, cost, and supply chain pressure." in calls

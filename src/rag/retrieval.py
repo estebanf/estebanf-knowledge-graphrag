@@ -173,7 +173,7 @@ def normalize_query_variants(raw: dict) -> dict[str, object]:
     seen: set[str] = set()
     variants: dict[str, object] = {}
 
-    for key in ("original", "hyde", "expanded", "step_back"):
+    for key in ("original", "hyde", "expanded"):
         value = raw.get(key)
         if not isinstance(value, str):
             continue

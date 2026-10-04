@@ -120,7 +120,7 @@ The repo is split into a few main areas:
 - `community retrieve` resolves source scope through a lightweight retrieval-stage pass, not full retrieval result expansion.
 - `--trace` on retrieval still prints live activity first and the final JSON block last.
 - Retrieval config remains env-backed through `src/rag/config.py`.
-- Retrieval starts chunk and insight variant generation in parallel. Active first-stage variants are `original`, HyDE, decomposed chunk sub-queries, and gated `expanded`; `step_back` is no longer scheduled by default.
+- Retrieval starts chunk and insight variant generation in parallel. Active first-stage variants are `original`, HyDE, decomposed chunk sub-queries, and gated `expanded`; `step_back` variant support (and its weight setting) has been removed.
 - Dense chunk and insight retrieval over 4096-dimensional embeddings depends on the binary-quantized HNSW prefilter indexes from `scripts/migrate/009_binary_vector_prefilter_indexes.sql`, followed by full-vector reranking in SQL.
 - Chunk graph expansion uses deterministic `query + entity` expansion queries by default. `RETRIEVAL_USE_LLM_ENTITY_QUERIES=true` restores the slower LLM-written entity query behavior.
 - Second-hop chunk entity selection is deterministic by default. `RETRIEVAL_USE_LLM_SECOND_HOP_SELECTION=true` restores slower LLM-backed second-hop selection.
@@ -176,6 +176,6 @@ Pick verification based on the area you changed:
 - auth (api keys + sessions + gating): `pytest -q tests/test_api_auth_apikey.py tests/test_api_auth_session.py tests/test_api_gating.py`
 - new server APIs (ingest, jobs, sources delete, workers, mcp): `pytest -q tests/test_api_ingest.py tests/test_api_jobs.py tests/test_api_sources_delete.py tests/test_api_workers.py tests/test_worker_supervisor.py tests/test_mcp_server.py`
 - CLI HTTP path: `pytest -q tests/test_cli_api_mode.py tests/test_cli_config.py tests/test_api_client.py`
-- end-to-end against the live stack: `scripts/smoke_e2e.sh` (requires `docker compose up -d`)
+- end-to-end against the live stack: `scripts/smoke_e2e.sh` (requires `docker compose up -d` and `API_KEY`/`ADMIN_PASSWORD` env vars; cleans up its own key and user — see README Verification)
 
 When unsure, read the README verification section and then narrow to the impacted area.

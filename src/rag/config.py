@@ -33,7 +33,6 @@ class Settings(BaseSettings):
     MODEL_RETRIEVAL_RERANKER: str = "cohere/rerank-v3.5"
 
     # Embedding
-    EMBEDDING_DIMENSIONS: Annotated[int, Field(gt=0)] = 4096
 
     # Chunking / validation
     CHUNK_VALIDATION_SAMPLE_RATE: Annotated[float, Field(ge=0.0, le=1.0)] = 0.10
@@ -44,7 +43,6 @@ class Settings(BaseSettings):
     # Entity extraction runs on OpenCode Go (rag.opencode), not OpenRouter.
     MODEL_ENTITY_EXTRACTION: str = "gpt-6-luna"
     MODEL_IMAGE_DESCRIPTION: str = "google/gemini-2.0-flash-lite-001"
-    ENTITY_DEDUP_COSINE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.92
     GRAPH_EXTRACTION_CONCURRENCY: Annotated[int, Field(gt=0)] = 8
 
     # OpenCode Go: single key for answers, retrieval query variants, insight
@@ -93,13 +91,11 @@ class Settings(BaseSettings):
     RETRIEVAL_SECOND_HOP_SIMILARITY_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.5
     RETRIEVAL_ENTITY_CONFIDENCE_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] = 0.75
     RETRIEVAL_MAX_GRAPH_LLM_CALLS: Annotated[int, Field(gt=0)] = 100
-    RETRIEVAL_MAX_GRAPH_EXPANSION_MS: Annotated[int, Field(gt=0)] = 4000
     RETRIEVAL_MAX_GRAPH_EXPANSION_MS_PER_SEED: Annotated[int, Field(gt=0)] = 4000
     RETRIEVAL_TEXT_SEARCH_CONFIG: str = "english"
     RETRIEVAL_WEIGHT_ORIGINAL: Annotated[float, Field(ge=0.0)] = 1.0
     RETRIEVAL_WEIGHT_DECOMPOSED: Annotated[float, Field(ge=0.0)] = 1.0
     RETRIEVAL_WEIGHT_EXPANDED: Annotated[float, Field(ge=0.0)] = 0.85
-    RETRIEVAL_WEIGHT_STEP_BACK: Annotated[float, Field(ge=0.0)] = 0.75
     RETRIEVAL_WEIGHT_HYDE: Annotated[float, Field(ge=0.0)] = 0.65
     RETRIEVAL_FINAL_ROOT_WEIGHT: Annotated[float, Field(ge=0.0)] = 0.60
     RETRIEVAL_FINAL_FIRST_HOP_WEIGHT: Annotated[float, Field(ge=0.0)] = 0.25
@@ -150,10 +146,8 @@ class Settings(BaseSettings):
     STAGE_DRIFT_WARN_FACTOR: Annotated[float, Field(gt=0)] = 3.0
 
     # Server / auth
-    RAG_DATA_DIR: Path = Path("./data")
     RAG_API_KEYS_PATH: Path = Path("./data/api_keys.toml")
     RAG_WORKER_LOG_DIR: Path = Path("./data/worker_logs")
-    RAG_UPLOAD_DIR: Path = Path("./data/uploads")
     RAG_FRONTEND_ORIGIN: str = "http://localhost"
     RAG_COOKIE_SECURE: bool = False
     RAG_SESSION_TTL_HOURS: Annotated[int, Field(gt=0)] = 24 * 7
@@ -165,7 +159,6 @@ class Settings(BaseSettings):
         return {
             "original": self.RETRIEVAL_WEIGHT_ORIGINAL,
             "expanded": self.RETRIEVAL_WEIGHT_EXPANDED,
-            "step_back": self.RETRIEVAL_WEIGHT_STEP_BACK,
             "hyde": self.RETRIEVAL_WEIGHT_HYDE,
         }.get(variant_name, 1.0)
 

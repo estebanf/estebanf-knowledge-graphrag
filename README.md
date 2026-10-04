@@ -14,7 +14,7 @@ Two roles to keep straight:
 
 ## Requirements
 
-- Server: Docker Desktop or a compatible Docker engine; Python `3.11+` only needed for operator scripts (e.g. `scripts/create_user.py`).
+- Server: Docker Desktop or a compatible Docker engine; Python `3.11+` with the project installed (`pip install -e .`) for host-run operator scripts such as `scripts/create_user.py` and `scripts/smoke_e2e.sh`.
 - Laptop CLI: Python `3.11+`.
 - OpenRouter API key (server-side) with access to chat, embedding, and reranker models — see [Model selection](#model-selection).
 
@@ -52,9 +52,11 @@ Two roles to keep straight:
 5. Create at least one frontend user:
 
    ```bash
-   docker compose exec backend python scripts/create_user.py --username admin
+   venv/bin/python scripts/create_user.py --username admin
    # (prompts for password)
    ```
+
+   Run this **from the host**, inside the repo checkout with the project installed in `venv` (`pip install -e .`). The backend image only contains `src/`, so `docker compose exec backend python scripts/create_user.py` does not work. The script connects through `POSTGRES_URL` from the repo `.env`, which must point at the published Postgres port (the default `localhost:5432`).
 
 6. Create at least one API key. Edit `data/api_keys.toml` — the backend reloads on mtime change:
 
@@ -144,16 +146,13 @@ All runtime settings are env-backed. The CLI, backend, worker, and Docker servic
 | `FRONTEND_PORT` | `80` | Host port mapped to the nginx-served frontend container. |
 | `OPENROUTER_API_KEY` | empty | Required for embeddings and all LLM-backed stages. |
 | `LOG_LEVEL` | `INFO` | Application log verbosity. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP collector endpoint for telemetry if observability is enabled. |
 
 ### Server / auth
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `RAG_DATA_DIR` | `./data` | Base data directory mounted into the backend container. |
 | `RAG_API_KEYS_PATH` | `./data/api_keys.toml` | File-backed API keys store. Reloaded on mtime change. |
 | `RAG_WORKER_LOG_DIR` | `./data/worker_logs` | Where supervised worker subprocesses write their logs. |
-| `RAG_UPLOAD_DIR` | `./data/uploads` | Scratch space for in-flight multipart uploads. |
 | `RAG_FRONTEND_ORIGIN` | `http://localhost` | Origin allowed by CORS for credentialed requests. Set to your real domain in production. |
 | `RAG_COOKIE_SECURE` | `false` | Set to `true` behind HTTPS so session cookies carry the `Secure` flag. |
 | `RAG_SESSION_TTL_HOURS` | `168` | Session lifetime. |
@@ -185,12 +184,12 @@ All runtime settings are env-backed. The CLI, backend, worker, and Docker servic
 
 ### Embedding, chunking, and graph extraction
 
+The embedding dimension is fixed at 4096 by the Postgres schema (`vector(4096)` columns and `bit(4096)` prefilter indexes); it is not configurable, and switching `MODEL_EMBEDDING` to a model with a different output size requires a schema migration.
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `EMBEDDING_DIMENSIONS` | `4096` | Expected vector length stored in Postgres. |
 | `CHUNK_VALIDATION_SAMPLE_RATE` | `0.10` | Fraction of chunks sampled for validation on standard documents. |
 | `CHUNK_VALIDATION_SAMPLE_RATE_HIGH_STAKES` | `0.25` | Higher validation sampling rate for high-stakes domains. |
-| `ENTITY_DEDUP_COSINE_THRESHOLD` | `0.92` | Similarity threshold used when deduplicating entities. |
 | `GRAPH_EXTRACTION_CONCURRENCY` | `8` | Number of concurrent entity-extraction LLM calls per ingestion job; Memgraph/Postgres writes are batched afterward, not threaded. |
 | `STAGE_FAILURE_RATE_THRESHOLD` | `0.25` | Fraction of per-chunk LLM extraction failures (graph or insight extraction) tolerated before the stage fails outright instead of completing with recorded `failed_chunks`. |
 | `STAGE_DRIFT_WARN_FACTOR` | `3.0` | Multiplier over the pinned `stage_duration_baseline` (see `rag jobs stats --set-baseline`) above which a stage's duration triggers a drift warning log. |
@@ -242,7 +241,6 @@ All runtime settings are env-backed. The CLI, backend, worker, and Docker servic
 | `RETRIEVAL_SECOND_HOP_SIMILARITY_THRESHOLD` | `0.5` | Minimum similarity for second-hop entity-linked chunks. |
 | `RETRIEVAL_ENTITY_CONFIDENCE_THRESHOLD` | `0.75` | Minimum relationship confidence used during graph expansion. |
 | `RETRIEVAL_MAX_GRAPH_LLM_CALLS` | `100` | Shared safety cap on graph-stage LLM calls across a retrieval request. |
-| `RETRIEVAL_MAX_GRAPH_EXPANSION_MS` | `4000` | Global graph expansion budget knob retained in config. |
 | `RETRIEVAL_MAX_GRAPH_EXPANSION_MS_PER_SEED` | `4000` | Wall-clock budget applied to each seed during graph expansion. |
 | `RETRIEVAL_TEXT_SEARCH_CONFIG` | `english` | Postgres full-text search configuration for sparse retrieval. |
 | `RETRIEVAL_WEIGHT_ORIGINAL` | `1.0` | Weight applied to the original query path in first-stage fusion. |
@@ -797,7 +795,7 @@ Retrieval is the graph-aware query pipeline. It:
 5. falls back to same-source neighbors when chunk graph expansion has no non-seed evidence
 6. reranks and returns root chunk results plus related supporting chunks, and a parallel list of ranked insights
 
-Active variant fanout is `original`, HyDE, up to two decomposed chunk sub-queries, and `expanded` only when the deterministic gate treats the query as short or under-specified. Step-back variants are retired from active retrieval. Dense chunk and insight search use binary-quantized pgvector HNSW indexes as a candidate prefilter for 4096-dimensional embeddings, then rerank those candidates with the original full-precision cosine score. Chunk graph expansion uses deterministic entity queries and second-hop entity selection by default; set `RETRIEVAL_USE_LLM_ENTITY_QUERIES=true` or `RETRIEVAL_USE_LLM_SECOND_HOP_SELECTION=true` to restore those slower LLM-backed graph steps.
+Active variant fanout is `original`, HyDE, up to two decomposed chunk sub-queries, and `expanded` only when the deterministic gate treats the query as short or under-specified. Step-back variants have been removed from retrieval. Dense chunk and insight search use binary-quantized pgvector HNSW indexes as a candidate prefilter for 4096-dimensional embeddings, then rerank those candidates with the original full-precision cosine score. Chunk graph expansion uses deterministic entity queries and second-hop entity selection by default; set `RETRIEVAL_USE_LLM_ENTITY_QUERIES=true` or `RETRIEVAL_USE_LLM_SECOND_HOP_SELECTION=true` to restore those slower LLM-backed graph steps.
 
 To profile a live retrieval run, use:
 
@@ -1407,6 +1405,16 @@ Full suite:
 ```bash
 pytest -q
 ```
+
+Live end-to-end smoke (mutates the running stack, so use a non-production server). `API_KEY` and `ADMIN_PASSWORD` are required and have no defaults; generate fresh random values for each run:
+
+```bash
+API_KEY=$(python3 -c 'import secrets;print("smoke-"+secrets.token_urlsafe(24))') \
+ADMIN_PASSWORD=$(python3 -c 'import secrets;print(secrets.token_urlsafe(24))') \
+scripts/smoke_e2e.sh
+```
+
+Run it from the repo root on the Docker host (it creates the test user with the host-run `scripts/create_user.py`). It refuses to run if `ADMIN_USERNAME` (default `smoke`) already exists. On exit, pass or fail, it deletes the smoke source, stops its worker, removes its `smoke-cli` block from `data/api_keys.toml` in place (`scripts/remove_api_key.py`, which preserves the inode because the file is bind-mounted into the backend container), and deletes the test user.
 
 Live integration:
 

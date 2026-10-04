@@ -76,10 +76,8 @@ services:
       POSTGRES_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-rag}
       MEMGRAPH_URL: bolt://memgraph:7687
       STORAGE_BASE_PATH: /data/documents
-      RAG_DATA_DIR: /data
       RAG_API_KEYS_PATH: /data/api_keys.toml
       RAG_WORKER_LOG_DIR: /data/worker_logs
-      RAG_UPLOAD_DIR: /data/uploads
       RAG_FRONTEND_ORIGIN: ${RAG_FRONTEND_ORIGIN:-http://localhost}
       RAG_COOKIE_SECURE: ${RAG_COOKIE_SECURE:-false}
     volumes:
