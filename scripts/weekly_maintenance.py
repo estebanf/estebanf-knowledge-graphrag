@@ -226,26 +226,27 @@ def merge_insights_postgres(conn, survivor_id: str, dup_ids: list[str]) -> None:
     loser `insights` rows.
 
     `chunk_insights` has a composite PRIMARY KEY (chunk_id, insight_id)
-    (scripts/migrate/007_insights.sql) — if a chunk already links to BOTH the
-    survivor and a loser, blindly repointing the loser's row would collide
-    with the survivor's existing row. The UPDATE below only repoints rows
-    whose chunk has no existing link to the survivor; any chunk_insights row
-    left pointing at a loser (i.e. the conflicting case) is then removed for
-    free by `ON DELETE CASCADE` when the loser `insights` row is deleted, so
-    a single surviving row remains for that chunk (no explicit
-    ON CONFLICT/DELETE-then-skip dance needed).
+    (scripts/migrate/007_insights.sql), so repointing must yield at most one
+    row per chunk. Two collisions are possible: the chunk already links to the
+    survivor, or the chunk links to TWO OR MORE losers of the same cluster
+    (common in big near-duplicate clusters). An UPDATE handles neither
+    reliably, so instead copy one link per chunk to the survivor
+    (`DISTINCT ON (chunk_id)`, `ON CONFLICT DO NOTHING` keeps an existing
+    survivor link and its topics), then delete the losers; `ON DELETE CASCADE`
+    removes their old `chunk_insights` rows.
     """
     if not dup_ids:
         return
     conn.execute(
         """
-        UPDATE chunk_insights SET insight_id = %s
+        INSERT INTO chunk_insights (chunk_id, insight_id, topics)
+        SELECT DISTINCT ON (chunk_id) chunk_id, %s::uuid, topics
+        FROM chunk_insights
         WHERE insight_id = ANY(%s::uuid[])
-          AND chunk_id NOT IN (
-              SELECT chunk_id FROM chunk_insights WHERE insight_id = %s
-          )
+        ORDER BY chunk_id
+        ON CONFLICT (chunk_id, insight_id) DO NOTHING
         """,
-        (survivor_id, dup_ids, survivor_id),
+        (survivor_id, dup_ids),
     )
     conn.execute("DELETE FROM insights WHERE id = ANY(%s::uuid[])", (dup_ids,))
 
@@ -265,7 +266,9 @@ def merge_insights_memgraph(session, survivor_id: str, dup_ids: list[str]) -> in
         result = session.run(
             "MATCH (c:Chunk)-[old:CONTAINS]->(i:Insight {insight_id: $dup_id}) "
             "MATCH (s:Insight {insight_id: $survivor_id}) "
-            "MERGE (c)-[:CONTAINS {topics: old.topics}]->(s) "
+            # MERGE on the endpoints only: a property in the pattern makes
+            # differing topics create parallel CONTAINS edges.
+            "MERGE (c)-[e:CONTAINS]->(s) ON CREATE SET e.topics = old.topics "
             "WITH i, count(old) AS repointed "
             "RETURN repointed",
             dup_id=dup_id,
@@ -279,7 +282,7 @@ def merge_insights_memgraph(session, survivor_id: str, dup_ids: list[str]) -> in
             "MATCH (i:Insight {insight_id: $dup_id})-[r:RELATED_TO]->(other:Insight) "
             "WHERE other.insight_id <> $survivor_id "
             "MATCH (s:Insight {insight_id: $survivor_id}) "
-            "MERGE (s)-[:RELATED_TO {similarity: r.similarity}]->(other)",
+            "MERGE (s)-[e:RELATED_TO]->(other) ON CREATE SET e.similarity = r.similarity",
             dup_id=dup_id,
             survivor_id=survivor_id,
         )
@@ -287,7 +290,7 @@ def merge_insights_memgraph(session, survivor_id: str, dup_ids: list[str]) -> in
             "MATCH (other:Insight)-[r:RELATED_TO]->(i:Insight {insight_id: $dup_id}) "
             "WHERE other.insight_id <> $survivor_id "
             "MATCH (s:Insight {insight_id: $survivor_id}) "
-            "MERGE (other)-[:RELATED_TO {similarity: r.similarity}]->(s)",
+            "MERGE (other)-[e:RELATED_TO]->(s) ON CREATE SET e.similarity = r.similarity",
             dup_id=dup_id,
             survivor_id=survivor_id,
         )

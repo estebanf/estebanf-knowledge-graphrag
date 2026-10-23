@@ -72,9 +72,15 @@ def test_merge_insights_postgres_repoints_then_deletes(wm):
     wm.merge_insights_postgres(conn, "survivor-id", ["dup-1", "dup-2"])
 
     assert conn.execute.call_count == 2
-    update_sql, update_params = conn.execute.call_args_list[0][0]
-    assert "UPDATE chunk_insights" in update_sql
-    assert update_params == ("survivor-id", ["dup-1", "dup-2"], "survivor-id")
+    insert_sql, insert_params = conn.execute.call_args_list[0][0]
+    assert "INSERT INTO chunk_insights" in insert_sql
+    assert insert_params == ("survivor-id", ["dup-1", "dup-2"])
+    # One link per chunk (a chunk can link to several losers of one cluster)
+    # and no clash with an existing survivor link: both would violate the
+    # (chunk_id, insight_id) primary key.
+    assert "DISTINCT ON (chunk_id)" in insert_sql
+    assert "ON CONFLICT (chunk_id, insight_id) DO NOTHING" in insert_sql
+    assert "UPDATE chunk_insights" not in insert_sql
 
     delete_sql, delete_params = conn.execute.call_args_list[1][0]
     assert "DELETE FROM insights" in delete_sql
@@ -157,8 +163,8 @@ def test_run_insight_merge_ae5_merges_to_oldest(wm, monkeypatch):
 
     assert merged == 1
     # survivor is the older row ("old-id"); the newer row ("new-id") is the dup.
-    update_call = next(c for c in conn.execute.call_args_list if "UPDATE chunk_insights" in c[0][0])
-    assert update_call[0][1] == ("old-id", ["new-id"], "old-id")
+    insert_call = next(c for c in conn.execute.call_args_list if "INSERT INTO chunk_insights" in c[0][0])
+    assert insert_call[0][1] == ("old-id", ["new-id"])
     delete_call = next(c for c in conn.execute.call_args_list if "DELETE FROM insights" in c[0][0])
     assert delete_call[0][1] == (["new-id"],)
     # Memgraph DETACH DELETE issued for the loser.
@@ -198,10 +204,11 @@ def test_run_insight_merge_chunk_linked_to_both_survives_once(wm, monkeypatch):
 
     merged = wm.run_insight_merge(dry_run=False, since_days=7, cosine_threshold=0.95)
     assert merged == 1
-    # UPDATE excludes chunks already linked to survivor; DELETE (ON DELETE CASCADE)
-    # removes any remaining conflicting chunk_insights row for the loser.
-    update_call = next(c for c in conn.execute.call_args_list if "UPDATE chunk_insights" in c[0][0])
-    assert "NOT IN" in update_call[0][0]
+    # Copy one link per chunk to the survivor (skipping existing survivor links),
+    # then DELETE the loser (ON DELETE CASCADE removes its old chunk_insights rows).
+    insert_call = next(c for c in conn.execute.call_args_list if "INSERT INTO chunk_insights" in c[0][0])
+    assert "ON CONFLICT (chunk_id, insight_id) DO NOTHING" in insert_call[0][0]
+    assert any("DELETE FROM insights" in c[0][0] for c in conn.execute.call_args_list)
 
 
 def test_run_insight_merge_dry_run_writes_nothing(wm, monkeypatch):
@@ -799,3 +806,17 @@ def test_invalidate_entity_edge_cache_commits_its_deletes(wm, monkeypatch):
     conn.commits = 0
     wm._invalidate_entity_edge_cache(set())  # orphan-only sweep
     assert conn.commits == 1
+
+
+def test_merge_insights_memgraph_merges_edges_on_endpoints_only(wm):
+    """A property inside a MERGE pattern makes differing topics/similarity
+    create parallel edges; edges must be merged on endpoints and the property
+    set only on create."""
+    session = MagicMock()
+    session.run.return_value.single.return_value = {"repointed": 1}
+    wm.merge_insights_memgraph(session, "survivor-id", ["dup-1"])
+    merges = [c[0][0] for c in session.run.call_args_list if "MERGE" in c[0][0]]
+    assert len(merges) == 3
+    for query in merges:
+        assert "{topics:" not in query and "{similarity:" not in query
+        assert "ON CREATE SET" in query
