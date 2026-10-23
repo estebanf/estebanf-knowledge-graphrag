@@ -17,10 +17,10 @@ MEMGRAPH_BOLT_PORT="${MEMGRAPH_BOLT_PORT:-7687}"
 MEMGRAPH_LAB_PORT="${MEMGRAPH_LAB_PORT:-3000}"
 POSTGRES_PORT="${POSTGRES_PORT:-5432}"
 
-# Create data subdirectories (data/ itself is .gitignored)
+# Create data subdirectories (data/ itself is .gitignored). Memgraph data lives in
+# the Docker named volume `knowledge-graphrag_memgraph_data`, not under data/.
 mkdir -p \
   "$PROJECT_ROOT/data/postgres" \
-  "$PROJECT_ROOT/data/memgraph" \
   "$PROJECT_ROOT/data/documents" \
   "$PROJECT_ROOT/data/backups"
 
@@ -43,15 +43,8 @@ done
 sleep 3
 echo "  Memgraph is ready."
 
-# Initialize Memgraph schema on first run
-MEMGRAPH_INIT_FLAG="$PROJECT_ROOT/data/memgraph/.initialized"
-if [[ ! -f "$MEMGRAPH_INIT_FLAG" ]]; then
-  echo "Initializing Memgraph schema..."
-  docker compose exec -T memgraph bash -c "mgconsole --no-history" \
-    < "$SCRIPT_DIR/init/memgraph_init.cypher"
-  touch "$MEMGRAPH_INIT_FLAG"
-  echo "  Memgraph schema initialized."
-fi
+# Memgraph indexes/constraints are (re)applied by the backend on every startup
+# (rag.graph_db.reconcile_schema, mirroring scripts/init/memgraph_init.cypher).
 
 echo ""
 echo "All services are up."

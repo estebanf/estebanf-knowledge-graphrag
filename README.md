@@ -399,7 +399,57 @@ Persistent local data lives in:
 - `data/api_keys.toml`, `data/worker_logs`, `data/uploads`: API keys, worker logs and ingest uploads, bind-mounted into the backend
 - `data/backups`: output of `scripts/backup.sh`
 
-Caveat: `scripts/backup.sh` dumps Postgres correctly but copies `data/memgraph/` for the graph, and `docker-compose.yml` no longer stores Memgraph there (it uses the named volume above), so the Memgraph part of a backup is not the live graph. Until the script is updated, snapshot the graph separately (`CREATE SNAPSHOT;` through `mgconsole`, then copy the `knowledge-graphrag_memgraph_data` volume). `scripts/start.sh` has the same leftover: its first-run Memgraph schema init is keyed on `data/memgraph/.initialized`, so on a fresh volume the schema is applied by the backend's startup reconciliation (see [Memgraph schema reconciliation](#memgraph-schema-reconciliation)).
+See [Backup and restore](#backup-and-restore) for how to back all of this up.
+
+### Backup and restore
+
+`scripts/backup.sh` writes one self-contained archive, `data/backups/knowledge_graph_<timestamp>.tar.gz` (mode `600`):
+
+| Inside `<timestamp>/` | What it is |
+| --- | --- |
+| `postgres.dump` | `pg_dump --format=custom` (compressed); restore with `pg_restore` |
+| `memgraph/snapshots/` | a fresh Memgraph snapshot (`CREATE SNAPSHOT`), copied out of the live `knowledge-graphrag_memgraph_data` volume with `docker compose cp` |
+| `memgraph/wal/` | the Memgraph write-ahead log at backup time |
+| `documents/` | `data/documents` (stored original files; cannot be regenerated) |
+| `manifest.txt` | git commit, snapshot name, and row/node/edge counts to compare after a restore |
+| `secrets/` | `data/api_keys.toml` and `.env`, only with `--with-secrets` |
+
+```bash
+scripts/backup.sh                  # refuses while intake jobs are pending/processing
+scripts/backup.sh --force          # run anyway (Postgres and Memgraph are captured seconds apart)
+scripts/backup.sh --with-secrets   # also include api keys and .env
+scripts/backup.sh --out-dir /Volumes/External/rag-backups
+```
+
+The script checks free disk space first (it needs roughly 1.5x the database size plus documents while it runs), verifies the dump header and the archive listing, and removes its staging directory. Copy archives off the machine; a disk failure takes local backups with it.
+
+**Restore** (into the same compose project; stop intake first):
+
+```bash
+tar -xzf data/backups/knowledge_graph_<ts>.tar.gz -C /tmp        # creates /tmp/<ts>/
+venv/bin/rag worker stop --all
+docker compose stop backend frontend
+
+# Postgres: replaces the contents of the rag database
+docker compose cp /tmp/<ts>/postgres.dump postgres:/tmp/restore.dump
+docker compose exec -T postgres pg_restore -U rag -d rag --clean --if-exists --no-owner -j 4 /tmp/restore.dump
+docker compose exec -T postgres rm /tmp/restore.dump
+
+# Memgraph: swap the snapshot/WAL in the named volume, then restart
+docker compose stop memgraph
+docker run --rm -v knowledge-graphrag_memgraph_data:/var/lib/memgraph -v /tmp/<ts>/memgraph:/restore:ro \
+  --entrypoint bash memgraph/memgraph-platform:latest -c \
+  'rm -f /var/lib/memgraph/snapshots/* /var/lib/memgraph/wal/*; cp /restore/snapshots/* /var/lib/memgraph/snapshots/; cp /restore/wal/* /var/lib/memgraph/wal/ 2>/dev/null; chown -R memgraph:memgraph /var/lib/memgraph/snapshots /var/lib/memgraph/wal'
+docker compose up -d memgraph
+
+# Documents
+rsync -a /tmp/<ts>/documents/ data/documents/
+
+docker compose up -d backend frontend
+venv/bin/rag worker launch 5
+```
+
+Afterwards compare the counts in `/tmp/<ts>/manifest.txt` with `SELECT count(*) FROM ...` and `MATCH (n) RETURN labels(n)[0], count(*)`.
 
 Useful service checks:
 

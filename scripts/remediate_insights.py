@@ -79,7 +79,8 @@ def _cleanup_source_insights(conn, driver, source_id: str) -> None:
         print(f"    Deleted {cur.rowcount} orphan insights rows.")
     with driver.session() as session:
         print("    Deleting orphan Insight nodes from Memgraph.")
-        session.run("MATCH (i:Insight) WHERE NOT (i)<-[:CONTAINS]-() DETACH DELETE i")
+        # Memgraph rejects bare pattern predicates in WHERE; use exists().
+        session.run("MATCH (i:Insight) WHERE NOT exists((i)<-[:CONTAINS]-()) DETACH DELETE i")
     conn.commit()
     print("    Cleanup committed.")
 
