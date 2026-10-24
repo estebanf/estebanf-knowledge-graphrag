@@ -90,9 +90,11 @@ class Settings(BaseSettings):
     # Canonical-name correction (src/rag/entity_names.py): only entities with at
     # least this many aliases (the hubs) are reviewed, and a rename is applied
     # only when both Jev option orders agree and the averaged probability of the
-    # winning spelling is at least ENTITY_NAME_MIN_CONFIDENCE.
+    # winning spelling is at least ENTITY_NAME_MIN_CONFIDENCE. 0.9 (was 0.8):
+    # in the 2026-10 live run every questionable proposal (e.g. 'Boommy' ->
+    # 'Anthropic', 'OpenClaude' -> 'Claude') scored 0.81-0.85.
     ENTITY_NAME_REVIEW_MIN_ALIASES: Annotated[int, Field(ge=1)] = 3
-    ENTITY_NAME_MIN_CONFIDENCE: Annotated[float, Field(ge=0.0, le=1.0)] = 0.8
+    ENTITY_NAME_MIN_CONFIDENCE: Annotated[float, Field(ge=0.0, le=1.0)] = 0.9
 
     # Insight extraction
     MODEL_INSIGHT_EXTRACTION: str = "gpt-6-luna"

@@ -118,7 +118,7 @@ def test_jev_name_and_near_dup_maintenance_defaults(monkeypatch):
         monkeypatch.delenv(key, raising=False)
     s = Settings(_env_file=None)
     assert s.ENTITY_NAME_REVIEW_MIN_ALIASES == 3
-    assert s.ENTITY_NAME_MIN_CONFIDENCE == 0.8
+    assert s.ENTITY_NAME_MIN_CONFIDENCE == 0.9
     assert s.INSIGHT_NEAR_DUP_COSINE_LOW == 0.88
     assert s.INSIGHT_NEAR_DUP_COSINE_LOW < s.INSIGHT_DEDUP_COSINE_THRESHOLD
 

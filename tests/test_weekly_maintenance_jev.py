@@ -31,7 +31,10 @@ def wm(monkeypatch):
 
     module = _load_script("weekly_maintenance_jev_script", "weekly_maintenance.py")
     # Any phase a test forgot to stub must fail, not reach the live stack.
-    forbid_live_stores(monkeypatch, module, module.entity_merge)
+    forbid_live_stores(monkeypatch, module, module.entity_merge, module.exact_merge)
+    # Phase 1c (exact-name merge) runs with every entity phase; stub it by
+    # default. Tests that care about it override this.
+    monkeypatch.setattr(module.exact_merge, "run_exact_merge", MagicMock(return_value=(0, set())))
     return module
 
 
@@ -437,3 +440,46 @@ def test_missing_api_key_never_merges_band_pairs_and_makes_no_call(wm, monkeypat
 
     assert wm.run_insight_merge(dry_run=False, since_days=7, cosine_threshold=0.95, use_jev=True) == 0
     assert merges == []
+
+
+def test_exact_name_merge_runs_after_name_correction_and_invalidates_the_cache(wm, monkeypatch):
+    """Phase 1c catches exact-name duplicates (the semantic merge skips
+    identical names), including any a 1b rename produced, so it runs after 1b."""
+    order = []
+    monkeypatch.setattr(
+        wm.entity_merge, "run_entity_merge", lambda dry_run, **kw: order.append("merge") or (0, set())
+    )
+    monkeypatch.setattr(wm, "run_entity_name_correction", lambda **kw: order.append("names") or set())
+    calls = []
+    monkeypatch.setattr(
+        wm.exact_merge,
+        "run_exact_merge",
+        lambda dry_run: calls.append(dry_run) or order.append("exact") or (2, {"a", "b", "c"}),
+    )
+    monkeypatch.setattr(wm, "run_insight_merge", lambda **kw: order.append("insights") or 0)
+    invalidate = MagicMock()
+    monkeypatch.setattr(wm, "_invalidate_entity_edge_cache", invalidate)
+
+    wm._run_phases(_parse(wm, "--execute", "--jev", *_NO_OTHER_PHASES))
+
+    assert order == ["merge", "names", "exact", "insights"]
+    assert calls == [False]
+    invalidate.assert_any_call({"a", "b", "c"})
+
+
+def test_exact_name_merge_dry_run_and_skip(wm, monkeypatch):
+    monkeypatch.setattr(wm.entity_merge, "run_entity_merge", lambda dry_run, **kw: (0, set()))
+    monkeypatch.setattr(wm, "run_entity_name_correction", lambda **kw: set())
+    monkeypatch.setattr(wm, "run_insight_merge", lambda **kw: 0)
+    exact = MagicMock(return_value=(0, set()))
+    monkeypatch.setattr(wm.exact_merge, "run_exact_merge", exact)
+    invalidate = MagicMock()
+    monkeypatch.setattr(wm, "_invalidate_entity_edge_cache", invalidate)
+
+    wm._run_phases(_parse(wm, "--dry-run", "--jev", *_NO_OTHER_PHASES))
+    exact.assert_called_once_with(dry_run=True)
+    invalidate.assert_not_called()
+
+    exact.reset_mock()
+    wm._run_phases(_parse(wm, "--dry-run", "--jev", "--skip-entities", *_NO_OTHER_PHASES))
+    exact.assert_not_called()

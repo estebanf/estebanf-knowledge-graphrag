@@ -24,7 +24,10 @@ def wm(monkeypatch):
 
     module = _load_script("weekly_maintenance_script", "weekly_maintenance.py")
     # Any phase a test forgot to stub must fail, not reach the live stack.
-    forbid_live_stores(monkeypatch, module, module.entity_merge)
+    forbid_live_stores(monkeypatch, module, module.entity_merge, module.exact_merge)
+    # Phase 1c (exact-name merge) runs with every entity phase; stub it by
+    # default. Tests that care about it override this.
+    monkeypatch.setattr(module.exact_merge, "run_exact_merge", MagicMock(return_value=(0, set())))
     return module
 
 

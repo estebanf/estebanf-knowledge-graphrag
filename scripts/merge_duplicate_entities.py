@@ -221,6 +221,51 @@ def merge_group(conn, session, group: dict, dry_run: bool, survivor_picker=None)
     return len(dup_ids)
 
 
+def run_exact_merge(dry_run: bool, cross_type: bool = False) -> tuple[int, set[str]]:
+    """Merge entities that share an exact `canonical_name` (and type, unless
+    `cross_type`). Shared by this script's CLI and weekly maintenance phase 1c.
+
+    Returns (rows merged away, every entity id in a merged group) so the caller
+    can invalidate the entity_semantic_edges cache. Vacuums `entities` only
+    when at least one row was merged; a dry run writes nothing.
+    """
+    prefix = "[DRY RUN] " if dry_run else ""
+    total_merged = 0
+    touched: set[str] = set()
+    with get_connection() as conn, get_graph_driver() as driver:
+        groups = fetch_duplicate_groups(conn)
+        print(
+            f"{prefix}Found {len(groups)} duplicate groups "
+            f"({sum(len(g['members']) for g in groups)} total rows)."
+        )
+        with driver.session() as session:
+            for g in groups:
+                merged = merge_group(conn, session, g, dry_run=dry_run)
+                if merged:
+                    total_merged += merged
+                    touched.update(m["id"] for m in g["members"])
+
+        if cross_type:
+            cross_groups = fetch_cross_type_duplicate_groups(conn)
+            print(
+                f"{prefix}Found {len(cross_groups)} cross-type duplicate groups "
+                f"({sum(len(g['members']) for g in cross_groups)} total rows)."
+            )
+            with driver.session() as session:
+                for g in cross_groups:
+                    merged = merge_group(
+                        conn, session, g, dry_run=dry_run, survivor_picker=pick_survivor_cross_type
+                    )
+                    if merged:
+                        total_merged += merged
+                        touched.update(m["id"] for m in g["members"])
+
+    if total_merged > 0:
+        print(f"Reclaiming space from {total_merged} merged row(s)...", flush=True)
+        vacuum_analyze_entities()
+    return total_merged, touched
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Merge duplicate entities.")
     group = parser.add_mutually_exclusive_group(required=True)
@@ -232,38 +277,7 @@ def main() -> int:
         help="Also merge entities sharing canonical_name but with different entity_type.",
     )
     args = parser.parse_args()
-    dry_run = args.dry_run
-
-    total_merged = 0
-    with get_connection() as conn, get_graph_driver() as driver:
-        groups = fetch_duplicate_groups(conn)
-        print(
-            f"{'[DRY RUN] ' if dry_run else ''}"
-            f"Found {len(groups)} duplicate groups "
-            f"({sum(len(g['members']) for g in groups)} total rows)."
-        )
-
-        with driver.session() as session:
-            for g in groups:
-                total_merged += merge_group(conn, session, g, dry_run=dry_run)
-
-        if args.cross_type:
-            cross_groups = fetch_cross_type_duplicate_groups(conn)
-            print(
-                f"{'[DRY RUN] ' if dry_run else ''}"
-                f"Found {len(cross_groups)} cross-type duplicate groups "
-                f"({sum(len(g['members']) for g in cross_groups)} total rows)."
-            )
-            with driver.session() as session:
-                for g in cross_groups:
-                    total_merged += merge_group(
-                        conn, session, g, dry_run=dry_run, survivor_picker=pick_survivor_cross_type
-                    )
-
-    if total_merged > 0:
-        print(f"Reclaiming space from {total_merged} merged row(s)...", flush=True)
-        vacuum_analyze_entities()
-
+    run_exact_merge(dry_run=args.dry_run, cross_type=args.cross_type)
     print("Done.")
     return 0
 

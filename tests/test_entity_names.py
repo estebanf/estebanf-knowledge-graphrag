@@ -249,6 +249,58 @@ def test_plan_blocks_a_rename_into_a_name_held_by_an_incompatible_type():
     assert blocked.winner == "Mercury Corp" and "incompatible type" in blocked.reason
 
 
+def test_plan_groups_two_renames_to_the_same_name_into_one_merge():
+    """The 2026-10-19 failure: 'Antropic' and 'Boommy' were both corrected to
+    'Anthropic' in one run, each planned as a rename in place, leaving two
+    'Anthropic' rows the semantic merge never revisits."""
+    hub = _entity("hub", "Antropic", ["Anthropic", "Antropic AI", "Anthropic PBC"])
+    other = _entity("other", "Boommy", ["Anthropic", "Boom", "Boomy"])
+    session = _counts_session({"hub": 4285, "other": 19})
+
+    plan = en.plan_actions(
+        _planning_conn(), session, [_judged(hub, "Anthropic", 0.96), _judged(other, "Anthropic", 0.91)], PICK
+    )
+
+    (action,) = plan.actions
+    assert action.kind == en.ACTION_MERGE
+    assert (action.survivor_id, action.dup_ids, action.winner) == ("hub", ["other"], "Anthropic")
+    assert action.old_names == ["Antropic", "Boommy"]
+    assert action.confidence == 0.96
+    assert "merge 'Antropic' and 'Boommy' into 'Anthropic'" in en.format_action(action)
+    assert plan.blocked == []
+
+
+def test_plan_groups_same_name_renames_with_an_existing_row():
+    hub = _entity("hub", "Antropic", ["Anthropic", "Antropic AI", "Anthropic PBC"])
+    other = _entity("other", "Anthropik", ["Anthropic", "Anthropik AI", "Anthropik Inc"])
+    clean = _entity("clean", "Anthropic", ["Anthropic PBC"], age_days=30)
+    session = _counts_session({"hub": 4285, "other": 7, "clean": 32})
+
+    plan = en.plan_actions(
+        _planning_conn([clean]), session, [_judged(hub, "Anthropic"), _judged(other, "Anthropic")], PICK
+    )
+
+    (action,) = plan.actions
+    assert action.survivor_id == "hub"
+    assert sorted(action.dup_ids) == ["clean", "other"]
+    # apply_actions re-checks members[0] against old_name: a target must come first
+    assert action.members[0]["id"] == "hub" and action.old_name == "Antropic"
+
+
+def test_plan_blocks_a_second_same_name_rename_with_an_incompatible_type():
+    org = _entity("org", "Mercurey", ["Mercury", "Mercury Inc", "Mercury Co"], etype="ORGANIZATION")
+    place = _entity("place", "Mercuri", ["Mercury", "Planet Mercury", "Mercurio"], etype="LOCATION")
+
+    plan = en.plan_actions(
+        _planning_conn(), _counts_session({}), [_judged(org, "Mercury"), _judged(place, "Mercury")], PICK
+    )
+
+    (action,) = plan.actions
+    assert action.kind == en.ACTION_RENAME and action.survivor_id == "org"
+    (blocked,) = plan.blocked
+    assert blocked.entity["id"] == "place" and "in this run" in blocked.reason
+
+
 def test_plan_ignores_non_rename_judgements():
     target = _entity("hub", "OpenAI", ["Open AI", "Open-AI", "OpenAI Inc"])
     kept = en.NameJudgement(target, ["OpenAI"], en.STATUS_KEEP, "OpenAI", 0.9)

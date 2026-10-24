@@ -111,6 +111,7 @@ from rag.ingestion import _cleanup_orphan_insights
 
 sys.path.insert(0, str(Path(__file__).parent))
 import merge_semantic_duplicates as entity_merge  # noqa: E402
+import merge_duplicate_entities as exact_merge  # noqa: E402
 
 UnionFind = entity_merge.UnionFind
 
@@ -842,6 +843,18 @@ def _run_phases(args: argparse.Namespace) -> int:
     if entity_names_active(args):
         print("== Phase 1b: entity name correction ==", flush=True)
         run_entity_name_correction(dry_run=dry_run, name_limit=args.name_limit)
+
+    # Exact-name duplicates (same canonical_name and type) are invisible to the
+    # semantic merge, which skips identical names; they come from concurrent
+    # intake (SELECT-first insert dedup) and from name correction. Runs after 1b
+    # so it also catches anything a rename produced.
+    if not args.skip_entities:
+        print("== Phase 1c: exact-name entity merge ==", flush=True)
+        _exact_count, exact_ids = exact_merge.run_exact_merge(dry_run=dry_run)
+        if not dry_run:
+            _invalidate_entity_edge_cache(exact_ids)
+    else:
+        print("== Phase 1c: exact-name entity merge (skipped) ==")
 
     if not args.skip_insights:
         print("== Phase 2: insight merge ==", flush=True)

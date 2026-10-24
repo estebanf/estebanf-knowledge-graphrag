@@ -106,6 +106,9 @@ class RenameAction:
     members: list[dict]
     survivor_id: str
     dup_ids: list[str]
+    # Every entity being renamed to `winner` in this action (several hubs can
+    # be corrected to the same name in one run); `old_name` is the first.
+    old_names: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -319,41 +322,80 @@ def plan_actions(
 ) -> NamePlan:
     """Turn `rename` judgements into rename-in-place / merge actions.
 
+    Renames are grouped by winning name: every entity being corrected to the
+    same name in this run, plus any existing row that already has that name
+    (type-compatible), becomes ONE action with a single survivor. Planning each
+    rename on its own would let two hubs both "rename in place" to the same new
+    name and leave exact-name duplicates, which the semantic merge never
+    revisits (it skips identical names). A rename is blocked when its type
+    conflicts with an existing row of that name, or with another rename to
+    that name in the same run.
+
     `pick_survivor` is the shared mentions-first picker from
     `scripts/merge_semantic_duplicates.py`. Reads Postgres and Memgraph only.
     """
     plan = NamePlan()
     renames = [j for j in judgements if j.status == STATUS_RENAME and j.winner]
     existing = fetch_entities_by_name(conn, sorted({j.winner for j in renames}))
+
+    by_winner: dict[str, list[NameJudgement]] = {}
     for judgement in renames:
-        target = dict(judgement.entity)
-        others = [e for e in existing.get(judgement.winner, []) if e["id"] != target["id"]]
-        compatible = [e for e in others if _types_compatible(target["entity_type"], e["entity_type"])]
-        if others and not compatible:
-            plan.blocked.append(
-                BlockedRename(
-                    target,
-                    judgement.winner,
-                    "an entity with that exact name already exists with an incompatible type "
-                    f"({', '.join(sorted({e['entity_type'] or '?' for e in others}))} vs "
-                    f"{target['entity_type'] or '?'})",
+        by_winner.setdefault(judgement.winner, []).append(judgement)
+
+    for winner, group in by_winner.items():
+        target_ids = {j.entity["id"] for j in group}
+        others = [e for e in existing.get(winner, []) if e["id"] not in target_ids]
+        # (type, targets, judgements, existing rows) per compatible cluster
+        clusters: list[tuple[str, list[dict], list[NameJudgement], list[dict]]] = []
+        for judgement in group:
+            target = dict(judgement.entity)
+            etype = target["entity_type"]
+            compatible = [e for e in others if _types_compatible(etype, e["entity_type"])]
+            if others and not compatible:
+                plan.blocked.append(
+                    BlockedRename(
+                        target,
+                        winner,
+                        "an entity with that exact name already exists with an incompatible type "
+                        f"({', '.join(sorted({e['entity_type'] or '?' for e in others}))} vs "
+                        f"{etype or '?'})",
+                    )
+                )
+                continue
+            cluster = next((c for c in clusters if _types_compatible(etype, c[0])), None)
+            if cluster is None and clusters:
+                plan.blocked.append(
+                    BlockedRename(
+                        target,
+                        winner,
+                        "another entity is being renamed to that name in this run with an "
+                        f"incompatible type ({clusters[0][0] or '?'} vs {etype or '?'})",
+                    )
+                )
+                continue
+            if cluster is None:
+                clusters.append((etype, [target], [judgement], compatible))
+            else:
+                cluster[1].append(target)
+                cluster[2].append(judgement)
+
+        for _etype, targets, cluster_judgements, compatible in clusters:
+            # Targets first: apply_actions re-checks members[0] against old_name.
+            members = [*targets, *compatible]
+            attach_mention_counts(session, members)
+            survivor = pick_survivor(members)
+            plan.actions.append(
+                RenameAction(
+                    kind=ACTION_MERGE if len(members) > 1 else ACTION_RENAME,
+                    old_name=targets[0]["canonical_name"],
+                    winner=winner,
+                    confidence=max(j.confidence or 0.0 for j in cluster_judgements),
+                    members=members,
+                    survivor_id=survivor["id"],
+                    dup_ids=[m["id"] for m in members if m["id"] != survivor["id"]],
+                    old_names=[t["canonical_name"] for t in targets],
                 )
             )
-            continue
-        members = [target, *compatible]
-        attach_mention_counts(session, members)
-        survivor = pick_survivor(members)
-        plan.actions.append(
-            RenameAction(
-                kind=ACTION_MERGE if compatible else ACTION_RENAME,
-                old_name=target["canonical_name"],
-                winner=judgement.winner,
-                confidence=judgement.confidence or 0.0,
-                members=members,
-                survivor_id=survivor["id"],
-                dup_ids=[m["id"] for m in members if m["id"] != survivor["id"]],
-            )
-        )
     return plan
 
 
@@ -365,8 +407,13 @@ def format_action(action: RenameAction) -> str:
             f"({mentions[action.survivor_id]} mention(s), confidence {action.confidence:.2f})"
         )
     names = {m["id"]: m["canonical_name"] for m in action.members}
+    renamed = action.old_names or [action.old_name]
+    if len(renamed) > 1:
+        head = f"merge {' and '.join(repr(n) for n in renamed)} into {action.winner!r}"
+    else:
+        head = f"merge {action.old_name!r} with existing {action.winner!r}"
     return (
-        f"merge {action.old_name!r} with existing {action.winner!r}: keep "
+        f"{head}: keep "
         f"{names[action.survivor_id]!r} ({mentions[action.survivor_id]} mention(s)) as "
         f"{action.winner!r}, absorb {[names[i] for i in action.dup_ids]} "
         f"({sum(mentions[i] for i in action.dup_ids)} mention(s)); confidence {action.confidence:.2f}"
